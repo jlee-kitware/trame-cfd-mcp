@@ -1,0 +1,217 @@
+{
+  "version": "3.0",
+  "domain": "cfd_postprocessing",
+  
+  "field_types": {
+    "velocity": {
+      "description": "Flow velocity vector field",
+      "patterns": ["velocity", "vel", "u", "v", "w", "U"],
+      "type": "vector",
+      "units": "m/s or normalized"
+    },
+    "pressure": {
+      "description": "Static pressure scalar field",
+      "patterns": ["pressure", "p", "P", "press"],
+      "type": "scalar",
+      "units": "Pa or normalized"
+    },
+    "density": {
+      "description": "Fluid density",
+      "patterns": ["density", "rho", "Density"],
+      "type": "scalar",
+      "units": "kg/m³"
+    },
+    "temperature": {
+      "description": "Temperature field",
+      "patterns": ["temperature", "temp", "T", "Temperature"],
+      "type": "scalar",
+      "units": "K or °C"
+    },
+    "mach": {
+      "description": "Mach number",
+      "patterns": ["mach", "Mach", "Ma"],
+      "type": "scalar",
+      "units": "dimensionless"
+    },
+    "turbulent_kinetic_energy": {
+      "description": "Turbulent kinetic energy",
+      "patterns": ["tke", "k", "TurbulentKineticEnergy", "TKE"],
+      "type": "scalar",
+      "units": "m²/s²"
+    }
+  },
+  
+  "concepts": {
+    "stagnation_point": {
+      "definition": "Location where flow velocity approaches zero in the interior",
+      "physical_meaning": "Where flow impinges on a body or divides",
+      "keywords": ["stagnation", "zero velocity", "impingement"],
+      "detection": {
+        "tool": "find_minimum",
+        "field_type": "velocity",
+        "exclude_boundaries": true
+      },
+      "output": "location"
+    },
+    
+    "freestream": {
+      "definition": "Undisturbed flow far from bodies",
+      "physical_meaning": "Reference velocity for normalization",
+      "keywords": ["freestream", "farfield", "reference", "inlet"],
+      "detection": {
+        "tool": "find_maximum",
+        "field_type": "velocity"
+      },
+      "output": "location"
+    },
+    
+    "shear_layer": {
+      "definition": "Region of high velocity gradient",
+      "physical_meaning": "Boundary between fast and slow flow, mixing zone",
+      "keywords": ["shear", "mixing", "jet boundary", "wake edge"],
+      "detection": {
+        "tool": "find_high_gradient",
+        "field_type": "velocity"
+      },
+      "output": "location"
+    },
+    
+    "shock_wave": {
+      "definition": "Location of highest pressure gradient",
+      "physical_meaning": "Compression discontinuity in supersonic flow",
+      "keywords": ["shock", "compression", "pressure jump"],
+      "detection": {
+        "tool": "find_high_gradient",
+        "field_type": "pressure"
+      },
+      "output": "location"
+    },
+    
+    "low_velocity_region": {
+      "definition": "Region where velocity magnitude is below threshold",
+      "physical_meaning": "Stagnation zones, separation bubbles, wakes",
+      "keywords": ["wake", "low velocity", "recirculation", "separation", "dead zone"],
+      "detection": {
+        "tool": "find_by_query",
+        "query_template": "mag({velocity}) < 0.1"
+      },
+      "output": "location"
+    },
+    
+    "pressure_minimum": {
+      "definition": "Location of lowest pressure",
+      "physical_meaning": "Often indicates vortex core or suction peak",
+      "keywords": ["low pressure", "suction", "pressure minimum"],
+      "detection": {
+        "tool": "find_minimum",
+        "field_type": "pressure"
+      },
+      "output": "location"
+    },
+    
+    "pressure_maximum": {
+      "definition": "Location of highest pressure",
+      "physical_meaning": "Stagnation pressure, compression region",
+      "keywords": ["high pressure", "stagnation pressure", "compression"],
+      "detection": {
+        "tool": "find_maximum",
+        "field_type": "pressure"
+      },
+      "output": "location"
+    },
+    
+    "vortex": {
+      "definition": "Rotational flow structure where rotation dominates strain",
+      "physical_meaning": "Coherent rotating flow, turbulent structures, tip vortices",
+      "keywords": ["vortex", "vortices", "q-criterion", "rotation", "swirl", "eddy", "lambda2", "vorticity", "helicity", "helical"],
+      "detection_methods": {
+        "q_criterion": {
+          "description": "Q = 0.5*(||Ω||² - ||S||²). Positive Q indicates vortex.",
+          "pros": "Fast, intuitive",
+          "cons": "Sensitive to threshold, includes some shear"
+        },
+        "vorticity": {
+          "description": "Magnitude of curl of velocity ||∇×u||.",
+          "pros": "Simple, very fast",
+          "cons": "Also high in shear layers (not vortex-specific)"
+        },
+        "lambda2": {
+          "description": "Second eigenvalue of S² + Ω². Negative λ2 = vortex core.",
+          "pros": "Most accurate, excludes pure shear, uses 1% of min for threshold",
+          "cons": "Slightly more compute (but vectorized)"
+        },
+        "swirling_strength": {
+          "description": "Imaginary part of velocity gradient eigenvalues.",
+          "pros": "Good for compressible, Galilean invariant",
+          "cons": "Can miss some structures"
+        },
+        "helicity": {
+          "description": "Normalized helicity Hn = (u·ω)/(|u||ω|). |Hn|≈1 = helical vortex.",
+          "pros": "Identifies helical/tornado-like vortices where flow spirals along axis",
+          "cons": "Misses planar vortices where u ⊥ ω"
+        }
+      },
+      "detection": {
+        "tool": "create_vortex_isosurface",
+        "method": "q_criterion"
+      },
+      "output": "isosurface"
+    }
+  },
+  
+  "visualizations": {
+    "streamlines": {
+      "description": "Curves tangent to velocity field showing flow paths",
+      "tool": "create_streamlines",
+      "keywords": ["flow pattern", "streamlines", "pathlines", "flow direction"],
+      "reveals": ["flow_topology", "recirculation", "separation", "wake_structure"],
+      "best_for": ["flow_pattern", "shear_layer", "wake"]
+    },
+    
+    "vortex_isosurface": {
+      "description": "3D isosurface showing vortex structures",
+      "tool": "create_vortex_isosurface",
+      "keywords": ["vortex", "vortices", "rotation", "q-criterion", "lambda2", "swirl", "helicity"],
+      "reveals": ["vortex_cores", "turbulent_structures", "coherent_structures"],
+      "best_for": ["vortex"]
+    },
+    
+    "field_coloring": {
+      "description": "Color surface by scalar or vector field",
+      "tool": "update_color",
+      "keywords": ["distribution", "show", "color by", "visualize field"],
+      "reveals": ["field_distribution", "gradients", "extrema"],
+      "best_for": ["pressure_distribution", "temperature_distribution"]
+    },
+    
+    "slice": {
+      "description": "Planar cut through volume",
+      "tool": "create",
+      "filter": "Slice",
+      "keywords": ["slice", "cut", "plane", "cross-section"],
+      "reveals": ["internal_structure", "wake_profile"],
+      "best_for": ["wake", "internal_flow"]
+    }
+  },
+  
+  "workflows": {
+    "characterize_flow": {
+      "description": "Comprehensive flow field characterization",
+      "steps": [
+        {"action": "find_minimum", "field_type": "velocity", "purpose": "locate stagnation"},
+        {"action": "find_high_gradient", "field_type": "velocity", "purpose": "locate shear layer"},
+        {"action": "create_streamlines", "purpose": "show flow pattern"},
+        {"action": "create_vortex_isosurface", "purpose": "show vortical structures"}
+      ]
+    },
+    
+    "analyze_wake": {
+      "description": "Wake region analysis",
+      "steps": [
+        {"action": "find_high_gradient", "field_type": "velocity", "purpose": "find wake boundary"},
+        {"action": "create_streamlines", "at": "wake_boundary", "purpose": "show wake flow"},
+        {"action": "create", "filter": "Slice", "purpose": "cross-section through wake"}
+      ]
+    }
+  }
+}
