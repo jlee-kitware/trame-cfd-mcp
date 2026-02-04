@@ -217,13 +217,13 @@ pvpython test_e2e.py --real
 ## Example Outputs
 
 ### Vortex Visualization (Q-criterion)
-![Vortices](examples/cfd_assistant/output/mock_11_vortices_q.png)
+![Vortices](docs/images/vortices_q.png)
 
 ### Accumulated Drag Distribution
-![Drag Distribution](examples/cfd_assistant/output/mock_08_drag_distribution.png)
+![Drag Distribution](docs/images/drag_distribution.png)
 
 ### Spanwise Lift Distribution  
-![Lift Distribution](examples/cfd_assistant/output/mock_09_lift_distribution.png)
+![Lift Distribution](docs/images/lift_distribution.png)
 
 ## Environment Variables
 
