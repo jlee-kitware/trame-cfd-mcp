@@ -43,7 +43,11 @@ MOCK_RESPONSES = {
         ("hide_all", {}),
         ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
         ("find_minimum", {"field": "velocity", "proxy_name": "{data_source}", "exclude_boundaries": True}),
-        ("create_slice", {"origin": "{min_location}", "normal": "x", "color_field": "Velocity", "proxy_name": "{data_source}"}),
+        # Use base tools for slice: create → set origin → set normal → color
+        ("base:create", {"proxy_name": "Slice", "input_proxy": "{data_source}"}),
+        ("base:update_sub_property", {"property_name": "SliceType", "sub_property_name": "Origin", "sub_property_value": "{min_location}", "proxy_name": "{last_created}"}),
+        ("base:update_sub_property", {"property_name": "SliceType", "sub_property_name": "Normal", "sub_property_value": [1, 0, 0], "proxy_name": "{last_created}"}),
+        ("base:update_color", {"proxy_name": "{last_created}", "field_name": "Velocity"}),
         ("focus_on", {"proxy_name": "{last_created}"}),
     ],
     
@@ -59,7 +63,11 @@ MOCK_RESPONSES = {
     "pressure": [
         ("hide_all", {}),
         ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
-        ("create_slice", {"origin": None, "normal": "y", "color_field": "p", "proxy_name": "{data_source}"}),
+        ("get_geometry_info", {"proxy_name": "{data_source}"}),
+        ("base:create", {"proxy_name": "Slice", "input_proxy": "{data_source}"}),
+        ("base:update_sub_property", {"property_name": "SliceType", "sub_property_name": "Origin", "sub_property_value": "{center}", "proxy_name": "{last_created}"}),
+        ("base:update_sub_property", {"property_name": "SliceType", "sub_property_name": "Normal", "sub_property_value": [0, 1, 0], "proxy_name": "{last_created}"}),
+        ("base:update_color", {"proxy_name": "{last_created}", "field_name": "p"}),
         ("focus_on", {"proxy_name": "{last_created}"}),
     ],
     
@@ -92,18 +100,36 @@ MOCK_RESPONSES = {
         ("hide_all", {}),
         ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
         ("find_maximum", {"field": "velocity", "proxy_name": "{data_source}"}),
-        ("create_slice", {"origin": "{max_location}", "normal": "x", "color_field": "Velocity", "proxy_name": "{data_source}"}),
+        ("base:create", {"proxy_name": "Slice", "input_proxy": "{data_source}"}),
+        ("base:update_sub_property", {"property_name": "SliceType", "sub_property_name": "Origin", "sub_property_value": "{max_location}", "proxy_name": "{last_created}"}),
+        ("base:update_sub_property", {"property_name": "SliceType", "sub_property_name": "Normal", "sub_property_value": [1, 0, 0], "proxy_name": "{last_created}"}),
+        ("base:update_color", {"proxy_name": "{last_created}", "field_name": "Velocity"}),
         ("focus_on", {"proxy_name": "{last_created}"}),
     ],
     
     "wake_slice": [
+        # Slice through wake region (detected by velocity deficit)
         ("hide_all", {}),
         ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
-        ("create_slice", {"origin": None, "normal": "x", "color_field": "Velocity", "proxy_name": "{data_source}"}),
+        ("detect_wake_region", {"proxy_name": "{data_source}"}),
+        ("base:create", {"proxy_name": "Slice", "input_proxy": "{data_source}"}),
+        ("base:update_sub_property", {"property_name": "SliceType", "sub_property_name": "Origin", "sub_property_value": "{wake_centroid}", "proxy_name": "{last_created}"}),
+        ("base:update_sub_property", {"property_name": "SliceType", "sub_property_name": "Normal", "sub_property_value": [1, 0, 0], "proxy_name": "{last_created}"}),
+        ("base:update_color", {"proxy_name": "{last_created}", "field_name": "Velocity"}),
         ("focus_on", {"proxy_name": "{last_created}"}),
         ("set_view", {"direction": "+x", "proxy_name": "{last_created}"}),
     ],
     
+    "wake_streamlines": [
+        # Streamlines seeded in wake region
+        ("hide_all", {}),
+        ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
+        ("detect_wake_region", {"proxy_name": "{data_source}"}),
+        ("create_streamlines", {"center": "{wake_centroid}", "radius": 0.15, "num_points": 30, "proxy_name": "{data_source}"}),
+        ("focus_on", {"proxy_name": "{last_created}"}),
+        ("set_streamwise_view", {"proxy_name": "{last_created}"}),
+    ],
+
     "vortices_q": [
         ("hide_all", {}),
         ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
@@ -162,19 +188,19 @@ class MockLLMExecutor:
     def __init__(self, mcp, data_source: str):
         self.mcp = mcp
         self.data_source = data_source
+        # Only static values - dynamic values added by tool results
         self.context = {
             "data_source": data_source,
-            "last_created": None,
-            "min_location": None,
-            "max_location": None,
-            "high_gradient_location": None,
         }
     
     def _substitute(self, value):
         """Substitute placeholders in a value."""
         if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
             key = value[1:-1]
-            return self.context.get(key, value)
+            if key in self.context:
+                return self.context[key]
+            # Keep placeholder - tool will fail with clear error
+            return value
         return value
     
     def _substitute_kwargs(self, kwargs: dict) -> dict:
@@ -183,15 +209,36 @@ class MockLLMExecutor:
     
     def _update_context(self, tool_name: str, result: dict):
         """Update context based on tool result."""
-        if "name" in result:
+        if not isinstance(result, dict):
+            return
+        
+        # Special case: "name" -> "last_created" for chaining
+        if "name" in result and result["name"] is not None:
             self.context["last_created"] = result["name"]
-        if "location" in result:
-            if tool_name == "find_minimum":
-                self.context["min_location"] = result["location"]
-            elif tool_name == "find_maximum":
-                self.context["max_location"] = result["location"]
-            elif tool_name == "find_high_gradient":
-                self.context["high_gradient_location"] = result["location"]
+        elif "tube_name" in result and result["tube_name"] is not None:
+            # create_streamlines returns tube_name (the visible result)
+            self.context["last_created"] = result["tube_name"]
+        elif "contour_name" in result and result["contour_name"] is not None:
+            # create_vortex_isosurface returns contour_name
+            self.context["last_created"] = result["contour_name"]
+        elif "slice_name" in result and result["slice_name"] is not None:
+            # Slice created via base tools may return slice_name
+            self.context["last_created"] = result["slice_name"]
+        elif tool_name.startswith("base:create") or tool_name == "create":
+            # base:create sometimes returns name=None due to timing
+            # Fall back to getting active source name
+            from paraview import simple
+            active = simple.GetActiveSource()
+            if active:
+                for name, proxy in simple.GetSources().items():
+                    if proxy == active:
+                        self.context["last_created"] = name[0]
+                        break
+        
+        # Merge all result keys into context (except error and None values)
+        for key, value in result.items():
+            if key != "error" and value is not None:
+                self.context[key] = value
     
     def execute(self, query_key: str) -> list:
         """
@@ -209,11 +256,15 @@ class MockLLMExecutor:
             # Substitute placeholders
             resolved_kwargs = self._substitute_kwargs(kwargs)
             
-            # Get tool method
-            tool = getattr(self.mcp, tool_name, None)
-            if tool is None:
-                # Try base MCP
-                tool = getattr(self.mcp._base, tool_name, None)
+            # Handle base: prefix for base MCP tools
+            if tool_name.startswith("base:"):
+                actual_tool_name = tool_name[5:]  # Remove "base:" prefix
+                tool = getattr(self.mcp._base, actual_tool_name, None)
+            else:
+                # Get tool method from extended MCP first, then base
+                tool = getattr(self.mcp, tool_name, None)
+                if tool is None:
+                    tool = getattr(self.mcp._base, tool_name, None)
             
             if tool is None:
                 results.append((tool_name, resolved_kwargs, {"error": f"Tool not found: {tool_name}"}))
