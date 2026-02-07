@@ -1,15 +1,15 @@
-#!/usr/bin/env pvpython
 """
 E2E tests with mock or real LLM.
 
 Usage:
     pvpython test_e2e.py              # Mock mode (default, fast, free)
-    pvpython test_e2e.py --real       # Real LLM mode (single-shot, ~30s)
+    pvpython test_e2e.py --real       # Real LLM mode (uses OpenAI assistant)
     pvpython test_e2e.py --mock       # Explicit mock mode
 """
 
 import sys
 sys.path.insert(0, "/Users/jeff.lee/gitsync/paraview_llm/src")
+sys.path.insert(0, "/Users/jeff.lee/gitsync/trame-llm/src")
 
 import argparse
 from paraview import simple
@@ -24,7 +24,7 @@ args, _ = parser.parse_known_args()
 USE_REAL_LLM = args.real and not args.mock
 
 print("=" * 60)
-print(f"E2E Test Suite - {'REAL LLM (single-shot)' if USE_REAL_LLM else 'MOCK LLM'}")
+print(f"E2E Test Suite - {'REAL LLM (assistant)' if USE_REAL_LLM else 'MOCK LLM'}")
 print("=" * 60)
 
 # Load data
@@ -77,6 +77,7 @@ QUERY_TEXT = {
     "lift_distribution": "show me the spanwise lift distribution",
     "max_velocity": "where is the maximum velocity",
     "wake_slice": "create a slice through the wake region",
+    "wake_streamlines": "show me streamlines in the wake",
     "vortices_q": "show me the vortices using Q-criterion",
     "vortices_lambda2": "visualize vortex cores using lambda2 method",
     "vortices_swirl": "show swirling strength in the flow",
@@ -86,8 +87,14 @@ QUERY_TEXT = {
 
 # Setup executor based on mode
 if USE_REAL_LLM:
-    from paraview_llm.single_shot import SingleShotExecutor
-    executor = SingleShotExecutor(extended_mcp, reader_name)
+    from paraview_llm.assistant import create_assistant
+    assistant = create_assistant(
+        base_mcp=base_mcp,
+        extended_mcp=extended_mcp,
+        provider="openai",
+        model="gpt-4o-mini",
+        data_source=reader_name
+    )
 else:
     from paraview_llm.mock_llm import MockLLMExecutor
     executor = MockLLMExecutor(extended_mcp, reader_name)
@@ -119,32 +126,32 @@ for i, query_key in enumerate(test_queries, 1):
     t0 = time.time()
     
     if USE_REAL_LLM:
-        # Single-shot LLM execution
+        # Real LLM execution using assistant
         query_text = QUERY_TEXT.get(query_key, query_key)
         print(f"Query: '{query_text}'")
         
         try:
-            tool_results = executor.execute(query_text)
+            result = assistant.execute(query_text)
+            print(f"Response: {result['response'][:100]}...")
             print("Tools executed:")
             has_error = False
-            for tool_name, kwargs, result in tool_results:
-                status = "✓" if "error" not in str(result) else "✗"
+            tool_results = []
+            for tool in result.get("tools", []):
+                tool_name = tool.get("tool", "unknown")
+                tool_result = tool.get("result", {})
+                status = "✓" if not isinstance(tool_result, dict) or "error" not in tool_result else "✗"
                 print(f"  {status} {tool_name}")
-                if "error" in str(result):
-                    print(f"      ERROR: {result.get('error', result)}")
+                if isinstance(tool_result, dict) and "error" in tool_result:
+                    print(f"      ERROR: {tool_result['error']}")
                     has_error = True
+                tool_results.append((tool_name, {}, tool_result))
         except Exception as e:
             print(f"ERROR: {e}")
             has_error = True
+            tool_results = []
     else:
         # Mock LLM execution
-        executor.context = {
-            "data_source": reader_name,
-            "last_created": None,
-            "min_location": None,
-            "max_location": None,
-            "high_gradient_location": None,
-        }
+        executor.context = {"data_source": reader_name}
         
         tool_results = executor.execute(query_key)
         
@@ -160,24 +167,40 @@ for i, query_key in enumerate(test_queries, 1):
     elapsed = time.time() - t0
     total_time += elapsed
     
-    # Save screenshot - use chart view if one was created, otherwise render view
-    all_views = simple.GetViews()
-    chart_view = None
-    for v in all_views:
-        vtype = str(type(v))
-        if 'RenderView' not in vtype and v != view:
-            chart_view = v
-            break
-    
-    screenshot_view = chart_view if chart_view else view
-    simple.Render(screenshot_view)
+    # Data-only workflows - save JSON instead of PNG
+    DATA_ONLY_WORKFLOWS = {"velocity_stats", "forces"}
     prefix = "real" if USE_REAL_LLM else "mock"
-    filename = f"output/{prefix}_{i:02d}_{query_key}.png"
     
-    if chart_view:
-        simple.SaveScreenshot(filename, screenshot_view, ImageResolution=[800, 400])
+    if query_key in DATA_ONLY_WORKFLOWS:
+        # Save data results to JSON
+        import json
+        filename = f"output/{prefix}_{i:02d}_{query_key}.json"
+        # Get the last result that has actual data
+        data_result = None
+        for tool_name, kwargs, result in tool_results:
+            if isinstance(result, dict) and "error" not in result:
+                data_result = result
+        if data_result:
+            with open(filename, 'w') as f:
+                json.dump(data_result, f, indent=2)
     else:
-        simple.SaveScreenshot(filename, screenshot_view, ImageResolution=[1024, 768])
+        # Visual workflows - save screenshot
+        all_views = simple.GetViews()
+        chart_view = None
+        for v in all_views:
+            vtype = str(type(v))
+            if 'RenderView' not in vtype and v != view:
+                chart_view = v
+                break
+        
+        screenshot_view = chart_view if chart_view else view
+        simple.Render(screenshot_view)
+        filename = f"output/{prefix}_{i:02d}_{query_key}.png"
+        
+        if chart_view:
+            simple.SaveScreenshot(filename, screenshot_view, ImageResolution=[800, 400])
+        else:
+            simple.SaveScreenshot(filename, screenshot_view, ImageResolution=[1024, 768])
     
     if has_error:
         results[query_key] = "FAILED"
@@ -186,16 +209,24 @@ for i, query_key in enumerate(test_queries, 1):
         results[query_key] = "PASSED"
         print(f"✓ PASSED ({elapsed:.1f}s) - saved {filename}")
 
+# Cleanup assistant if using real LLM
+if USE_REAL_LLM and hasattr(assistant, 'cleanup'):
+    try:
+        assistant.cleanup()
+    except:
+        pass
+
 # Summary
 print(f"\n{'=' * 60}")
 print("SUMMARY")
 print("=" * 60)
-for query_key in test_queries:
-    status = "✓" if results.get(query_key) == "PASSED" else "✗"
-    print(f"  {status} {query_key}")
+passed = sum(1 for r in results.values() if r == "PASSED")
+failed = sum(1 for r in results.values() if r == "FAILED")
+print(f"Total: {len(results)} tests, {passed} passed, {failed} failed")
+print(f"Time: {total_time:.1f}s total, {total_time/len(results):.1f}s avg")
 
-passed = len([r for r in results.values() if r == "PASSED"])
-print(f"\nPassed: {passed}/{len(test_queries)}")
-print(f"Total time: {total_time:.1f}s")
-print(f"Mode: {'REAL LLM (single-shot)' if USE_REAL_LLM else 'MOCK LLM'}")
+for key, result in results.items():
+    status = "✓" if result == "PASSED" else "✗"
+    print(f"  {status} {key}")
+
 print("=" * 60)

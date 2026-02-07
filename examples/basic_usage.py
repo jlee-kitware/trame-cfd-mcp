@@ -1,81 +1,61 @@
 """
-Example: Basic usage of the ParaView LLM Orchestrator
+Example: Basic usage of the ParaView LLM intent-based architecture
+
+Shows how the intent-based executor works:
+1. User query → LLM classifies intent
+2. Workflow lookup from predefined WORKFLOWS
+3. Deterministic tool execution
 
 Run this example:
     python examples/basic_usage.py
 """
 
-from paraview_llm import Orchestrator
-
-
-class MockMCPClient:
-    """Mock MCP client for testing without ParaView"""
-    
-    def available_fields(self):
-        return {
-            "U": "POINTS",
-            "p": "POINTS", 
-            "T": "POINTS",
-        }
+from paraview_llm import WORKFLOWS
 
 
 def main():
-    # Initialize orchestrator with mock client (no execution)
-    # Pass mcp_client=None to get tool calls without executing
-    orchestrator = Orchestrator(mcp_client=None)
-    
-    # Manually inject mock field data for resolution
-    mock_fields = {"U": "POINTS", "p": "POINTS", "T": "POINTS"}
-    
     print("=" * 60)
-    print("Query: 'characterize flowfield'")
+    print("ParaView LLM - Intent-Based Architecture")
     print("=" * 60)
     
-    # Run pipeline manually to show each step
-    from paraview_llm import (
-        resolve_fields, 
-        select_available_methods,
-        build_llm_context,
-        call_llm,
-        validate_llm_response,
-        compile_to_tool_calls,
-    )
+    # Show available workflows (the ontology)
+    print(f"\nAvailable workflows ({len(WORKFLOWS)}):")
+    for name, info in WORKFLOWS.items():
+        print(f"  - {name}: {info['description']}")
     
-    ontology = orchestrator.ontology
+    print("\n" + "=" * 60)
+    print("Example workflow: vortices_q")
+    print("=" * 60)
     
-    # Step 1: Resolve fields
-    bindings, unresolved = resolve_fields(ontology, mock_fields)
-    print(f"\n[1] Resolved bindings: {bindings}")
-    print(f"    Unresolved: {unresolved}")
+    # Show a workflow's tool sequence
+    workflow = WORKFLOWS["vortices_q"]
+    print(f"\nDescription: {workflow['description']}")
+    print(f"\nTool sequence:")
+    for i, (tool, args) in enumerate(workflow["sequence"], 1):
+        args_str = ", ".join(f"{k}={v}" for k, v in args.items())
+        print(f"  {i}. {tool}({args_str})")
     
-    # Step 2: Select available methods
-    available, unavailable = select_available_methods(ontology, bindings)
-    print(f"\n[2] Available methods: {available}")
-    print(f"    Unavailable: {unavailable}")
-    
-    # Step 3: Build LLM context
-    context = build_llm_context(
-        user_query="characterize flowfield",
-        ontology=ontology,
-        bindings=bindings,
-        available_methods=available
-    )
-    print(f"\n[3] LLM context built ({len(context)} chars)")
-    
-    # Step 4: Call LLM (will use mock if no API key)
-    llm_response = call_llm(context)
-    print(f"\n[4] LLM response: {llm_response}")
-    
-    # Step 5: Validate
-    is_valid, errors = validate_llm_response(llm_response, ontology, available)
-    print(f"\n[5] Valid: {is_valid}, Errors: {errors}")
-    
-    # Step 6: Compile to tool calls
-    if is_valid:
-        tool_calls = compile_to_tool_calls(llm_response, ontology, bindings)
-        print(f"\n[6] Compiled {len(tool_calls)} tool calls:")
-        for i, tc in enumerate(tool_calls, 1):
-            print(f"    {i}. {tc['tool']}({tc['args']})")
+    print("\n" + "=" * 60)
+    print("How it works")
+    print("=" * 60)
+    print("""
+1. User: "show me the vortices using Q-criterion"
+   
+2. LLM classifies intent:
+   {"workflow": "vortices_q"}
+   
+3. Lookup WORKFLOWS["vortices_q"] → predefined tool sequence
+   
+4. Execute tools deterministically:
+   - hide_all()
+   - show_data_context(proxy_name="...", opacity=0.15)
+   - create_vortex_isosurface(method="q_criterion", proxy_name="...")
+   - focus_on(proxy_name="{last_created}")
+   - set_streamwise_view(proxy_name="{last_created}")
+
+The LLM's only job is to classify intent into one of the
+predefined workflows. All tool sequencing is deterministic.
+""")
 
 
 if __name__ == "__main__":
