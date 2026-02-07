@@ -92,6 +92,34 @@ class ExtendedParaViewMCP:
         # Fallback: return first pattern as best guess
         return patterns[0]
     
+    def _get_leaf_data(self, data):
+        """
+        Get first leaf dataset from potentially nested multiblock data.
+        
+        Args:
+            data: VTK data object (may be multiblock)
+            
+        Returns:
+            First non-multiblock dataset found, or None
+        """
+        if data is None:
+            return None
+            
+        # If not multiblock, return as-is
+        if not data.IsA("vtkMultiBlockDataSet"):
+            return data
+        
+        # Recursively search blocks
+        n_blocks = data.GetNumberOfBlocks()
+        for i in range(n_blocks):
+            block = data.GetBlock(i)
+            if block is not None:
+                result = self._get_leaf_data(block)
+                if result is not None:
+                    return result
+        
+        return None
+    
     def _get_available_fields(self, proxy) -> dict:
         """
         Get available fields and their types from proxy.
@@ -101,13 +129,11 @@ class ExtendedParaViewMCP:
         """
         data = proxy.GetClientSideObject().GetOutput()
         
-        # Handle multiblock
-        if data.IsA("vtkMultiBlockDataSet"):
-            block = data.GetBlock(0)
-            while block and block.IsA("vtkMultiBlockDataSet"):
-                block = block.GetBlock(0)
-            if block:
-                data = block
+        # Handle multiblock - get first leaf
+        data = self._get_leaf_data(data)
+        
+        if data is None:
+            return {"all_fields": [], "resolved": {}}
         
         result = {"all_fields": [], "resolved": {}}
         
@@ -133,22 +159,32 @@ class ExtendedParaViewMCP:
         
         # Add our tools to the base tools
         extended_tools = [
+            # Data validation and characterization (call first!)
+            self.characterize_dataset,
+            self.ensure_velocity_vector,
+            self.validate_for_analysis,
+            # Query and selection
             self.query_select,
             self.find_by_query,
+            self.get_selection_info,
+            # Field analysis
             self.find_minimum,
             self.find_maximum,
             self.find_high_gradient,
             self.field_statistics,
             self.field_histogram,
+            # Force computation
             self.compute_forces,
+            # Charts
             self.create_histogram_chart,
             self.create_force_distribution_chart,
-            self.get_selection_info,
-            self.create_streamlines,
+            # Visualization
             self.create_vortex_isosurface,
-            self.create_slice,
-            self.set_view,
+            # Flow detection
             self.detect_streamwise_direction,
+            self.detect_wake_region,
+            # Camera/view control
+            self.set_view,
             self.set_streamwise_view,
             self.hide_all,
             self.show_data_context,
@@ -160,38 +196,589 @@ class ExtendedParaViewMCP:
                 
                 Additional CFD tools (always specify proxy_name for explicit input):
                 
+                DATA VALIDATION (call first with new datasets!):
+                - characterize_dataset: Analyze CFD data to determine simulation type, available fields,
+                  and applicable analysis tools. Returns incompressible/compressible, turbulent/laminar,
+                  resolved field mappings, and recommendations.
+                - ensure_velocity_vector: Create 3-component velocity vector from u,v,w components.
+                  Required before vortex detection or streamlines if velocity is stored as components.
+                - validate_for_analysis: Check if dataset has required fields for specific analysis
+                  (vortex, forces, wake, streamlines). Returns missing fields and suggestions.
+                
                 ANALYSIS (return data, no visualization):
                 - find_minimum: Find location of minimum field value (stagnation points)
                 - find_maximum: Find location of maximum field value (freestream)
                 - find_high_gradient: Find max gradient location (shear layers, wakes)
                 - find_by_query: Find centroid of points matching a query expression
                 - field_statistics: Get min/max/mean/std of a field
-                - query_select: Count points/cells matching expression (analysis only, not for visualization)
+                - query_select: Count points/cells matching expression (analysis only)
                 - get_selection_info: Get info about current selection
+                - detect_wake_region: Find wake using velocity deficit criterion
+                - detect_streamwise_direction: Detect principal flow direction from velocity
+                - compute_forces: Integrate pressure for drag/lift coefficients
                 
-                VISUALIZATION (create geometry, then use focus_on to focus camera):
-                - create_streamlines: Create streamlines at a location
-                - create_slice: Create slice plane with camera normal to it (preferred for slices!)
-                    normal="x", "y", or "z" - slice and camera will be perpendicular
+                VISUALIZATION:
                 - create_vortex_isosurface: Visualize vortical structures. Methods:
                     method="q_criterion" (default): Q = 0.5*(||Ω||² - ||S||²), positive Q = vortex
                     method="vorticity": Vorticity magnitude, includes shear layers
-                    method="lambda2": Second eigenvalue of S²+Ω², negative λ2 = vortex core (most accurate)
-                    method="swirling_strength": Imaginary eigenvalues of ∇u, good for compressible
+                    method="lambda2": Second eigenvalue of S²+Ω², negative λ2 = vortex core
+                    method="swirling_strength": Imaginary eigenvalues of ∇u
                     method="helicity": Normalized helicity |Hn|, identifies helical vortices
                 
-                VISIBILITY CONTROL (use before visualizations for clean views):
+                For Slice and StreamTracer, use base tools (see ontology recipes):
+                - base__create("Slice") then configure with update_sub_property
+                - base__create("StreamTracer") then configure seed with update_sub_property
+                
+                VISIBILITY CONTROL:
                 - hide_all: Hide all proxies - call first for clean slate
-                - show_data_context: Show base data as transparent context geometry
-                  Typical workflow: hide_all() → show_data_context(opacity=0.15) → create_visualization → focus_on
+                - show_data_context: Extract and show body surface as semi-transparent gray context.
+                  For volumetric CFD data, extracts the external surface and clips away farfield 
+                  domain boundaries, leaving just the body shape visible as context geometry.
+                  Always call after hide_all() and before creating visualizations.
+                  Workflow: hide_all() → show_data_context() → create filter → focus_on(filter_name)
                 
                 CAMERA CONTROL:
-                - set_view: Set camera to standard view (front/back/top/side/iso) and focus on proxy
-                  Use this for slices - view should be NORMAL to slice plane
+                - set_view: Set camera to standard view (front/back/top/side/iso)
+                - set_streamwise_view: Auto-detect flow direction and set optimal view
             """,
             "tools": base_mcp["tools"] + extended_tools,
             "resources": base_mcp.get("resources", {}),
         }
+    
+    # =========================================================================
+    # DATA VALIDATION AND CHARACTERIZATION
+    # =========================================================================
+    
+    # Cache for body bounds to avoid repeated ExtractSurface + Clip creation
+    _body_bounds_cache = {}
+    
+    def _get_body_bounds(self, proxy, clip_margin: float = 0.05):
+        """
+        Estimate body geometry bounds by clipping away farfield domain faces.
+        
+        Results are cached per proxy to avoid creating temporary filters on
+        every call. Call _invalidate_body_bounds() if the data changes.
+        
+        Args:
+            proxy: ParaView proxy for the data source
+            clip_margin: Fraction of domain to clip inward (default 0.05 = 5%)
+            
+        Returns:
+            Tuple of (body_bounds, body_diag) where body_bounds is (xmin,xmax,ymin,ymax,zmin,zmax)
+        """
+        # Check cache
+        cache_key = id(proxy)
+        if cache_key in self._body_bounds_cache:
+            return self._body_bounds_cache[cache_key]
+        
+        domain_bounds = proxy.GetDataInformation().GetBounds()
+        domain_diag = float(np.sqrt(
+            (domain_bounds[1] - domain_bounds[0])**2 +
+            (domain_bounds[3] - domain_bounds[2])**2 +
+            (domain_bounds[5] - domain_bounds[4])**2
+        ))
+        
+        surface = None
+        clip = None
+        try:
+            # Extract external surface
+            surface = simple.ExtractSurface(Input=proxy)
+            simple.UpdatePipeline(proxy=surface)
+            
+            # Clip away farfield faces
+            dx = (domain_bounds[1] - domain_bounds[0]) * clip_margin
+            dy = (domain_bounds[3] - domain_bounds[2]) * clip_margin
+            dz = (domain_bounds[5] - domain_bounds[4]) * clip_margin
+            
+            clip = simple.Clip(Input=surface)
+            clip.ClipType = 'Box'
+            clip.ClipType.Bounds = [
+                domain_bounds[0] + dx, domain_bounds[1] - dx,
+                domain_bounds[2] + dy, domain_bounds[3] - dy,
+                domain_bounds[4] + dz, domain_bounds[5] - dz
+            ]
+            clip.InsideOut = 1
+            simple.UpdatePipeline(proxy=clip)
+            
+            body_bounds = clip.GetDataInformation().GetBounds()
+            
+            # Sanity check — if clip produced nothing, fall back
+            num_cells = clip.GetDataInformation().GetNumberOfCells()
+            if num_cells == 0:
+                result = (domain_bounds, domain_diag)
+            else:
+                body_diag = float(np.sqrt(
+                    (body_bounds[1] - body_bounds[0])**2 +
+                    (body_bounds[3] - body_bounds[2])**2 +
+                    (body_bounds[5] - body_bounds[4])**2
+                ))
+                result = (body_bounds, body_diag)
+            
+            self._body_bounds_cache[cache_key] = result
+            return result
+            
+        except Exception:
+            result = (domain_bounds, domain_diag)
+            self._body_bounds_cache[cache_key] = result
+            return result
+        finally:
+            # Always clean up temporary filters — delete child before parent
+            if clip is not None:
+                try:
+                    simple.Delete(clip)
+                except:
+                    pass
+            if surface is not None:
+                try:
+                    simple.Delete(surface)
+                except:
+                    pass
+    
+    def _invalidate_body_bounds(self):
+        """Clear cached body bounds (call if data changes)."""
+        self._body_bounds_cache.clear()
+    
+    def characterize_dataset(self, proxy_name: str = None) -> dict:
+        """
+        Analyze CFD dataset to characterize simulation type and available physics.
+        
+        Call this FIRST when working with a new dataset to understand:
+        - What type of CFD simulation (incompressible, compressible, turbulent, etc.)
+        - What fields are available for analysis
+        - What analysis tools are applicable
+        - Recommended visualization approaches
+        
+        Args:
+            proxy_name: Data source name, or None for active source
+            
+        Returns:
+            Dict with simulation characteristics, available fields, and recommendations
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            simple.UpdatePipeline(proxy=proxy)
+            
+            # Get data object - handle multiblock
+            raw_data = proxy.GetClientSideObject().GetOutput()
+            data = self._get_leaf_data(raw_data)
+            
+            if data is None:
+                return {"error": "No data found in dataset"}
+            
+            # Collect all arrays
+            point_arrays = {}
+            cell_arrays = {}
+            
+            pd = data.GetPointData()
+            for i in range(pd.GetNumberOfArrays()):
+                arr = pd.GetArray(i)
+                name = arr.GetName()
+                point_arrays[name] = {
+                    "components": arr.GetNumberOfComponents(),
+                    "range": [arr.GetRange(c) for c in range(arr.GetNumberOfComponents())]
+                }
+            
+            cd = data.GetCellData()
+            for i in range(cd.GetNumberOfArrays()):
+                arr = cd.GetArray(i)
+                name = arr.GetName()
+                cell_arrays[name] = {
+                    "components": arr.GetNumberOfComponents(),
+                    "range": [arr.GetRange(c) for c in range(arr.GetNumberOfComponents())]
+                }
+            
+            # Resolve semantic fields
+            all_names = list(point_arrays.keys()) + list(cell_arrays.keys())
+            resolved = {}
+            for field_type, patterns in FIELD_TYPE_PATTERNS.items():
+                for name in all_names:
+                    name_lower = name.lower()
+                    for pattern in patterns:
+                        if pattern.lower() == name_lower or pattern.lower() in name_lower:
+                            resolved[field_type] = name
+                            break
+                    if field_type in resolved:
+                        break
+            
+            # Determine simulation characteristics
+            characteristics = {
+                "has_velocity": "velocity" in resolved,
+                "has_pressure": "pressure" in resolved,
+                "has_density": "density" in resolved,
+                "has_temperature": "temperature" in resolved,
+                "has_mach": "mach" in resolved,
+                "has_turbulence": "turbulent_kinetic_energy" in resolved,
+            }
+            
+            # Infer simulation type
+            sim_type = "unknown"
+            if characteristics["has_velocity"]:
+                if characteristics["has_mach"] or characteristics["has_density"]:
+                    sim_type = "compressible"
+                else:
+                    sim_type = "incompressible"
+                    
+                if characteristics["has_turbulence"]:
+                    sim_type += "_turbulent"
+                else:
+                    sim_type += "_laminar_or_rans"
+            
+            # Check for velocity components (u, v, w separately)
+            velocity_components = []
+            for name in all_names:
+                name_lower = name.lower()
+                if name_lower in ['u', 'v', 'w'] or name in ['u', 'v', 'w']:
+                    velocity_components.append(name)
+            
+            # Get geometry info
+            bounds = data.GetBounds()
+            num_points = data.GetNumberOfPoints()
+            num_cells = data.GetNumberOfCells()
+            
+            # Recommendations based on available data
+            recommendations = []
+            applicable_tools = []
+            
+            if characteristics["has_velocity"]:
+                recommendations.append("Velocity field available - can compute vorticity, Q-criterion, streamlines")
+                applicable_tools.extend([
+                    "create_vortex_isosurface",
+                    "detect_wake_region",
+                    "detect_streamwise_direction",
+                    "find_minimum (stagnation points)",
+                    "find_maximum (freestream velocity)"
+                ])
+            elif len(velocity_components) >= 3:
+                recommendations.append(f"Velocity components found ({velocity_components}) - use ensure_velocity_vector to combine")
+                
+            if characteristics["has_pressure"]:
+                recommendations.append("Pressure field available - can compute forces, Cp distribution")
+                applicable_tools.extend([
+                    "compute_forces",
+                    "create_force_distribution_chart"
+                ])
+                
+            if not characteristics["has_velocity"] and not velocity_components:
+                recommendations.append("WARNING: No velocity field found - vortex/wake analysis not possible")
+            
+            return {
+                "simulation_type": sim_type,
+                "characteristics": characteristics,
+                "resolved_fields": resolved,
+                "velocity_components": velocity_components,
+                "point_arrays": list(point_arrays.keys()),
+                "cell_arrays": list(cell_arrays.keys()),
+                "geometry": {
+                    "bounds": list(bounds),
+                    "num_points": num_points,
+                    "num_cells": num_cells
+                },
+                "recommendations": recommendations,
+                "applicable_tools": applicable_tools
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def get_geometry_info(self, proxy_name: str = None) -> dict:
+        """
+        Get geometric information about a dataset: bounds, center, and extents.
+        
+        Use this to determine where to position slices, clips, or other filters.
+        For example, to create a slice through the center of the data:
+        1. Call get_geometry_info() to get the center
+        2. Use the center as the slice origin
+        
+        Args:
+            proxy_name: Data source name, or None for active source
+            
+        Returns:
+            Dict with:
+            - bounds: [xmin, xmax, ymin, ymax, zmin, zmax]
+            - center: [cx, cy, cz] - geometric center
+            - extents: [dx, dy, dz] - size in each direction
+            - longest_axis: "x", "y", or "z" - direction of largest extent
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            simple.UpdatePipeline(proxy=proxy)
+            di = proxy.GetDataInformation()
+            bounds = list(di.GetBounds())
+            
+            # Calculate center
+            cx = (bounds[0] + bounds[1]) / 2
+            cy = (bounds[2] + bounds[3]) / 2
+            cz = (bounds[4] + bounds[5]) / 2
+            
+            # Calculate extents
+            dx = bounds[1] - bounds[0]
+            dy = bounds[3] - bounds[2]
+            dz = bounds[5] - bounds[4]
+            
+            # Find longest axis
+            extents = {"x": dx, "y": dy, "z": dz}
+            longest_axis = max(extents, key=extents.get)
+            
+            return {
+                "bounds": bounds,
+                "center": [cx, cy, cz],
+                "extents": [dx, dy, dz],
+                "longest_axis": longest_axis,
+                "x_range": [bounds[0], bounds[1]],
+                "y_range": [bounds[2], bounds[3]],
+                "z_range": [bounds[4], bounds[5]],
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def ensure_velocity_vector(
+        self, 
+        proxy_name: str = None,
+        output_name: str = "Velocity",
+        u_component: str = None,
+        v_component: str = None, 
+        w_component: str = None
+    ) -> dict:
+        """
+        Ensure a 3-component velocity vector exists, creating it from components if needed.
+        
+        Many CFD solvers output velocity as separate u, v, w scalar arrays.
+        This tool combines them into a single vector for use with:
+        - Streamlines (StreamTracer)
+        - Vortex detection (Q-criterion, vorticity)
+        - Wake analysis
+        
+        Args:
+            proxy_name: Data source name, or None for active source
+            output_name: Name for the combined velocity vector (default: "Velocity")
+            u_component: Name of u (x-velocity) array, auto-detected if None
+            v_component: Name of v (y-velocity) array, auto-detected if None
+            w_component: Name of w (z-velocity) array, auto-detected if None
+            
+        Returns:
+            Dict with status, velocity array name, and calculator proxy name if created
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            simple.UpdatePipeline(proxy=proxy)
+            
+            # Get available fields
+            fields = self._get_available_fields(proxy)
+            all_fields = fields["all_fields"]
+            
+            # Check if velocity vector already exists
+            if "velocity" in fields["resolved"]:
+                vel_name = fields["resolved"]["velocity"]
+                # Verify it's 3-component
+                raw_data = proxy.GetClientSideObject().GetOutput()
+                data = self._get_leaf_data(raw_data)
+                
+                if data is None:
+                    return {"error": "No data found in dataset"}
+                
+                arr = data.GetPointData().GetArray(vel_name)
+                if arr is None:
+                    arr = data.GetCellData().GetArray(vel_name)
+                
+                if arr and arr.GetNumberOfComponents() == 3:
+                    return {
+                        "status": "exists",
+                        "velocity_array": vel_name,
+                        "message": f"3-component velocity vector '{vel_name}' already exists"
+                    }
+            
+            # Auto-detect component names if not provided
+            if u_component is None or v_component is None or w_component is None:
+                # Common patterns for velocity components
+                u_patterns = ['u', 'U', 'Ux', 'VelocityX', 'velocity_x', 'ux']
+                v_patterns = ['v', 'V', 'Uy', 'VelocityY', 'velocity_y', 'uy', 'vy']
+                w_patterns = ['w', 'W', 'Uz', 'VelocityZ', 'velocity_z', 'uz', 'wz']
+                
+                def find_component(patterns):
+                    for p in patterns:
+                        if p in all_fields:
+                            return p
+                        # Case-insensitive match
+                        for f in all_fields:
+                            if f.lower() == p.lower():
+                                return f
+                    return None
+                
+                if u_component is None:
+                    u_component = find_component(u_patterns)
+                if v_component is None:
+                    v_component = find_component(v_patterns)
+                if w_component is None:
+                    w_component = find_component(w_patterns)
+            
+            # Check all components found
+            missing = []
+            if u_component is None:
+                missing.append("u (x-velocity)")
+            elif u_component not in all_fields:
+                missing.append(f"u component '{u_component}'")
+                
+            if v_component is None:
+                missing.append("v (y-velocity)")
+            elif v_component not in all_fields:
+                missing.append(f"v component '{v_component}'")
+                
+            if w_component is None:
+                missing.append("w (z-velocity)")
+            elif w_component not in all_fields:
+                missing.append(f"w component '{w_component}'")
+            
+            if missing:
+                return {
+                    "error": f"Cannot build velocity vector - missing: {missing}",
+                    "available_fields": all_fields,
+                    "hint": "Provide u_component, v_component, w_component explicitly"
+                }
+            
+            # Create Calculator to combine components
+            calc = simple.Calculator(Input=proxy)
+            calc.ResultArrayName = output_name
+            calc.ResultArrayType = 'Float'
+            # ParaView Calculator syntax for building vector
+            calc.Function = f"{u_component}*iHat + {v_component}*jHat + {w_component}*kHat"
+            
+            simple.UpdatePipeline(proxy=calc)
+            
+            # Get the calculator proxy name
+            calc_name = None
+            for name, p in simple.GetSources().items():
+                if p == calc:
+                    calc_name = name[0]
+                    break
+            
+            return {
+                "status": "created",
+                "velocity_array": output_name,
+                "calculator_proxy": calc_name,
+                "components_used": {
+                    "u": u_component,
+                    "v": v_component,
+                    "w": w_component
+                },
+                "message": f"Created velocity vector '{output_name}' from ({u_component}, {v_component}, {w_component})"
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def validate_for_analysis(self, analysis_type: str, proxy_name: str = None) -> dict:
+        """
+        Check if a dataset has the required fields for a specific analysis type.
+        
+        Use this before running analysis to get clear error messages about
+        missing fields or prerequisites.
+        
+        Args:
+            analysis_type: One of:
+                - "vortex": Q-criterion, vorticity, lambda2 (requires velocity)
+                - "forces": Drag/lift computation (requires pressure, surface mesh)
+                - "wake": Wake detection (requires velocity)
+                - "streamlines": Streamline tracing (requires velocity vector)
+            proxy_name: Data source name, or None for active source
+            
+        Returns:
+            Dict with validation status, missing requirements, and suggestions
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            # Get dataset characteristics
+            char = self.characterize_dataset(proxy_name)
+            if "error" in char:
+                return char
+            
+            requirements = {
+                "vortex": {
+                    "required": ["velocity"],
+                    "description": "Vortex detection (Q-criterion, vorticity, lambda2)"
+                },
+                "forces": {
+                    "required": ["pressure"],
+                    "description": "Force computation (drag, lift)"
+                },
+                "wake": {
+                    "required": ["velocity"],
+                    "description": "Wake detection and analysis"
+                },
+                "streamlines": {
+                    "required": ["velocity"],
+                    "description": "Streamline visualization"
+                }
+            }
+            
+            if analysis_type not in requirements:
+                return {
+                    "error": f"Unknown analysis type: {analysis_type}",
+                    "valid_types": list(requirements.keys())
+                }
+            
+            req = requirements[analysis_type]
+            resolved = char["resolved_fields"]
+            velocity_components = char.get("velocity_components", [])
+            
+            missing = []
+            suggestions = []
+            
+            for field in req["required"]:
+                if field not in resolved:
+                    missing.append(field)
+                    
+                    # Provide helpful suggestions
+                    if field == "velocity" and len(velocity_components) >= 3:
+                        suggestions.append(
+                            f"Velocity components found: {velocity_components}. "
+                            "Use ensure_velocity_vector() to combine them."
+                        )
+                    elif field == "velocity":
+                        suggestions.append(
+                            f"No velocity field found. Available arrays: {char['point_arrays']}"
+                        )
+                    elif field == "pressure":
+                        suggestions.append(
+                            f"No pressure field found. Available arrays: {char['point_arrays']}"
+                        )
+            
+            if missing:
+                return {
+                    "valid": False,
+                    "analysis_type": analysis_type,
+                    "description": req["description"],
+                    "missing_fields": missing,
+                    "suggestions": suggestions,
+                    "available_fields": char["resolved_fields"]
+                }
+            
+            return {
+                "valid": True,
+                "analysis_type": analysis_type,
+                "description": req["description"],
+                "resolved_fields": {f: resolved[f] for f in req["required"]},
+                "ready": True
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    # =========================================================================
+    # QUERY AND SELECTION TOOLS
+    # =========================================================================
     
     def query_select(self, query: str, field_type: str = "POINT", proxy_name: str = None) -> dict:
         """
@@ -415,89 +1002,6 @@ class ExtendedParaViewMCP:
             simple.ClearSelection()
             simple.SetActiveSource(original_active)
             return {"error": str(e), "query": query}
-    
-    def create_streamlines(
-        self, 
-        center: list[float], 
-        radius: float = 0.1, 
-        num_points: int = 50,
-        color_field: str = "Velocity",
-        proxy_name: str = None
-    ) -> dict:
-        """
-        Create streamlines seeded at a point cloud location.
-        
-        CFD convenience tool that creates a fully configured StreamTracer
-        in one call (vs 6+ separate tool calls for create, seed config, coloring).
-        
-        After creation, use focus_on(name) to focus camera on the streamlines.
-        
-        Args:
-            center: [x, y, z] seed center location
-            radius: Radius of the point cloud seed
-            num_points: Number of seed points
-            color_field: Field to color by (default: Velocity)
-            proxy_name: Source proxy name (required for explicit input connection)
-            
-        Returns:
-            Dict with status and streamtracer name
-        """
-        proxy = self._get_proxy(proxy_name)
-        if proxy is None:
-            return {"error": "No proxy found"}
-        
-        try:
-            # Create StreamTracer with proper input
-            stream = simple.StreamTracer(Input=proxy, SeedType="Point Cloud")
-            stream.Vectors = ['POINTS', 'Velocity']
-            stream.IntegrationDirection = 'BOTH'
-            stream.MaximumStreamlineLength = 2.0
-            
-            # Configure seed
-            stream.SeedType.Center = center
-            stream.SeedType.Radius = radius
-            stream.SeedType.NumberOfPoints = num_points
-            
-            simple.UpdatePipeline(proxy=stream)
-            
-            # Show and color
-            view = simple.GetActiveView()
-            if view is None:
-                view = simple.CreateRenderView()
-            
-            display = simple.Show(stream, view)
-            
-            # Color by field
-            resolved_field = self._resolve_field_name(color_field, stream)
-            try:
-                simple.ColorBy(display, ('POINTS', resolved_field))
-                display.SetScalarBarVisibility(view, True)
-            except:
-                pass  # Coloring may fail if field not present
-            
-            # Get the name ParaView assigned
-            stream_name = None
-            for name, p in simple.GetSources().items():
-                if p == stream:
-                    stream_name = name[0]
-                    break
-            
-            # Focus camera on the streamlines
-            if stream_name:
-                self.base_mcp.focus_on(stream_name)
-            
-            simple.Render(view)
-            
-            return {
-                "status": "created",
-                "name": stream_name,
-                "center": center,
-                "radius": radius,
-                "num_points": num_points
-            }
-        except Exception as e:
-            return {"error": str(e)}
-    
     def find_minimum(self, field: str, proxy_name: str = None, exclude_boundaries: bool = True) -> dict:
         """
         Find location where a field has minimum value/magnitude.
@@ -563,7 +1067,8 @@ class ExtendedParaViewMCP:
         value = float(mag[idx])
         
         return {
-            "location": location,
+            "min_location": location,  # Specific key for workflow chaining
+            "location": location,       # Generic for compatibility
             "value": value,
             "field": field_name,
             "type": "minimum"
@@ -603,7 +1108,8 @@ class ExtendedParaViewMCP:
         value = float(mag[idx])
         
         return {
-            "location": location,
+            "max_location": location,  # Specific key for workflow chaining
+            "location": location,       # Generic for compatibility
             "value": value,
             "field": field_name,
             "type": "maximum"
@@ -688,7 +1194,8 @@ class ExtendedParaViewMCP:
             simple.SetActiveSource(original_active)
             
             return {
-                "location": location,
+                "high_gradient_location": location,  # Specific key for workflow chaining
+                "location": location,                 # Generic for compatibility
                 "gradient_magnitude": value,
                 "field": resolved_field,
                 "type": "high_gradient"
@@ -1303,6 +1810,22 @@ class ExtendedParaViewMCP:
             if merge_input != proxy:
                 simple.Delete(merge_input)
             
+            # Find key statistics from the distribution
+            peak_bin = int(np.argmax(np.abs(binned_force)))
+            peak_position = float(bin_centers[peak_bin])
+            peak_force = float(binned_force[peak_bin])
+            
+            # Find where 50% of total force is reached
+            total = accumulated[-1]
+            half_idx = int(np.searchsorted(np.abs(accumulated), np.abs(total) * 0.5))
+            half_position = float(bin_centers[min(half_idx, num_bins-1)])
+            
+            # Find steepest gradient (biggest change between bins)
+            gradients = np.diff(accumulated)
+            steepest_bin = int(np.argmax(np.abs(gradients)))
+            steepest_position = float(bin_centers[steepest_bin])
+            steepest_rate = float(gradients[steepest_bin])
+            
             return {
                 "status": "created",
                 "chart_type": "force_distribution",
@@ -1312,6 +1835,18 @@ class ExtendedParaViewMCP:
                 "total_force": float(accumulated[-1]),
                 "num_body_cells": int(body_mask.sum()),
                 "num_bins": num_bins,
+                # Distribution analysis
+                "peak_section": {
+                    "position": peak_position,
+                    "force": peak_force,
+                    "description": f"Highest sectional force at position {peak_position:.3f}"
+                },
+                "half_force_position": half_position,
+                "steepest_buildup": {
+                    "position": steepest_position,
+                    "rate": steepest_rate,
+                    "description": f"Fastest force buildup at position {steepest_position:.3f}"
+                },
             }
             
         except Exception as e:
@@ -1481,13 +2016,35 @@ grad_vtk = inp.PointData.GetArray("VelocityGradient")
 n = grad_vtk.GetNumberOfTuples()
 G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
 
-# Compute lambda2: second eigenvalue of S^2 + Omega^2 (vectorized)
-S = 0.5 * (G + np.transpose(G, (0, 2, 1)))
-Omega = 0.5 * (G - np.transpose(G, (0, 2, 1)))
-M = np.matmul(S, S) + np.matmul(Omega, Omega)
-eigvals = np.linalg.eigvalsh(M)
-lambda2 = np.ascontiguousarray(eigvals[:, 1])
+# Initialize output array
+lambda2 = np.zeros(n, dtype=np.float64)
 
+# Find valid cells (no NaN/Inf in gradient)
+valid_mask = np.all(np.isfinite(G), axis=(1, 2))
+valid_indices = np.where(valid_mask)[0]
+
+if len(valid_indices) > 0:
+    G_valid = G[valid_indices]
+    
+    # Compute lambda2: second eigenvalue of S^2 + Omega^2 (vectorized)
+    S = 0.5 * (G_valid + np.transpose(G_valid, (0, 2, 1)))
+    Omega = 0.5 * (G_valid - np.transpose(G_valid, (0, 2, 1)))
+    M = np.matmul(S, S) + np.matmul(Omega, Omega)
+    
+    # Compute eigenvalues with error handling
+    try:
+        eigvals = np.linalg.eigvalsh(M)
+        lambda2[valid_indices] = eigvals[:, 1]
+    except np.linalg.LinAlgError:
+        # Fall back to per-cell computation
+        for i, idx in enumerate(valid_indices):
+            try:
+                eig = np.linalg.eigvalsh(M[i])
+                lambda2[idx] = eig[1]
+            except:
+                lambda2[idx] = 0.0
+
+lambda2 = np.ascontiguousarray(lambda2)
 arr = numpy_to_vtk(lambda2)
 arr.SetName("Lambda2")
 out.GetPointData().AddArray(arr)
@@ -1515,10 +2072,30 @@ grad_vtk = inp.PointData.GetArray("VelocityGradient")
 n = grad_vtk.GetNumberOfTuples()
 G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
 
-# Compute swirling strength: max imaginary eigenvalue of grad(u) (vectorized)
-eigvals = np.linalg.eigvals(G)
-swirl = np.ascontiguousarray(np.max(np.abs(eigvals.imag), axis=1))
+# Initialize output array
+swirl = np.zeros(n, dtype=np.float64)
 
+# Find valid cells (no NaN/Inf in gradient)
+valid_mask = np.all(np.isfinite(G), axis=(1, 2))
+valid_indices = np.where(valid_mask)[0]
+
+if len(valid_indices) > 0:
+    G_valid = G[valid_indices]
+    
+    # Compute swirling strength: max imaginary eigenvalue of grad(u) (vectorized)
+    try:
+        eigvals = np.linalg.eigvals(G_valid)
+        swirl[valid_indices] = np.max(np.abs(eigvals.imag), axis=1)
+    except np.linalg.LinAlgError:
+        # Fall back to per-cell computation
+        for i, idx in enumerate(valid_indices):
+            try:
+                eig = np.linalg.eigvals(G_valid[i])
+                swirl[idx] = np.max(np.abs(eig.imag))
+            except:
+                swirl[idx] = 0.0
+
+swirl = np.ascontiguousarray(swirl)
 arr = numpy_to_vtk(swirl)
 arr.SetName("SwirlingStrength")
 out.GetPointData().AddArray(arr)
@@ -1588,10 +2165,16 @@ out.GetPointData().AddArray(arr)
             contour.Isosurfaces = [threshold]
             simple.UpdatePipeline(proxy=contour)
             
-            # Show and color
+            # Show and color - ensure we have a RenderView
             view = simple.GetActiveView()
-            if view is None:
-                view = simple.CreateRenderView()
+            if view is None or not hasattr(view, 'ResetCamera'):
+                for v in simple.GetViews():
+                    if hasattr(v, 'ResetCamera'):
+                        view = v
+                        break
+                else:
+                    view = simple.CreateRenderView()
+                simple.SetActiveView(view)
             
             # Hide intermediate filters
             simple.Hide(merge, view)
@@ -1600,6 +2183,7 @@ out.GetPointData().AddArray(arr)
                 simple.Hide(contour_input, view)
             
             display = simple.Show(contour, view)
+            display.SetRepresentationType('Surface')
             
             # Color by field
             resolved_field = self._resolve_field_name(color_field, contour)
@@ -1636,101 +2220,6 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
     
-    def create_slice(
-        self,
-        origin: list[float] = None,
-        normal: str = "x",
-        color_field: str = "Velocity",
-        proxy_name: str = None
-    ) -> dict:
-        """
-        Create a slice plane and set camera to view it face-on.
-        
-        This is preferred over the generic 'create' tool for slices because
-        it automatically sets the camera normal to the slice plane.
-        
-        Args:
-            origin: [x, y, z] slice origin. If None, uses data center.
-            normal: Slice normal direction - "x", "y", or "z"
-            color_field: Field to color the slice by (default: Velocity)
-            proxy_name: Source proxy name (required for explicit input)
-            
-        Returns:
-            Dict with slice name and view direction
-        """
-        proxy = self._get_proxy(proxy_name)
-        if proxy is None:
-            return {"error": "No proxy found"}
-        
-        try:
-            # Get data bounds for default origin using ParaView's data information
-            simple.UpdatePipeline(proxy=proxy)
-            bounds = proxy.GetDataInformation().GetBounds()
-            
-            # Default origin is center of bounds
-            if origin is None:
-                origin = [
-                    (bounds[0] + bounds[1]) / 2,
-                    (bounds[2] + bounds[3]) / 2,
-                    (bounds[4] + bounds[5]) / 2
-                ]
-            
-            # Set normal vector based on direction
-            normal_lower = normal.lower()
-            if normal_lower in ("x", "+x", "-x"):
-                slice_normal = [1, 0, 0]
-                view_direction = "+x" if normal_lower != "-x" else "-x"
-            elif normal_lower in ("y", "+y", "-y"):
-                slice_normal = [0, 1, 0]
-                view_direction = "+y" if normal_lower != "-y" else "-y"
-            elif normal_lower in ("z", "+z", "-z"):
-                slice_normal = [0, 0, 1]
-                view_direction = "+z" if normal_lower != "-z" else "-z"
-            else:
-                return {"error": f"Invalid normal '{normal}'. Use 'x', 'y', or 'z'"}
-            
-            # Create slice
-            slice_filter = simple.Slice(Input=proxy)
-            slice_filter.SliceType = 'Plane'
-            slice_filter.SliceType.Origin = origin
-            slice_filter.SliceType.Normal = slice_normal
-            simple.UpdatePipeline(proxy=slice_filter)
-            
-            # Show and color
-            view = simple.GetActiveView()
-            if view is None:
-                view = simple.CreateRenderView()
-            
-            display = simple.Show(slice_filter, view)
-            
-            # Color by field
-            resolved_field = self._resolve_field_name(color_field, slice_filter)
-            try:
-                simple.ColorBy(display, ('POINTS', resolved_field))
-                display.SetScalarBarVisibility(view, True)
-            except:
-                pass
-            
-            # Get slice name
-            slice_name = None
-            for name, p in simple.GetSources().items():
-                if p == slice_filter:
-                    slice_name = name[0]
-                    break
-            
-            # Set view normal to slice plane
-            self.set_view(direction=view_direction, proxy_name=slice_name)
-            
-            return {
-                "status": "created",
-                "name": slice_name,
-                "origin": origin,
-                "normal": normal,
-                "view_direction": view_direction
-            }
-        except Exception as e:
-            return {"error": str(e)}
-    
     def set_view(
         self,
         direction: str = "iso",
@@ -1757,8 +2246,16 @@ out.GetPointData().AddArray(arr)
             Dict with camera settings applied
         """
         view = simple.GetActiveView()
-        if view is None:
-            view = simple.CreateRenderView()
+        
+        # Ensure we have a RenderView (not a chart view)
+        if view is None or not hasattr(view, 'ResetCamera'):
+            for v in simple.GetViews():
+                if hasattr(v, 'ResetCamera'):
+                    view = v
+                    break
+            else:
+                view = simple.CreateRenderView()
+            simple.SetActiveView(view)
         
         # Get proxy for bounds
         proxy = self._get_proxy(proxy_name)
@@ -1869,8 +2366,18 @@ out.GetPointData().AddArray(arr)
             # Weight by magnitude squared (emphasize high-speed regions)
             weights = mag.flatten() ** 2
             weighted_vel = vel * weights[:, np.newaxis]
-            avg_direction = np.sum(weighted_vel, axis=0) / np.sum(weights)
-            avg_direction = avg_direction / np.linalg.norm(avg_direction)
+            total_weight = np.sum(weights)
+            if total_weight < 1e-20:
+                if merge:
+                    simple.Delete(merge)
+                return {"error": "All velocity magnitudes near zero — cannot determine flow direction"}
+            avg_direction = np.sum(weighted_vel, axis=0) / total_weight
+            norm = np.linalg.norm(avg_direction)
+            if norm < 1e-20:
+                if merge:
+                    simple.Delete(merge)
+                return {"error": "Velocity directions cancel out — no dominant flow direction"}
+            avg_direction = avg_direction / norm
             
             if merge:
                 simple.Delete(merge)
@@ -1901,6 +2408,362 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
     
+    def detect_wake_region(
+        self, 
+        velocity_deficit: float = 0.5,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Detect wake region based on velocity deficit, constrained to downstream of body.
+        
+        Wake is identified as the region where velocity magnitude is less than 
+        a fraction of freestream velocity. To avoid including stagnation points
+        and boundary layers, the search is spatially clipped to the downstream
+        half of the domain (from 75% of body extent to the farfield exit).
+        
+        Uses detect_streamwise_direction to determine flow direction, then
+        _get_body_bounds to find the trailing edge location.
+        
+        Args:
+            velocity_deficit: Threshold as fraction of freestream (default 0.5 = 50%)
+                             Lower values find deeper wake regions
+            proxy_name: Data source
+            
+        Returns:
+            Dict with wake_centroid, wake_bounds, freestream_velocity, streamwise, trailing_edge_coord
+            
+        Example:
+            detect_wake_region()  # Find wake with 50% velocity deficit
+            detect_wake_region(velocity_deficit=0.3)  # Find deeper wake (30% deficit)
+            
+        Usage for streamline seeding:
+            wake = detect_wake_region()
+            create_streamlines(center=wake["wake_centroid"], ...)
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            # Get velocity statistics to determine freestream
+            stats = self.field_statistics("velocity", proxy_name=proxy_name)
+            if "error" in stats:
+                return stats
+            
+            v_freestream = stats["magnitude"]["max"]
+            v_threshold = velocity_deficit * v_freestream
+            
+            # Get streamwise direction to constrain search to downstream region
+            streamwise_result = self.detect_streamwise_direction(proxy_name=proxy_name)
+            streamwise = streamwise_result.get("streamwise", "x")
+            
+            # Get body bounds to know where "downstream" starts
+            body_bounds, _ = self._get_body_bounds(proxy)
+            
+            # Determine streamwise axis and downstream clip plane
+            axis_map = {"x": 0, "+x": 0, "-x": 0,
+                        "y": 1, "+y": 1, "-y": 1,
+                        "z": 2, "+z": 2, "-z": 2}
+            stream_idx = axis_map.get(streamwise.lower(), 0)
+            is_positive = not streamwise.startswith("-")
+            
+            body_extent = body_bounds[stream_idx * 2 + 1] - body_bounds[stream_idx * 2]
+            
+            if is_positive:
+                trailing_edge = body_bounds[stream_idx * 2 + 1]
+                # Clip origin: 25% upstream from trailing edge into the body
+                clip_coord = trailing_edge - body_extent * 0.25
+                normal = [0, 0, 0]
+                normal[stream_idx] = 1.0  # keep downstream (+) side
+            else:
+                trailing_edge = body_bounds[stream_idx * 2]
+                clip_coord = trailing_edge + body_extent * 0.25
+                normal = [0, 0, 0]
+                normal[stream_idx] = -1.0  # keep downstream (-) side
+            
+            origin = list(body_bounds[0::2])  # [xmin, ymin, zmin] as starting point
+            origin[stream_idx] = clip_coord
+            
+            # Clip data to downstream region, then query velocity deficit there
+            downstream_clip = simple.Clip(Input=proxy)
+            downstream_clip.ClipType = 'Plane'
+            downstream_clip.ClipType.Origin = origin
+            downstream_clip.ClipType.Normal = normal
+            downstream_clip.InsideOut = 0  # keep the normal side (downstream)
+            simple.UpdatePipeline(proxy=downstream_clip)
+            
+            # Hide clip from view — this is just for analysis
+            view = simple.GetActiveView()
+            if view:
+                try:
+                    simple.Hide(downstream_clip, view)
+                except:
+                    pass
+            
+            # Get the clip proxy name for find_by_query
+            clip_name = None
+            for name, p in simple.GetSources().items():
+                if p == downstream_clip:
+                    clip_name = name[0]
+                    break
+            
+            # Query velocity deficit in the downstream-only region
+            query = f"mag(Velocity) < {v_threshold}"
+            try:
+                centroid_result = self.find_by_query(query, proxy_name=clip_name)
+            finally:
+                # Always clean up the temporary clip
+                try:
+                    simple.Delete(downstream_clip)
+                except:
+                    pass
+            
+            if "error" in centroid_result:
+                # Fall back to global deficit query (maybe unusual geometry)
+                centroid_result = self.find_by_query(query, proxy_name=proxy_name)
+            
+            if "error" in centroid_result:
+                return {
+                    "error": f"No wake region found with velocity < {velocity_deficit*100:.0f}% of freestream",
+                    "freestream_velocity": v_freestream,
+                    "threshold": v_threshold,
+                    "query": query
+                }
+            
+            return {
+                "wake_centroid": centroid_result.get("location", centroid_result.get("centroid")),
+                "wake_bounds": centroid_result.get("bounds"),
+                "num_points": centroid_result.get("num_points", centroid_result.get("count", 0)),
+                "freestream_velocity": v_freestream,
+                "velocity_threshold": v_threshold,
+                "velocity_deficit_fraction": velocity_deficit,
+                "streamwise": streamwise,
+                "trailing_edge_coord": trailing_edge,
+                "query": query
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def create_streamlines(
+        self,
+        center: list = None,
+        radius: float = None,
+        num_points: int = 100,
+        direction: str = "both",
+        max_length: float = None,
+        color_field: str = "Velocity",
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Create streamlines to visualize flow patterns like wakes and jets.
+        
+        Seeds streamlines from a spherical point cloud and integrates along
+        the velocity field. Great for visualizing wake flow, recirculation,
+        and overall flow structure.
+        
+        Auto-sizing: When radius is not specified, the seed cloud is sized from
+        the wake's cross-stream extent (via detect_wake_region). This ensures
+        seeds cover the velocity deficit region rather than the full domain.
+        Falls back to body geometry bounds if no wake is detected.
+        
+        Args:
+            center: Seed center [x, y, z]. If None, uses wake centroid or body center.
+            radius: Seed sphere radius. If None, auto-computed from wake cross-section
+                   (half the max cross-stream extent of the velocity deficit region).
+            num_points: Number of seed points (default 100)
+            direction: Integration direction - "forward", "backward", or "both" (default)
+            max_length: Maximum streamline length. If None, uses 10x domain diagonal.
+            color_field: Field to color streamlines by (default "Velocity")
+            proxy_name: Source data
+            
+        Returns:
+            Dict with streamline info: name, num_seeds, direction, length
+            
+        Examples:
+            # Auto-detect wake and seed streamlines there
+            create_streamlines()
+            
+            # Custom seed location
+            create_streamlines(center=[5, 0.5, 0], radius=0.2)
+            
+            # Forward only (for wake visualization)
+            create_streamlines(direction="forward")
+            
+        Workflow for wake visualization:
+            1. wake = detect_wake_region()
+            2. create_streamlines(center=wake["wake_centroid"])
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            # Ensure velocity exists
+            velocity_result = self.ensure_velocity_vector(proxy_name=proxy_name)
+            if "error" in velocity_result and "already" not in velocity_result.get("error", ""):
+                return velocity_result
+            
+            # Get data bounds for auto-parameters
+            simple.UpdatePipeline(proxy=proxy)
+            di = proxy.GetDataInformation()
+            bounds = di.GetBounds()
+            
+            domain_diag = np.sqrt(
+                (bounds[1] - bounds[0])**2 +
+                (bounds[3] - bounds[2])**2 +
+                (bounds[5] - bounds[4])**2
+            )
+            
+            # Get body bounds (farfield clipped) for fallback sizing
+            body_bounds, body_diag = self._get_body_bounds(proxy)
+            
+            # Auto-compute center and radius from wake detection
+            wake_result = None
+            if center is None or radius is None:
+                wake_result = self.detect_wake_region(proxy_name=proxy_name)
+            
+            if center is None:
+                if wake_result and "wake_centroid" in wake_result:
+                    center = wake_result["wake_centroid"]
+                else:
+                    # Fall back to body center (not domain center)
+                    center = [
+                        (body_bounds[0] + body_bounds[1]) / 2,
+                        (body_bounds[2] + body_bounds[3]) / 2,
+                        (body_bounds[4] + body_bounds[5]) / 2
+                    ]
+            
+            # Auto-compute radius from wake cross-stream extent
+            if radius is None:
+                if wake_result and "wake_bounds" in wake_result and wake_result["wake_bounds"]:
+                    wb = wake_result["wake_bounds"]
+                    # Identify streamwise axis and use the cross-stream extents
+                    streamwise = wake_result.get("streamwise", "x")
+                    wake_extents = [wb[1] - wb[0], wb[3] - wb[2], wb[5] - wb[4]]
+                    axis_map = {"x": 0, "+x": 0, "-x": 0,
+                                "y": 1, "+y": 1, "-y": 1,
+                                "z": 2, "+z": 2, "-z": 2}
+                    stream_idx = axis_map.get(streamwise.lower(), 0)
+                    
+                    # Cross-stream extents (the two non-streamwise dimensions)
+                    cross_extents = [e for i, e in enumerate(wake_extents) if i != stream_idx and e > 1e-10]
+                    if cross_extents:
+                        # Radius covers the wake cross-section
+                        radius = max(cross_extents) * 0.5
+                    else:
+                        radius = body_diag * 0.1
+                else:
+                    # No wake detected — use smallest body dimension
+                    body_extents = [
+                        body_bounds[1] - body_bounds[0],
+                        body_bounds[3] - body_bounds[2],
+                        body_bounds[5] - body_bounds[4],
+                    ]
+                    min_extent = min(e for e in body_extents if e > 1e-10)
+                    radius = min_extent * 0.3
+            
+            # Auto-compute max length relative to domain (streamlines can travel far)
+            if max_length is None:
+                max_length = domain_diag * 10
+            
+            # Create StreamTracer
+            stream = simple.StreamTracer(Input=proxy)
+            stream.Vectors = ['POINTS', 'Velocity']
+            
+            # Configure seed type as Point Cloud
+            stream.SeedType = 'Point Cloud'
+            stream.SeedType.Center = center
+            stream.SeedType.Radius = radius
+            stream.SeedType.NumberOfPoints = num_points
+            
+            # Set integration direction
+            direction_map = {
+                "forward": "FORWARD",
+                "backward": "BACKWARD",
+                "both": "BOTH"
+            }
+            stream.IntegrationDirection = direction_map.get(direction.lower(), "BOTH")
+            
+            # Set maximum streamline length
+            stream.MaximumStreamlineLength = max_length
+            
+            # Update
+            simple.UpdatePipeline(proxy=stream)
+            
+            # Show and color - ensure we have a RenderView
+            view = simple.GetActiveView()
+            if view is None or not hasattr(view, 'ResetCamera'):
+                for v in simple.GetViews():
+                    if hasattr(v, 'ResetCamera'):
+                        view = v
+                        break
+                else:
+                    view = simple.CreateRenderView()
+                simple.SetActiveView(view)
+            
+            display = simple.Show(stream, view)
+            
+            # Color by field
+            color_array = self._resolve_field_type(color_field, stream)
+            if color_array:
+                simple.ColorBy(display, ('POINTS', color_array))
+                display.RescaleTransferFunctionToDataRange(True, False)
+                display.SetScalarBarVisibility(view, True)
+            
+            # Apply tube filter for better visibility
+            tube = simple.Tube(Input=stream)
+            tube.Radius = radius * 0.02  # 2% of seed radius — scales with local feature
+            simple.UpdatePipeline(proxy=tube)
+            
+            tube_display = simple.Show(tube, view)
+            if color_array:
+                simple.ColorBy(tube_display, ('POINTS', color_array))
+                tube_display.RescaleTransferFunctionToDataRange(True, False)
+            
+            # Hide raw streamlines, show tubes
+            simple.Hide(stream, view)
+            
+            simple.Render()
+            
+            # Get streamline name
+            stream_name = None
+            for name, p in simple.GetSources().items():
+                if p == stream:
+                    stream_name = name[0]
+                    break
+            
+            tube_name = None
+            for name, p in simple.GetSources().items():
+                if p == tube:
+                    tube_name = name[0]
+                    break
+            
+            return {
+                "status": "created",
+                "streamlines_name": stream_name,
+                "tube_name": tube_name,
+                "seed_center": center,
+                "seed_radius": radius,
+                "seed_sized_from": "wake_cross_section" if (wake_result and "wake_bounds" in wake_result) else "body_bounds",
+                "num_seeds": num_points,
+                "direction": direction,
+                "max_length": max_length,
+                "color_field": color_array or color_field,
+                "domain_diagonal": float(domain_diag),
+                "body_diagonal": float(body_diag),
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    # NOTE: No create_slice wrapper - use base tools with positioning from:
+    #   - get_geometry_info() for center/bounds
+    #   - find_by_query() for feature-based positioning (stagnation, wake)
+    #   - detect_wake_region() for wake centroid
+    # Then: base__create("Slice") + base__update_sub_property for origin/normal
+    # The ontology encodes slice positioning strategies for LLM reasoning.
+
     def set_streamwise_view(self, proxy_name: str = None) -> dict:
         """
         Set camera to an isometric view oriented along the streamwise direction.
@@ -1937,8 +2800,16 @@ out.GetPointData().AddArray(arr)
             distance = 5.0
         
         view = simple.GetActiveView()
-        if view is None:
-            view = simple.CreateRenderView()
+        
+        # Ensure we have a RenderView (not a chart view)
+        if view is None or not hasattr(view, 'ResetCamera'):
+            for v in simple.GetViews():
+                if hasattr(v, 'ResetCamera'):
+                    view = v
+                    break
+            else:
+                view = simple.CreateRenderView()
+            simple.SetActiveView(view)
         
         # Position camera based on streamwise direction
         # Goal: streamwise is left-to-right, slight elevation
@@ -2001,37 +2872,172 @@ out.GetPointData().AddArray(arr)
         simple.Render(view)
         return {"status": "hidden_all", "count": count}
     
+    def extract_body_surface(
+        self,
+        proxy_name: str = None,
+        feature_angle: float = 30.0,
+        color: list[float] = None,
+        line_width: float = 2.0
+    ) -> dict:
+        """
+        Extract and display body surface as feature edges for context.
+        
+        For CFD data, this extracts the external surface and shows only the
+        sharp feature edges (silhouette). This provides body shape context
+        without blocking visibility of internal flow features like slices,
+        streamlines, and isosurfaces.
+        
+        Args:
+            proxy_name: Data source. If None, uses first data reader.
+            feature_angle: Angle (degrees) to detect feature edges. Default 30.
+            color: RGB color [r,g,b] each 0-1. Default dark gray [0.3, 0.3, 0.3].
+            line_width: Width of feature edge lines. Default 2.0.
+            
+        Returns:
+            Dict with feature edges proxy name and settings.
+            
+        Example:
+            # Show body outline before visualizing flow
+            hide_all()
+            extract_body_surface()
+            create_streamlines(...)
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            # Auto-find data reader
+            for name, p in simple.GetSources().items():
+                if any(x in name[0] for x in ['Reader', 'OpenFOAM', 'EnSight', 'CGNS', 'XMLMultiBlock']):
+                    proxy = p
+                    proxy_name = name[0]
+                    break
+        
+        if proxy is None:
+            return {"error": "No data source found"}
+        
+        try:
+            # Get/create render view
+            view = simple.GetActiveView()
+            if view is None or not hasattr(view, 'ResetCamera'):
+                for v in simple.GetViews():
+                    if hasattr(v, 'ResetCamera'):
+                        view = v
+                        break
+                else:
+                    view = simple.CreateRenderView()
+                simple.SetActiveView(view)
+            
+            # Extract external surface first (don't show it)
+            surface = simple.ExtractSurface(Input=proxy)
+            simple.UpdatePipeline(proxy=surface)
+            simple.Hide(surface, view)  # Ensure hidden
+            
+            # Apply Feature Edges filter
+            edges = simple.FeatureEdges(Input=surface)
+            edges.FeatureEdges = 1
+            edges.BoundaryEdges = 1
+            edges.NonManifoldEdges = 0
+            edges.ManifoldEdges = 0
+            edges.FeatureAngle = feature_angle
+            simple.UpdatePipeline(proxy=edges)
+            
+            # Show feature edges
+            display = simple.Show(edges, view)
+            
+            # Ensure surface is hidden (in case Show triggered anything)
+            simple.Hide(surface, view)
+            
+            # Style as thin lines
+            if color is None:
+                color = [0.3, 0.3, 0.3]  # Dark gray
+            try:
+                display.AmbientColor = color
+                display.DiffuseColor = color
+                display.LineWidth = line_width
+            except AttributeError:
+                pass
+            simple.ColorBy(display, None)  # Solid color
+            
+            simple.Render(view)
+            
+            # Get names
+            edges_name = None
+            surface_name = None
+            for name, p in simple.GetSources().items():
+                if p == edges:
+                    edges_name = name[0]
+                elif p == surface:
+                    surface_name = name[0]
+            
+            return {
+                "status": "extracted",
+                "feature_edges_name": edges_name,
+                "surface_name": surface_name,
+                "feature_angle": feature_angle,
+                "color": color
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
     def show_data_context(
         self,
         proxy_name: str = None,
-        opacity: float = 0.15,
-        color: list[float] = None
+        opacity: float = 0.3,
+        color: list[float] = None,
+        representation: str = None,
+        clip_farfield: bool = True,
+        clip_margin: float = 0.05
     ) -> dict:
         """
-        Show the base data as semi-transparent context geometry.
+        Show body surface as context geometry without obscuring visualizations.
         
-        Call this after hide_all() and before creating visualizations to provide
-        spatial context (body surface, domain bounds) without obscuring the
-        visualization results.
+        For volumetric CFD data (unstructured grids, multiblock), extracts the 
+        external surface and clips away farfield domain boundaries, leaving
+        just the body surface. Shows it as a semi-transparent solid gray surface.
+        
+        For surface data (PolyData), shows as semi-transparent surface directly.
+        
+        The body surface provides geometric context (wing shape, vehicle body)
+        while flow visualization filters (isosurfaces, streamlines, slices)
+        render on top at full opacity.
+        
+        Workflow:
+            hide_all()                    # Clear view
+            show_data_context()           # Body surface as gray context
+            create_vortex_isosurface()    # Flow feature on top
+            focus_on("Contour1")          # Frame the result
         
         Args:
-            proxy_name: Data source to show. If None, shows first XMLMultiBlockDataReader or XMLUnstructuredGridReader.
-            opacity: Transparency level (0.0 = invisible, 1.0 = opaque). Default 0.15.
-            color: RGB color [r, g, b] each 0-1. If None, uses solid gray [0.7, 0.7, 0.7].
+            proxy_name: Data source to show. If None, shows first data reader found.
+            opacity: Transparency level (0.0-1.0). Default 0.3 (body visible but not dominant).
+            color: RGB color [r, g, b] each 0-1. If None, uses light gray [0.7, 0.7, 0.7].
+            representation: Override representation type. If None, auto-detects.
+            clip_farfield: If True, clips away farfield boundaries for volumetric data.
+                          The farfield faces sit at the domain bounding box extremes.
+                          Default True.
+            clip_margin: Fraction of domain extent to clip inward from each face (0-0.5).
+                        Default 0.05 (5%). Increase if farfield faces remain visible.
             
         Returns:
-            Dict with proxy shown and display settings
+            Dict with proxy shown, context filter names, and display settings
         """
         view = simple.GetActiveView()
-        if view is None:
-            view = simple.CreateRenderView()
+        
+        # Ensure we have a RenderView (not a chart view)
+        if view is None or not hasattr(view, 'ResetCamera'):
+            for v in simple.GetViews():
+                if hasattr(v, 'ResetCamera'):
+                    view = v
+                    break
+            else:
+                view = simple.CreateRenderView()
+            simple.SetActiveView(view)
         
         # Find the data source
         proxy = None
         if proxy_name:
             proxy = self._get_proxy(proxy_name)
         else:
-            # Auto-find data reader
             for name, p in simple.GetSources().items():
                 if any(x in name[0] for x in ['XMLMultiBlockDataReader', 'XMLUnstructuredGridReader', 
                                                'OpenFOAMReader', 'EnSightReader', 'CGNSReader']):
@@ -2042,27 +3048,116 @@ out.GetPointData().AddArray(arr)
         if proxy is None:
             return {"error": "No data source found"}
         
-        # Show with context styling
-        display = simple.Show(proxy, view)
-        display.Opacity = opacity
+        # Detect data type
+        is_volumetric = False
+        try:
+            di = proxy.GetDataInformation()
+            data_class = di.GetDataClassName()
+            is_volumetric = data_class in [
+                "vtkUnstructuredGrid", "vtkMultiBlockDataSet",
+                "vtkPartitionedDataSet", "vtkPartitionedDataSetCollection"
+            ]
+        except:
+            pass
         
-        # Set solid color (no field coloring for context)
+        context_proxy = proxy  # What we'll ultimately show
+        intermediate_filters = []  # Track filters to hide
+        
+        if is_volumetric:
+            try:
+                # Step 1: Extract external surface from volume mesh
+                surface = simple.ExtractSurface(Input=proxy)
+                simple.UpdatePipeline(proxy=surface)
+                intermediate_filters.append(surface)
+                
+                context_proxy = surface
+                
+                # Step 2: Clip away farfield domain boundaries
+                if clip_farfield:
+                    bounds = proxy.GetDataInformation().GetBounds()
+                    # Shrink bounds inward by margin fraction
+                    dx = (bounds[1] - bounds[0]) * clip_margin
+                    dy = (bounds[3] - bounds[2]) * clip_margin
+                    dz = (bounds[5] - bounds[4]) * clip_margin
+                    
+                    clip_bounds = [
+                        bounds[0] + dx, bounds[1] - dx,
+                        bounds[2] + dy, bounds[3] - dy,
+                        bounds[4] + dz, bounds[5] - dz
+                    ]
+                    
+                    clip = simple.Clip(Input=surface)
+                    clip.ClipType = 'Box'
+                    clip.ClipType.Bounds = clip_bounds
+                    clip.InsideOut = 1  # Keep inside the box
+                    simple.UpdatePipeline(proxy=clip)
+                    intermediate_filters.append(clip)
+                    
+                    context_proxy = clip
+                    
+            except Exception as e:
+                # Fall back to showing raw proxy as surface
+                context_proxy = proxy
+                intermediate_filters = []
+            
+            # Use Surface representation for extracted body
+            if representation is None:
+                representation = "Surface"
+        else:
+            # Surface data (PolyData) - show directly
+            if representation is None:
+                representation = "Surface"
+        
+        # Hide intermediate filters
+        for f in intermediate_filters:
+            if f != context_proxy:
+                try:
+                    simple.Hide(f, view)
+                except:
+                    pass
+        
+        # Hide the original reader
+        try:
+            simple.Hide(proxy, view)
+        except:
+            pass
+        
+        # Show the context proxy
+        display = simple.Show(context_proxy, view)
+        
+        try:
+            display.SetRepresentationType(representation)
+        except:
+            pass
+        
+        # Style: semi-transparent solid gray
         if color is None:
-            color = [0.7, 0.7, 0.7]  # Light gray
-        display.DiffuseColor = color
-        display.AmbientColor = color
-        simple.ColorBy(display, None)  # Solid color mode
-        
-        # Surface representation
-        display.SetRepresentationType('Surface')
+            color = [0.7, 0.7, 0.7]
+        try:
+            display.Opacity = opacity
+            display.DiffuseColor = color
+            display.AmbientColor = color
+        except AttributeError:
+            pass
+        simple.ColorBy(display, None)  # Solid color, no scalar bar
         
         simple.Render(view)
+        
+        # Get filter names for reference
+        context_name = None
+        for name, p in simple.GetSources().items():
+            if p == context_proxy:
+                context_name = name[0]
+                break
         
         return {
             "status": "context_shown",
             "proxy": proxy_name,
+            "context_filter": context_name,
+            "representation": representation,
             "opacity": opacity,
-            "color": color
+            "color": color,
+            "clipped_farfield": clip_farfield and is_volumetric,
         }
     
     # Helper methods

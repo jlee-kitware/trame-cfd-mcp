@@ -5,18 +5,27 @@ This shows the minimal code to integrate trame-llm + paraview-llm.
 Useful for testing or scripting.
 
 Run:
-    pvpython headless.py
+    pvpython --venv .venv headless.py
 """
 
 from paraview import simple
 
-# Setup: Create some test data
-wavelet = simple.Wavelet()
-simple.Show()
-simple.ResetCamera()
+# Setup: Load test data
+reader = simple.OpenDataFile("test.vtm")
+simple.UpdatePipeline()
 
-# Now setup the LLM integration
-# (In real use, this would be in a trame app)
+# Get reader name
+reader_name = None
+for name, proxy in simple.GetSources().items():
+    if proxy == reader:
+        reader_name = name[0]
+        break
+
+# Setup view
+view = simple.CreateRenderView()
+view.ViewSize = [1024, 768]
+simple.SetActiveView(view)
+
 
 class MinimalApp:
     """Minimal app interface that ParaViewMCP expects"""
@@ -27,56 +36,56 @@ class MinimalApp:
         simple.ResetCamera()
     
     class ctrl:
-        @staticmethod
-        def on_active_proxy_change():
-            pass
-        
-        @staticmethod 
-        def on_data_change():
-            pass
-        
-        # Make .exists() work
-        on_active_proxy_change.exists = lambda: False
-        on_data_change.exists = lambda: False
+        class on_active_proxy_change:
+            @staticmethod
+            def exists(): return False
+        class on_data_change:
+            @staticmethod
+            def exists(): return False
 
 
 def main():
+    import sys
+    sys.path.insert(0, "/Users/jeff.lee/gitsync/paraview_llm/src")
+    sys.path.insert(0, "/Users/jeff.lee/gitsync/trame-llm/src")
+    
     from trame_llm.paraview import ParaViewMCP
-    from paraview_llm import Orchestrator, TrameMCPAdapter
+    from paraview_llm import ExtendedParaViewMCP, MockLLMExecutor
     
     # Create minimal app
     app = MinimalApp()
     
     # Setup the stack
-    paraview_mcp = ParaViewMCP(app)
-    adapter = TrameMCPAdapter(paraview_mcp)
+    base_mcp = ParaViewMCP(app)
+    extended_mcp = ExtendedParaViewMCP(base_mcp)
     
-    # Use mock LLM for testing (set llm_provider="openai" for real)
-    orchestrator = Orchestrator(
-        mcp_client=adapter,
-        llm_provider="mock"
-    )
+    # Use mock executor for testing
+    executor = MockLLMExecutor(extended_mcp, reader_name)
     
-    # Check what fields are available
-    print("Available fields:", adapter.available_fields())
+    # Run some queries
+    queries = [
+        "show me the vortices using Q-criterion",
+        "where is the stagnation point",
+        "show me the pressure distribution",
+    ]
     
-    # Run a query
-    print("\n" + "="*60)
-    print("Query: 'characterize flowfield'")
-    print("="*60)
-    
-    result = orchestrator.run("characterize flowfield")
-    
-    if result.get("success"):
-        print(f"\nReasoning: {result['reasoning']}")
-        print(f"\nResults:")
-        for r in result['results']:
-            if 'error' in r:
-                print(f"  ❌ {r['tool']}: {r['error']}")
+    for query in queries:
+        print("\n" + "=" * 60)
+        print(f"Query: '{query}'")
+        print("=" * 60)
+        
+        results = executor.execute(query)
+        
+        print(f"\nExecuted {len(results)} tools:")
+        for tool_name, kwargs, result in results:
+            if isinstance(result, dict) and 'error' in result:
+                print(f"  ✗ {tool_name}: {result['error']}")
             else:
-                print(f"  ✅ {r['tool']}: {r['result']}")
-    else:
-        print(f"\nError: {result.get('error')}")
+                print(f"  ✓ {tool_name}")
+    
+    # Save screenshot
+    simple.SaveScreenshot("output/headless_test.png", view)
+    print("\nSaved: output/headless_test.png")
 
 
 if __name__ == "__main__":

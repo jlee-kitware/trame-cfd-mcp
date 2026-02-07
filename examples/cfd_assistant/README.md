@@ -26,7 +26,7 @@ The example uses `test.vtm` - a multiblock VTK dataset with:
 Fast, free, deterministic testing:
 
 ```bash
-pvpython test_e2e.py
+pvpython --venv .venv test_e2e.py
 ```
 
 Output:
@@ -36,49 +36,57 @@ E2E Test Suite - MOCK LLM
 ============================================================
 Data source: XMLMultiBlockDataReader1
 
-TEST 1: shear_layer
-Tools executed:
-  ✓ hide_all
-  ✓ show_data_context
-  ✓ create_vortex_isosurface
-  ✓ focus_on
-  ✓ set_streamwise_view
-✓ PASSED (0.9s)
-
+✓ shear_layer (0.9s)
+✓ stagnation (0.2s)
 ...
 
-Passed: 16/16
-Total time: 3.7s
+Passed: 17/17
+Total time: 4.0s
 ```
 
 ### Real LLM Mode
 
-Tests actual LLM understanding (requires `OPENAI_API_KEY`):
+Tests intent classification with real LLM:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-pvpython test_e2e.py --real
+pvpython --venv .venv test_e2e.py --real
+```
+
+Output:
+```
+============================================================
+E2E Test Suite - REAL LLM (intent-based)
+============================================================
+
+✓ shear_layer → shear_layer (0.7s)
+✓ stagnation → stagnation (0.6s)
+...
+
+Passed: 17/17
+Total time: 12.5s
 ```
 
 ## Test Cases
 
-| Test | Query | Visualization |
-|------|-------|---------------|
-| `shear_layer` | "show me the shear layer" | Vorticity isosurface |
-| `stagnation` | "where is the stagnation point" | Slice at min velocity |
-| `flow_pattern` | "visualize the flow pattern" | Streamlines |
-| `pressure` | "show me the pressure distribution" | Pressure slice |
-| `velocity_stats` | "what are the velocity statistics" | JSON data |
-| `velocity_distribution` | "show me a histogram of velocity" | Bar chart |
-| `forces` | "calculate drag and lift forces" | JSON data |
-| `drag_distribution` | "how drag accumulates along streamwise" | XY chart |
-| `lift_distribution` | "show spanwise lift distribution" | XY chart |
-| `max_velocity` | "where is the maximum velocity" | Slice at max |
-| `wake_slice` | "create a slice through the wake" | X-normal slice |
-| `vortices_q` | "show vortices using Q-criterion" | Q isosurface |
-| `vortices_lambda2` | "visualize vortex cores using lambda2" | λ2 isosurface |
-| `vortices_swirl` | "show swirling strength" | Swirl isosurface |
-| `vortices_helicity` | "show helical vortex structures" | Helicity isosurface |
+| Test | Query | Workflow |
+|------|-------|----------|
+| `shear_layer` | "show me the shear layer" | Vorticity + high gradient |
+| `stagnation` | "where is the stagnation point" | find_minimum(velocity) |
+| `flow_pattern` | "visualize the flow pattern" | Streamlines in wake |
+| `pressure` | "show me the pressure distribution" | Color by pressure |
+| `velocity_stats` | "what are the velocity statistics" | field_statistics |
+| `velocity_distribution` | "show me a histogram of velocity" | Histogram chart |
+| `forces` | "calculate drag and lift forces" | compute_forces |
+| `drag_distribution` | "drag accumulates along streamwise" | Force distribution chart |
+| `lift_distribution` | "spanwise lift distribution" | Force distribution chart |
+| `max_velocity` | "where is the maximum velocity" | find_maximum(velocity) |
+| `wake_slice` | "slice through the wake" | detect_wake + slice |
+| `wake_streamlines` | "streamlines in the wake" | detect_wake + streamlines |
+| `vortices_q` | "vortices using Q-criterion" | Q-criterion isosurface |
+| `vortices_lambda2` | "vortex cores using lambda2" | λ2 isosurface |
+| `vortices_swirl` | "swirling strength" | Swirl isosurface |
+| `vortices_helicity` | "helical vortex structures" | Helicity isosurface |
 | `characterize` | "characterize the flowfield" | Multi-tool analysis |
 
 ## Output
@@ -90,35 +98,78 @@ output/
 ├── mock_01_shear_layer.png
 ├── mock_02_stagnation.png
 ├── ...
-├── mock_08_drag_distribution.png   # XY chart
-├── mock_09_lift_distribution.png   # XY chart
-└── mock_16_characterize.png
+├── real_01_shear_layer.png  # When using --real
+└── ...
 ```
 
-## Adding New Tests
+## Architecture
 
-1. Add entry to `MOCK_RESPONSES` in `mock_llm.py`:
-
-```python
-"my_test": [
-    ("hide_all", {}),
-    ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
-    ("my_tool", {"param": "value", "proxy_name": "{data_source}"}),
-    ("focus_on", {"proxy_name": "{last_created}"}),
-],
+```
+User Query
+    │
+    ▼
+┌─────────────────────────┐
+│  MockLLMExecutor        │  (mock mode)
+│  - Keyword matching     │
+│  - No LLM calls         │
+└─────────────────────────┘
+    or
+┌─────────────────────────┐
+│  IntentExecutor         │  (real mode)
+│  - LLM classifies       │
+│  - {"workflow": "..."}  │
+└─────────────────────────┘
+    │
+    ▼
+┌─────────────────────────┐
+│  WORKFLOWS[name]        │
+│  - Predefined sequence  │
+│  - Deterministic        │
+└─────────────────────────┘
+    │
+    ▼
+ExtendedParaViewMCP → ParaView
 ```
 
-2. Add natural language mapping in `test_e2e.py`:
+## Adding New Workflows
+
+1. Add workflow to `intent_executor.py`:
 
 ```python
-QUERY_TEXT = {
-    # ...
-    "my_test": "natural language query for my test",
+WORKFLOWS = {
+    "my_workflow": {
+        "description": "Description for LLM",
+        "sequence": [
+            ("hide_all", {}),
+            ("show_data_context", {"proxy_name": "{data_source}"}),
+            ("my_tool", {"proxy_name": "{data_source}"}),
+            ("focus_on", {"proxy_name": "{last_created}"}),
+        ]
+    },
 }
 ```
 
-3. Run tests to verify:
+2. Add mock response in `mock_llm.py`:
+
+```python
+MOCK_RESPONSES = {
+    "my_workflow": [
+        # Same sequence as WORKFLOWS
+    ],
+}
+```
+
+3. Add test query in `test_e2e.py`:
+
+```python
+QUERY_TEXT = {
+    "my_workflow": "natural language query",
+}
+```
+
+4. Run tests:
 
 ```bash
-pvpython test_e2e.py
+pvpython --venv .venv test_e2e.py
+pvpython --venv .venv test_e2e.py --real
 ```
