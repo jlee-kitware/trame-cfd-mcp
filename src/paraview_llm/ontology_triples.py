@@ -182,6 +182,170 @@ class CFDOntology:
         """Get scalar components of a vector field."""
         return self.get_subjects(self.COMPONENT_OF, vector)
     
+    def filter_accepts(self, filter_name: str) -> list[str]:
+        """Get data types a filter accepts as input."""
+        return self.get_objects(filter_name, "accepts")
+    
+    def filter_outputs(self, filter_name: str) -> list[str]:
+        """Get data type a filter produces."""
+        return self.get_objects(filter_name, "outputs")
+    
+    def filter_requires_field(self, filter_name: str) -> list[str]:
+        """Get field types required by a filter."""
+        return self.get_objects(filter_name, "requires_field")
+    
+    def can_chain(self, upstream_filter: str, downstream_filter: str) -> dict:
+        """
+        Check if two filters can be chained (output of first feeds input of second).
+        
+        Args:
+            upstream_filter: Filter producing output (e.g., "Slice", "Contour")
+            downstream_filter: Filter consuming input (e.g., "StreamTracer", "Threshold")
+            
+        Returns:
+            Dict with 'compatible' bool, 'reason', and 'output_type'/'accepted_types'
+        """
+        # Get what upstream produces
+        outputs = self.filter_outputs(upstream_filter)
+        if not outputs:
+            return {
+                "compatible": False,
+                "reason": f"Unknown filter '{upstream_filter}' or no output type defined",
+                "upstream": upstream_filter,
+                "downstream": downstream_filter
+            }
+        
+        output_type = outputs[0]  # Usually one output type
+        
+        # Handle "same_as_input" - assume compatible
+        if output_type == "same_as_input":
+            return {
+                "compatible": True,
+                "reason": f"{upstream_filter} preserves input type, likely compatible",
+                "output_type": "same_as_input",
+                "upstream": upstream_filter,
+                "downstream": downstream_filter
+            }
+        
+        # Get what downstream accepts
+        accepts = self.filter_accepts(downstream_filter)
+        if not accepts:
+            return {
+                "compatible": False,
+                "reason": f"Unknown filter '{downstream_filter}' or no input types defined",
+                "upstream": upstream_filter,
+                "downstream": downstream_filter
+            }
+        
+        # Check compatibility
+        if output_type in accepts:
+            result = {
+                "compatible": True,
+                "reason": f"{upstream_filter} outputs {output_type}, {downstream_filter} accepts it",
+                "output_type": output_type,
+                "accepted_types": accepts,
+                "upstream": upstream_filter,
+                "downstream": downstream_filter
+            }
+            # Add any notes about this filter
+            notes = self.get_objects(downstream_filter, "note")
+            if notes:
+                result["note"] = notes[0]
+            return result
+        
+        # Check if output is subtype of accepted (e.g., surface_mesh is a dataset_type)
+        output_supertypes = self.get_objects(output_type, "is_a")
+        for supertype in output_supertypes:
+            if supertype in accepts:
+                return {
+                    "compatible": True,
+                    "reason": f"{upstream_filter} outputs {output_type} (a {supertype}), {downstream_filter} accepts {supertype}",
+                    "output_type": output_type,
+                    "accepted_types": accepts,
+                    "upstream": upstream_filter,
+                    "downstream": downstream_filter
+                }
+        
+        return {
+            "compatible": False,
+            "reason": f"{upstream_filter} outputs {output_type}, but {downstream_filter} only accepts {accepts}",
+            "output_type": output_type,
+            "accepted_types": accepts,
+            "upstream": upstream_filter,
+            "downstream": downstream_filter
+        }
+    
+    def fields_available_after(self, filter_name: str, input_fields: list[str]) -> dict:
+        """
+        Determine what fields are available after applying a filter.
+        
+        Args:
+            filter_name: Filter being applied
+            input_fields: Fields available in the input
+            
+        Returns:
+            Dict with 'preserved_fields', 'added_fields', 'lost_fields'
+        """
+        preserves = self.get_objects(filter_name, "preserves_fields")
+        adds = self.get_objects(filter_name, "adds_field")
+        
+        if preserves and preserves[0] == "true":
+            return {
+                "preserved_fields": input_fields,
+                "added_fields": adds,
+                "lost_fields": [],
+                "all_fields": input_fields + adds
+            }
+        elif preserves and preserves[0] == "false":
+            # Filter doesn't preserve fields (e.g., StreamTracer)
+            return {
+                "preserved_fields": [],
+                "added_fields": adds,
+                "lost_fields": input_fields,
+                "all_fields": adds,
+                "warning": f"{filter_name} does not preserve input fields"
+            }
+        else:
+            # Unknown - assume preserved
+            return {
+                "preserved_fields": input_fields,
+                "added_fields": adds,
+                "lost_fields": [],
+                "all_fields": input_fields + adds,
+                "note": "Field preservation unknown, assuming preserved"
+            }
+    
+    def suggest_pipeline(self, goal: str, available_fields: list[str]) -> dict:
+        """
+        Suggest a filter pipeline to achieve a goal.
+        
+        Args:
+            goal: What to achieve (e.g., "streamlines_in_wake", "pressure_on_slice")
+            available_fields: Fields in the source data
+            
+        Returns:
+            Dict with suggested pipeline steps and reasoning
+        """
+        # Check for known patterns
+        patterns = self.get_objects(goal, "pattern")
+        if patterns:
+            pattern = patterns[0]
+            steps = pattern.split("->")
+            return {
+                "goal": goal,
+                "pattern": pattern,
+                "steps": steps,
+                "reasoning": f"Known pattern for {goal}: {pattern}"
+            }
+        
+        # Otherwise, try to reason about it
+        return {
+            "goal": goal,
+            "pattern": None,
+            "steps": [],
+            "reasoning": f"No known pattern for {goal}, use ontology_query to explore options"
+        }
+
     def plan_workflow(self, goal: str, available_fields: set[str]) -> dict:
         """
         Plan a workflow to achieve a goal given available data.
@@ -565,6 +729,101 @@ class CFDOntology:
         
         self.add("StreamTracer", "tool_for", "create_streamlines")
         self.add("Contour", "tool_for", "create_isosurface")
+        
+        # ===================
+        # FILTER PIPELINE SEMANTICS
+        # ===================
+        # Data types that flow through the pipeline
+        # Most ParaView filters accept "any dataset" - specific restrictions noted per filter
+        self.add("any_dataset", "is_a", "dataset_type")
+        self.add("volumetric_mesh", "is_a", "dataset_type")
+        self.add("volumetric_mesh", "is_a", "any_dataset")
+        self.add("surface_mesh", "is_a", "dataset_type")
+        self.add("surface_mesh", "is_a", "any_dataset")
+        self.add("polydata", "is_a", "dataset_type")
+        self.add("polydata", "is_a", "any_dataset")
+        self.add("structured_grid", "is_a", "dataset_type")
+        self.add("structured_grid", "is_a", "any_dataset")
+        self.add("unstructured_grid", "is_a", "dataset_type")
+        self.add("unstructured_grid", "is_a", "any_dataset")
+        
+        # Filter input/output types (what they accept and produce)
+        # Slice - takes any dataset, produces surface
+        self.add("Slice", "accepts", "any_dataset")
+        self.add("Slice", "outputs", "surface_mesh")
+        self.add("Slice", "preserves_fields", "true")
+        
+        # Clip - takes any dataset, produces same type (cut)
+        self.add("Clip", "accepts", "volumetric_mesh")
+        self.add("Clip", "accepts", "surface_mesh")
+        self.add("Clip", "outputs", "volumetric_mesh")
+        self.add("Clip", "preserves_fields", "true")
+        
+        # Threshold - takes any dataset, produces subset
+        self.add("Threshold", "accepts", "volumetric_mesh")
+        self.add("Threshold", "accepts", "surface_mesh")
+        self.add("Threshold", "outputs", "unstructured_grid")
+        self.add("Threshold", "preserves_fields", "true")
+        self.add("Threshold", "requires_field", "scalar_field")
+        
+        # Contour/Isosurface - takes volumetric, produces surface
+        self.add("Contour", "accepts", "volumetric_mesh")
+        self.add("Contour", "outputs", "surface_mesh")
+        self.add("Contour", "preserves_fields", "true")
+        self.add("Contour", "requires_field", "scalar_field")
+        
+        # StreamTracer - takes ANY dataset with velocity vectors, produces polydata lines
+        # Per ParaView docs: "This filter operates on any type of dataset, provided it has point-centered vectors"
+        self.add("StreamTracer", "accepts", "volumetric_mesh")
+        self.add("StreamTracer", "accepts", "unstructured_grid")
+        self.add("StreamTracer", "accepts", "surface_mesh")
+        self.add("StreamTracer", "accepts", "polydata")
+        self.add("StreamTracer", "outputs", "polydata")
+        self.add("StreamTracer", "requires_field", "vector_field")
+        self.add("StreamTracer", "preserves_fields", "false")
+        self.add("StreamTracer", "note", "Works on surfaces but traces may be short if no volume to integrate through")
+        
+        # Glyph - takes any dataset with vectors, produces polydata
+        self.add("Glyph", "accepts", "volumetric_mesh")
+        self.add("Glyph", "accepts", "surface_mesh")
+        self.add("Glyph", "outputs", "polydata")
+        self.add("Glyph", "requires_field", "vector_field")
+        
+        # Calculator - takes any, outputs same with new field
+        self.add("Calculator", "accepts", "volumetric_mesh")
+        self.add("Calculator", "accepts", "surface_mesh")
+        self.add("Calculator", "accepts", "polydata")
+        self.add("Calculator", "outputs", "same_as_input")
+        self.add("Calculator", "adds_field", "computed_field")
+        
+        # ExtractSurface - takes volumetric, produces surface
+        self.add("ExtractSurface", "accepts", "volumetric_mesh")
+        self.add("ExtractSurface", "outputs", "surface_mesh")
+        self.add("ExtractSurface", "preserves_fields", "true")
+        
+        # IntegrateVariables - takes any, produces single-cell summary
+        self.add("IntegrateVariables", "accepts", "volumetric_mesh")
+        self.add("IntegrateVariables", "accepts", "surface_mesh")
+        self.add("IntegrateVariables", "outputs", "integrated_values")
+        
+        # PlotOverLine - takes any, produces 1D line data
+        self.add("PlotOverLine", "accepts", "volumetric_mesh")
+        self.add("PlotOverLine", "accepts", "surface_mesh")
+        self.add("PlotOverLine", "outputs", "line_data")
+        self.add("PlotOverLine", "preserves_fields", "true")
+        
+        # Field requirements for specific operations
+        self.add("velocity", "enables", "StreamTracer")
+        self.add("velocity", "enables", "Glyph")
+        self.add("pressure", "enables", "Contour")
+        self.add("q_criterion", "enables", "Contour")
+        self.add("scalar_field", "enables", "Threshold")
+        
+        # Common pipeline patterns
+        self.add("wake_streamlines", "pattern", "Threshold->StreamTracer")
+        self.add("wake_streamlines", "threshold_field", "velocity_magnitude")
+        self.add("surface_pressure", "pattern", "ExtractSurface->color_by_pressure")
+        self.add("vortex_core_line", "pattern", "Contour->StreamTracer")
         
         # ===================
         # FIELD ALIASES

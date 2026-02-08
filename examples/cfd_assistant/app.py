@@ -20,8 +20,7 @@ from trame.ui.vuetify3 import SinglePageLayout
 from trame_llm.paraview import ParaViewMCP
 
 # paraview-llm provides extended MCP and assistant
-from paraview_llm import ExtendedParaViewMCP
-from paraview_llm.assistant import create_assistant
+from paraview_llm import ExtendedParaViewMCP, CFDAssistant
 
 
 class CFDAssistantApp:
@@ -48,11 +47,10 @@ class CFDAssistantApp:
                     self.data_source = name[0]
                     break
         
-        # 5. Create LLM assistant with semantic reasoning
-        self.assistant = create_assistant(
-            base_mcp=self.base_mcp,
+        # 5. Create CFD assistant (safe tiered architecture)
+        self.assistant = CFDAssistant(
             extended_mcp=self.extended_mcp,
-            provider="openai",
+            base_mcp=self.base_mcp,
             data_source=self.data_source or "data"
         )
         
@@ -77,22 +75,33 @@ class CFDAssistantApp:
         
         try:
             # Run through assistant
-            result = self.assistant.execute(user_message)
+            result = self.assistant.query(user_message)
             
             # Build response message
-            response = result.get("response", "")
+            intent = result['intent'].type.value
+            workflow = result['result'].get('workflow', 'N/A')
+            success = result['success']
             
-            # Add tool summary if tools were called
-            tools = result.get("tools", [])
-            if tools:
-                response += "\n\n**Tools used:**\n"
-                for tool in tools:
-                    tool_name = tool.get("tool", "unknown")
-                    tool_result = tool.get("result", {})
-                    if isinstance(tool_result, dict) and "error" in tool_result:
-                        response += f"- ❌ {tool_name}: {tool_result['error']}\n"
+            if success:
+                # Get summary from result
+                summary = result.get('summary', '')
+                if not summary:
+                    # Generate basic summary from workflow result
+                    workflow_result = result['result'].get('result', {})
+                    if isinstance(workflow_result, dict):
+                        summary = f"Completed: {workflow}"
+                        if 'location' in workflow_result:
+                            loc = workflow_result['location']
+                            summary += f"\nLocation: ({loc[0]:.3f}, {loc[1]:.3f}, {loc[2]:.3f})"
+                        if 'value' in workflow_result:
+                            summary += f"\nValue: {workflow_result['value']:.4f}"
                     else:
-                        response += f"- ✅ {tool_name}\n"
+                        summary = f"Completed: {workflow}"
+                
+                response = summary
+            else:
+                error = result['result'].get('error', 'Unknown error')
+                response = f"**Error:** {error}"
             
             self.state.chat_history = [
                 *self.state.chat_history,

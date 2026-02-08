@@ -297,7 +297,7 @@ class ExtendedParaViewMCP:
                 domain_bounds[2] + dy, domain_bounds[3] - dy,
                 domain_bounds[4] + dz, domain_bounds[5] - dz
             ]
-            clip.InsideOut = 1
+            clip.Invert = 1
             simple.UpdatePipeline(proxy=clip)
             
             body_bounds = clip.GetDataInformation().GetBounds()
@@ -780,16 +780,158 @@ class ExtendedParaViewMCP:
     # QUERY AND SELECTION TOOLS
     # =========================================================================
     
+    def find_by_threshold(self, field: str, threshold: float, below: bool = True, proxy_name: str = None) -> dict:
+        """
+        Find centroid of region where field is below/above threshold.
+        
+        This is a view-independent alternative to find_by_query. Uses Threshold
+        filter instead of QuerySelect, so it works without an active view.
+        
+        Args:
+            field: Field name (e.g., "Velocity", "pressure")
+            threshold: Threshold value
+            below: If True, find where field < threshold; if False, field > threshold
+            proxy_name: Data source
+            
+        Returns:
+            Dict with centroid location, count, and bounds
+            
+        Examples:
+            find_by_threshold("Velocity", 0.1, below=True)  - low velocity region
+            find_by_threshold("pressure", 0.5, below=False) - high pressure region
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        resolved_field = self._resolve_field_type(field, proxy)
+        
+        try:
+            # Handle multiblock - merge first for consistent processing
+            simple.UpdatePipeline(proxy=proxy)
+            data = proxy.GetClientSideObject().GetOutput()
+            
+            if data is None:
+                return {"error": "No data available from proxy"}
+            
+            # Check if multiblock and merge if needed
+            if data.IsA("vtkMultiBlockDataSet"):
+                merge_input = simple.MergeBlocks(Input=proxy)
+                simple.UpdatePipeline(proxy=merge_input)
+                data = merge_input.GetClientSideObject().GetOutput()
+                cleanup_input_merge = merge_input
+            else:
+                cleanup_input_merge = None
+                
+            if data is None:
+                if cleanup_input_merge:
+                    simple.Delete(cleanup_input_merge)
+                return {"error": "No data available after merge"}
+            
+            # Check field type
+            arr = data.GetPointData().GetArray(resolved_field)
+            if arr is None:
+                arr = data.GetCellData().GetArray(resolved_field)
+            
+            if arr is None:
+                if cleanup_input_merge:
+                    simple.Delete(cleanup_input_merge)
+                return {"error": f"Field '{field}' not found"}
+            
+            is_vector = arr.GetNumberOfComponents() > 1
+            
+            # Use the merged data as input if we merged
+            threshold_source = cleanup_input_merge if cleanup_input_merge else proxy
+            
+            if is_vector:
+                # Need Calculator to compute magnitude
+                calc = simple.Calculator(Input=threshold_source)
+                calc.ResultArrayName = "_magnitude_"
+                calc.Function = f"mag({resolved_field})"
+                simple.UpdatePipeline(proxy=calc)
+                threshold_input = calc
+                threshold_field = "_magnitude_"
+            else:
+                threshold_input = threshold_source
+                threshold_field = resolved_field
+            
+            # Apply threshold
+            thresh = simple.Threshold(Input=threshold_input)
+            thresh.Scalars = ['POINTS', threshold_field]
+            if below:
+                thresh.LowerThreshold = -1e30
+                thresh.UpperThreshold = threshold
+            else:
+                thresh.LowerThreshold = threshold
+                thresh.UpperThreshold = 1e30
+            thresh.ThresholdMethod = "Between"
+            simple.UpdatePipeline(proxy=thresh)
+            
+            # Get result
+            result_data = thresh.GetClientSideObject().GetOutput()
+            
+            # Handle multiblock
+            if result_data.IsA("vtkMultiBlockDataSet"):
+                merge = simple.MergeBlocks(Input=thresh)
+                simple.UpdatePipeline(proxy=merge)
+                result_data = merge.GetClientSideObject().GetOutput()
+                cleanup_merge = merge
+            else:
+                cleanup_merge = None
+            
+            num_points = result_data.GetNumberOfPoints()
+            
+            if num_points == 0:
+                # Cleanup
+                if cleanup_merge:
+                    simple.Delete(cleanup_merge)
+                simple.Delete(thresh)
+                if is_vector:
+                    simple.Delete(calc)
+                if cleanup_input_merge:
+                    simple.Delete(cleanup_input_merge)
+                return {
+                    "error": f"No points found where {field} {'<' if below else '>'} {threshold}",
+                    "field": field,
+                    "threshold": threshold,
+                    "below": below
+                }
+            
+            # Compute centroid
+            from vtk.util.numpy_support import vtk_to_numpy
+            bounds = result_data.GetBounds()
+            points = vtk_to_numpy(result_data.GetPoints().GetData())
+            centroid = points.mean(axis=0).tolist()
+            
+            # Cleanup
+            if cleanup_merge:
+                simple.Delete(cleanup_merge)
+            simple.Delete(thresh)
+            if is_vector:
+                simple.Delete(calc)
+            if cleanup_input_merge:
+                simple.Delete(cleanup_input_merge)
+            
+            return {
+                "location": centroid,
+                "num_points": num_points,
+                "bounds": list(bounds),
+                "field": field,
+                "threshold": threshold,
+                "condition": f"{field} {'<' if below else '>'} {threshold}"
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
     def query_select(self, query: str, field_type: str = "POINT", proxy_name: str = None) -> dict:
         """
         Select points or cells matching a query expression (ANALYSIS ONLY).
         
-        NOTE: This is for counting/analysis, NOT visualization. Selection is
-        automatically cleared after counting. For visualization, use
-        create_streamlines or create_vortex_isosurface instead.
+        Uses full NumPy-like expression capability. Works without a view.
         
         Args:
-            query: Expression like "mag(Velocity) < 0.01" or "p > 0.5"
+            query: Expression like "mag(Velocity) < 0.01" or "Velocity_X < 0"
             field_type: "POINT" or "CELL"
             proxy_name: Name of proxy to query, or None for active source
             
@@ -799,26 +941,28 @@ class ExtendedParaViewMCP:
         Examples:
             query_select("mag(Velocity) < 0.01")  - count near-zero velocity points
             query_select("p < -0.5")              - count low pressure points
+            query_select("Velocity_X < 0")        - count reversed flow points
         """
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
         
-        # Remember current active source
-        original_active = simple.GetActiveSource()
-        
         try:
-            # Ensure the target proxy is active for QuerySelect
-            simple.SetActiveSource(proxy)
+            # Use ParaView's selection helper to create properly wrapped selection
+            from paraview.selection import _createSelection
+            import paraview.vtk as vtk
             
-            simple.QuerySelect(
+            # Convert field_type to element type
+            ftype = vtk.vtkSelectionNode.GetFieldTypeFromString(field_type)
+            element_type = vtk.vtkSelectionNode.ConvertSelectionFieldToAttributeType(ftype)
+            
+            selection = _createSelection('SelectionQuerySource',
                 QueryString=query,
-                FieldType=field_type,
-                InsideOut=0
-            )
+                ElementType=element_type)
             
-            # Extract selection to count and analyze
-            extracted = simple.ExtractSelection(Input=proxy)
+            # Use ExtractSelection with Selection parameter directly
+            # This avoids the "Failed to locate property: Input" warnings
+            extracted = simple.ExtractSelection(Input=proxy, Selection=selection)
             simple.UpdatePipeline(proxy=extracted)
             
             data = extracted.GetClientSideObject().GetOutput()
@@ -835,25 +979,13 @@ class ExtendedParaViewMCP:
             
             simple.Delete(extracted)
             
-            # Clear selection to avoid visual clutter (pink dots)
-            # Must clear on the specific proxy that has the selection
-            simple.SetActiveSource(proxy)
-            simple.ClearSelection()
-            
-            # Restore active source
-            simple.SetActiveSource(original_active)
-            
             return {
                 "query": query,
                 "field_type": field_type,
                 "num_selected": num_selected,
-                "status": "Selection created" if num_selected > 0 else "No matches"
+                "status": "Selection counted" if num_selected > 0 else "No matches"
             }
         except Exception as e:
-            # Clear selection and restore active source on error
-            simple.SetActiveSource(proxy)
-            simple.ClearSelection()
-            simple.SetActiveSource(original_active)
             return {"error": str(e), "query": query}
     
     def get_selection_info(self, proxy_name: str = None) -> dict:
@@ -922,11 +1054,10 @@ class ExtendedParaViewMCP:
         """
         Find the centroid of points matching a query expression.
         
-        Combines query_select + get_selection_info in one call.
-        Useful for finding flow features like stagnation points.
+        Uses full NumPy-like expression capability. Works without a view.
         
         Args:
-            query: Expression like "mag(Velocity) < 0.05" 
+            query: Expression like "mag(Velocity) < 0.05" or "Velocity_X < 0"
             proxy_name: Name of proxy, or None for active source
             
         Returns:
@@ -935,23 +1066,24 @@ class ExtendedParaViewMCP:
         Examples:
             find_by_query("mag(Velocity) < 0.05")  - find stagnation region
             find_by_query("p < -0.5")              - find low pressure region
+            find_by_query("Velocity_X < 0")        - find recirculation zone
         """
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
         
-        original_active = simple.GetActiveSource()
-        
         try:
-            simple.SetActiveSource(proxy)
+            # Use ParaView's selection helper to create properly wrapped selection
+            from paraview.selection import _createSelection
             
-            simple.QuerySelect(
+            selection = _createSelection('SelectionQuerySource', 
                 QueryString=query,
-                FieldType="POINT",
-                InsideOut=0
-            )
+                ElementType=0)  # 0 = POINT
             
-            extracted = simple.ExtractSelection(Input=proxy)
+            # Use ExtractSelection with Selection parameter directly
+            # This avoids the "Failed to locate property: Input" warnings
+            # that occur when using SetSelectionInput
+            extracted = simple.ExtractSelection(Input=proxy, Selection=selection)
             simple.UpdatePipeline(proxy=extracted)
             
             data = extracted.GetClientSideObject().GetOutput()
@@ -971,12 +1103,9 @@ class ExtendedParaViewMCP:
                 if cleanup_merge:
                     simple.Delete(cleanup_merge)
                 simple.Delete(extracted)
-                simple.SetActiveSource(proxy)
-                simple.ClearSelection()
-                simple.SetActiveSource(original_active)
                 return {"error": "No points match query", "query": query}
             
-            # Compute centroid (vectorized)
+            # Compute centroid
             from vtk.util.numpy_support import vtk_to_numpy
             bounds = data.GetBounds()
             points = vtk_to_numpy(data.GetPoints().GetData())
@@ -986,22 +1115,15 @@ class ExtendedParaViewMCP:
                 simple.Delete(cleanup_merge)
             simple.Delete(extracted)
             
-            # Clear selection to avoid pink dots
-            simple.SetActiveSource(proxy)
-            simple.ClearSelection()
-            simple.SetActiveSource(original_active)
-            
             return {
                 "location": centroid,
                 "num_points": num_points,
-                "bounds": [bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]],
+                "bounds": list(bounds),
                 "query": query
             }
         except Exception as e:
-            simple.SetActiveSource(proxy)
-            simple.ClearSelection()
-            simple.SetActiveSource(original_active)
             return {"error": str(e), "query": query}
+
     def find_minimum(self, field: str, proxy_name: str = None, exclude_boundaries: bool = True) -> dict:
         """
         Find location where a field has minimum value/magnitude.
@@ -2489,7 +2611,7 @@ out.GetPointData().AddArray(arr)
             downstream_clip.ClipType = 'Plane'
             downstream_clip.ClipType.Origin = origin
             downstream_clip.ClipType.Normal = normal
-            downstream_clip.InsideOut = 0  # keep the normal side (downstream)
+            downstream_clip.Invert = 0  # keep the normal side (downstream)
             simple.UpdatePipeline(proxy=downstream_clip)
             
             # Hide clip from view — this is just for analysis
@@ -2507,10 +2629,9 @@ out.GetPointData().AddArray(arr)
                     clip_name = name[0]
                     break
             
-            # Query velocity deficit in the downstream-only region
-            query = f"mag(Velocity) < {v_threshold}"
+            # Query velocity deficit in the downstream-only region using view-independent method
             try:
-                centroid_result = self.find_by_query(query, proxy_name=clip_name)
+                centroid_result = self.find_by_threshold("Velocity", v_threshold, below=True, proxy_name=clip_name)
             finally:
                 # Always clean up the temporary clip
                 try:
@@ -2520,14 +2641,13 @@ out.GetPointData().AddArray(arr)
             
             if "error" in centroid_result:
                 # Fall back to global deficit query (maybe unusual geometry)
-                centroid_result = self.find_by_query(query, proxy_name=proxy_name)
+                centroid_result = self.find_by_threshold("Velocity", v_threshold, below=True, proxy_name=proxy_name)
             
             if "error" in centroid_result:
                 return {
                     "error": f"No wake region found with velocity < {velocity_deficit*100:.0f}% of freestream",
                     "freestream_velocity": v_freestream,
-                    "threshold": v_threshold,
-                    "query": query
+                    "threshold": v_threshold
                 }
             
             return {
@@ -2538,8 +2658,7 @@ out.GetPointData().AddArray(arr)
                 "velocity_threshold": v_threshold,
                 "velocity_deficit_fraction": velocity_deficit,
                 "streamwise": streamwise,
-                "trailing_edge_coord": trailing_edge,
-                "query": query
+                "trailing_edge_coord": trailing_edge
             }
             
         except Exception as e:
@@ -3089,7 +3208,7 @@ out.GetPointData().AddArray(arr)
                     clip = simple.Clip(Input=surface)
                     clip.ClipType = 'Box'
                     clip.ClipType.Bounds = clip_bounds
-                    clip.InsideOut = 1  # Keep inside the box
+                    clip.Invert = 1  # Keep inside the box
                     simple.UpdatePipeline(proxy=clip)
                     intermediate_filters.append(clip)
                     

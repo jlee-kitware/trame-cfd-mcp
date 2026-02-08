@@ -1,214 +1,197 @@
 # Architecture
 
-## Design Philosophy
+## Design Principle
 
-### Intent-Based vs Workflow Composition
+**LLM NEVER MAKES EXECUTION DECISIONS.**
 
-This system uses **intent-based execution**: the LLM classifies user intent into one of 17 predefined workflows, which execute deterministically.
+This is the core architectural constraint. The LLM is restricted to:
+- Understanding what the user wants (intent classification)
+- Explaining what happened (result summarization)
+
+The LLM is NEVER allowed to:
+- Decide which tools to call
+- Manage proxy names or pipeline state
+- Loop or retry on failures
+- Compose novel tool sequences
+
+### Why This Constraint?
+
+We observed that giving the LLM free reign to orchestrate tools resulted in:
+- **1M tokens for 4 queries** (token explosion)
+- **16+ retries** of the same failing tool
+- **State confusion** with proxy names despite explicit instructions
+- **$0.15 for simple tasks** that should cost $0.001
+
+The LLM excels at understanding language but fails at:
+- State management
+- Knowing when to stop
+- Following multi-step procedures
+- Recovering from errors
+
+## Tiered Architecture
 
 ```
-INTENT-BASED (implemented):
-  Query → LLM (classify) → Workflow Lookup → Execute Tools
-
-WORKFLOW COMPOSITION (rejected):
-  Query → LLM (compose tools from 34 options) → Execute
+┌─────────────────────────────────────────────────────────────┐
+│  USER QUERY                                                 │
+│  "Show me the vortices"                                     │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  TIER 1: Intent Classification (LLM)                        │
+│                                                             │
+│  Single LLM call (~150 tokens)                              │
+│  Input: User query                                          │
+│  Output: Intent enum + parameters                           │
+│                                                             │
+│  Example: "Show me vortices" → VISUALIZE_VORTICES           │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  TIER 2: Workflow Selection (DETERMINISTIC)                 │
+│                                                             │
+│  No LLM - pure lookup                                       │
+│  Input: Intent enum                                         │
+│  Output: Predefined workflow                                │
+│                                                             │
+│  WORKFLOWS[VISUALIZE_VORTICES] → [hide_all, show_context,   │
+│                                   ensure_velocity,          │
+│                                   create_isosurface,        │
+│                                   focus_on_last]            │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  TIER 3: Execution (DETERMINISTIC)                          │
+│                                                             │
+│  No LLM - sequential tool execution                         │
+│  - Manages all state (proxy names, pipeline)                │
+│  - Handles errors without LLM consultation                  │
+│  - Uses ontology for domain knowledge (not LLM reasoning)   │
+│                                                             │
+│  Returns structured result                                  │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  TIER 4: Result Summary (LLM)                               │
+│                                                             │
+│  Single LLM call (~200 tokens)                              │
+│  Input: Execution result                                    │
+│  Output: Natural language explanation                       │
+│                                                             │
+│  "Created vortex visualization using Q-criterion..."        │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Why intent-based?**
+## Intent Types
 
-| Concern | Workflow Composition | Intent-Based |
-|---------|---------------------|--------------|
-| LLM task | Compose tool sequences | Classify into 17 categories |
-| Reliability | LLM overwhelmed by 34 tools | Simple classification |
-| Latency | ~2s (complex reasoning) | ~0.5s (simple classification) |
-| Predictability | Variable sequences | Deterministic workflows |
+The LLM classifies into exactly ONE of these predefined intents:
 
-**Key insight**: The LLM should be an **intent classifier**, not a **workflow composer**. All tool sequencing is predefined in the ontology.
+| Intent | Description | Workflow |
+|--------|-------------|----------|
+| `visualize_vortices` | Show vortical structures | Q-criterion isosurface |
+| `visualize_wake` | Show wake flow | Streamlines |
+| `visualize_streamlines` | Show flow streamlines | Streamlines |
+| `create_slice` | Create cut plane | Slice at center |
+| `compute_forces` | Calculate drag/lift | Force integration |
+| `analyze_drag` | Show drag distribution | Distribution chart |
+| `field_statistics` | Get field stats | Min/max/mean |
+| `describe_data` | Describe dataset | Characterize |
+| `reset_view` | Reset camera | Camera reset |
+| `hide_all` | Clear viz | Hide all |
+| `explain_concept` | Explain CFD concept | Ontology lookup |
+| `unknown` | Fallback | Error message |
 
-## System Layers
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         SYSTEM ARCHITECTURE                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  User Query                                                                 │
-│       │                                                                     │
-│       ▼                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  IntentExecutor                                                     │    │
-│  │  ├── extract_intent(): LLM classifies → workflow name              │    │
-│  │  └── execute_workflow(): Lookup WORKFLOWS[name] → run sequence     │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│       │                                                                     │
-│       ▼                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  WORKFLOWS (the Ontology)                                           │    │
-│  │  17 predefined CFD workflows, each a sequence of tools              │    │
-│  │  Example: vortices_q → [hide_all, show_context, isosurface, focus]  │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│       │                                                                     │
-│       ▼                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  ExtendedParaViewMCP (34 CFD tools)                                 │    │
-│  │  Analysis: find_minimum, find_maximum, field_statistics, etc.       │    │
-│  │  Forces: compute_forces, create_force_distribution_chart            │    │
-│  │  Vortex: create_vortex_isosurface (Q, λ2, swirl, helicity)          │    │
-│  │  Visualization: create_slice, create_streamlines, etc.              │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│       │                                                                     │
-│       ▼                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  ParaViewMCP (from trame-llm)                                       │    │
-│  │  Base ParaView operations: render, camera, color mapping, etc.      │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│       │                                                                     │
-│       ▼                                                                     │
-│  ParaView                                                                   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Workflow Definition
+## Workflow Definitions
 
 Each workflow is a predefined sequence of tool calls:
 
 ```python
 WORKFLOWS = {
-    "vortices_q": {
-        "description": "Visualize vortices using Q-criterion",
-        "sequence": [
+    IntentType.VISUALIZE_VORTICES: {
+        "name": "Visualize Vortices",
+        "steps": [
             ("hide_all", {}),
-            ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
-            ("create_vortex_isosurface", {"method": "q_criterion", "proxy_name": "{data_source}"}),
-            ("focus_on", {"proxy_name": "{last_created}"}),
-            ("set_streamwise_view", {"proxy_name": "{last_created}"}),
-        ]
+            ("show_data_context", {"opacity": 0.15}),
+            ("ensure_velocity_vector", {}),
+            ("create_vortex_isosurface", {"method": "q_criterion"}),
+            ("focus_on_last", {}),
+        ],
     },
-    # ... 16 more workflows
+    # ... more workflows
 }
 ```
 
-### Placeholder Substitution
+Workflows are:
+- **Predefined** - No runtime composition
+- **Deterministic** - Same intent → same execution
+- **Complete** - Each workflow is self-contained
 
-Workflows use placeholders that are resolved at execution time:
+## Component Roles
 
-| Placeholder | Resolved To |
-|-------------|-------------|
-| `{data_source}` | Name of the loaded dataset |
-| `{last_created}` | Name of the most recently created proxy |
-| `{wake_centroid}` | Centroid from detect_wake_region() result |
-| `{location}` | Location from find_minimum/maximum result |
+### LLM (OpenAI/Claude)
+- Intent classification (Tier 1)
+- Result summarization (Tier 4)
+- **Total: 2 calls per query**
 
-## Intent Classification
+### Ontology (CFDOntology)
+- Domain knowledge for workflow validation
+- Requirement checking (does data have velocity?)
+- Concept explanations
+- **NOT used for LLM reasoning**
 
-The LLM receives a simple classification prompt:
+### Extended MCP (ExtendedParaViewMCP)
+- High-level CFD tools
+- Vortex detection, force computation, streamlines
+- Used by executor, not by LLM directly
 
-```
-AVAILABLE WORKFLOWS:
-- vortices_q: Visualize vortices using Q-criterion
-- vortices_lambda2: Visualize vortex cores using lambda2 method
-- stagnation: Find stagnation point
-- ... (17 total)
+### Base MCP (ParaViewMCP from trame-llm)
+- Low-level ParaView operations
+- Proxy creation, property updates, rendering
 
-USER REQUEST: show me the vortices using Q-criterion
+### Workflow Executor
+- Runs predefined workflows
+- Manages all state
+- Handles errors deterministically
+- **LLM never involved in execution**
 
-Respond with JSON: {"workflow": "vortices_q"}
-```
+## Cost Comparison
 
-This is a trivial task for any LLM—just text classification with 17 categories.
+| Architecture | Tokens/Query | Cost/Query | Reliability |
+|--------------|-------------|------------|-------------|
+| Tool loop (old) | ~250,000 | $0.04 | Poor (retries, confusion) |
+| Safe (new) | ~350 | $0.00005 | Excellent (deterministic) |
 
-## Mock vs Real Execution
-
-Both modes use the same WORKFLOWS definitions:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          EXECUTION MODES                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  MOCK MODE (CI/testing)                                                     │
-│                                                                             │
-│    Query Key → MockLLMExecutor → MOCK_RESPONSES[key] → Execute              │
-│    "vortices_q"   (keyword match)   (predefined)                            │
-│                                                                             │
-│    Cost: $0 | Time: ~0.2s | Use: CI, development                            │
-│                                                                             │
-│  REAL LLM MODE (production)                                                 │
-│                                                                             │
-│    Natural Language → IntentExecutor → LLM → WORKFLOWS[name] → Execute      │
-│    "show me vortices"  (classify)   (API)   (predefined)                    │
-│                                                                             │
-│    Cost: ~$0.001 | Time: ~0.7s | Use: Production                            │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Tool Design Principles
-
-### Auto-Detection
-
-Tools automatically detect parameters when possible:
-
-```python
-def create_vortex_isosurface(method="q_criterion", threshold=None, ...):
-    # Auto-detect threshold if not provided
-    if threshold is None:
-        if method == "lambda2":
-            threshold = 0.01 * stats["min"]  # 1% of min (close to 0)
-        else:
-            threshold = percentile(values, 50)  # 50th percentile
-```
-
-### Intelligent Defaults
-
-Tools have CFD-aware defaults:
-
-| Parameter | Default | Rationale |
-|-----------|---------|-----------|
-| `opacity` | 0.15 | Context visible but not distracting |
-| `percentile` | 50 | Captures significant structures |
-| `num_points` | 50 | Enough streamlines for patterns |
-| `color_field` | "Velocity" | Most common CFD visualization |
-
-### Error Handling
-
-Tools handle common issues gracefully:
-
-- Missing fields → use available alternatives
-- Invalid bounds → compute from data
-- Missing view → create one
+**750x cheaper, far more reliable.**
 
 ## Adding New Workflows
 
-1. Add to `WORKFLOWS` in `intent_executor.py`:
+To add a new capability:
 
-```python
-"separation_bubble": {
-    "description": "Detect and visualize flow separation",
-    "sequence": [
-        ("hide_all", {}),
-        ("show_data_context", {"proxy_name": "{data_source}", "opacity": 0.15}),
-        ("detect_separation", {"proxy_name": "{data_source}"}),
-        ("focus_on", {"proxy_name": "{last_created}"}),
-    ]
-}
+1. **Add IntentType enum value** in `cfd_assistant.py`
+2. **Add workflow definition** in `WORKFLOWS` dict
+3. **Implement tool function** if new tool needed
+4. **Update classification prompt** with new intent description
+
+The LLM will automatically classify queries to the new intent.
+
+## What This Architecture Cannot Do
+
+- **Novel compositions**: Cannot combine tools in ways not predefined
+- **Adaptive retry**: Won't try alternative approaches on failure
+- **Complex reasoning**: Won't figure out multi-step analysis
+
+This is intentional. For complex exploratory analysis, use the tools directly or add new predefined workflows. The LLM should not improvise.
+
+## Files
+
 ```
-
-2. Implement any new tools in `extended_mcp.py`
-
-3. Add test case in `mock_llm.py` and `test_e2e.py`
-
-The LLM will automatically be able to classify queries to the new workflow.
-
-## Performance
-
-| Mode | Tests | Time | Cost |
-|------|-------|------|------|
-| Mock | 17/17 | 4.0s | $0 |
-| Real LLM | 17/17 | 12.5s | ~$0.02 |
-
-The intent-based architecture is:
-- **4x faster** than workflow composition (12s vs 51s)
-- **More reliable** (simple classification vs complex reasoning)
-- **More predictable** (deterministic workflows)
+src/paraview_llm/
+├── cfd_assistant.py      # Safe tiered architecture
+├── extended_mcp.py       # CFD tools
+├── ontology_triples.py   # Domain knowledge
+├── ontology_planning.py  # Workflow prerequisites
+└── mock_llm.py          # Testing without API
+```

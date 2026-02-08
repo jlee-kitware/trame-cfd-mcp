@@ -1,48 +1,42 @@
 """
-ParaView LLM
+ParaView LLM - Safe CFD Visualization Assistant
 
-CFD post-processing with natural language.
+ARCHITECTURE:
+    LLM does: Intent classification, result summarization
+    LLM does NOT: Tool selection, execution decisions, retry logic
 
-Architecture:
-- CFDAssistant: LLM-based tool composition with semantic reasoning (OpenAI/Anthropic)
-- PlanningOntology: Triple-based domain knowledge with STRIPS-style planning
-- ExtendedParaViewMCP: CFD analysis and visualization tools
-- Mock: Deterministic sequences for testing (no LLM calls)
-
-Components:
-- ExtendedParaViewMCP: CFD analysis and visualization tools (vortex detection, force computation, etc.)
-- PlanningOntology: Semantic reasoning - queries, inference, planning
-- CFDAssistant: Agent-based assistant with tool calling and conversation history
-- MockLLMExecutor: Deterministic test sequences (no LLM needed)
+Usage:
+    from paraview_llm import CFDAssistant, ExtendedParaViewMCP
+    
+    assistant = CFDAssistant(extended_mcp, base_mcp, data_source)
+    result = assistant.query("Show me the vortices")
 """
 
-__version__ = "0.3.0"
+from .extended_mcp import ExtendedParaViewMCP
+from .cfd_assistant import (
+    CFDAssistant,
+    WorkflowExecutor,
+    Intent,
+    IntentType,
+    WORKFLOWS,
+)
 
-from paraview_llm.extended_mcp import ExtendedParaViewMCP
-from paraview_llm.mock_llm import MockLLMExecutor, MOCK_RESPONSES
+# For testing without LLM
+from .mock_llm import MockLLMExecutor
 
 __all__ = [
+    # Main API
+    "CFDAssistant",
     "ExtendedParaViewMCP",
+    
+    # For advanced usage
+    "WorkflowExecutor",
+    "Intent", 
+    "IntentType",
+    "WORKFLOWS",
+    
+    # Testing
     "MockLLMExecutor",
-    "MOCK_RESPONSES",
 ]
 
-# Planning ontology - triple-based domain knowledge with semantic reasoning
-try:
-    from paraview_llm.ontology_planning import PlanningOntology
-    from paraview_llm.ontology_triples import CFDOntology
-    __all__.extend(["PlanningOntology", "CFDOntology"])
-except ImportError:
-    pass
-
-# CFDAssistant - LLM-based tool composition (requires openai or anthropic)
-try:
-    from paraview_llm.assistant import (
-        create_assistant,
-        OpenAICFDAssistant,
-        ClaudeCFDAssistant,
-        CFDAssistant,
-    )
-    __all__.extend(["create_assistant", "OpenAICFDAssistant", "ClaudeCFDAssistant", "CFDAssistant"])
-except ImportError:
-    pass  # openai/anthropic not installed
+__version__ = "0.2.0"
