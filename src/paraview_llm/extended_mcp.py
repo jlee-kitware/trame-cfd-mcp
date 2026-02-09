@@ -2965,13 +2965,19 @@ out.GetPointData().AddArray(arr)
             "focal_point": [cx, cy, cz]
         }
     
-    def hide_all(self) -> dict:
+    def hide_all(self, delete_derived: bool = False) -> dict:
         """
         Hide all proxies in the pipeline.
         
         Call this before creating new visualizations to start with a clean view.
         Then use show_data_context() to show base geometry, and visualization
         tools will show their results.
+        
+        Args:
+            delete_derived: If True, also delete all derived proxies (filters),
+                keeping only original data readers. This frees GPU texture units
+                but destroys any created visualizations. Use when running many
+                sequential workflows to avoid texture exhaustion.
         
         Returns:
             Dict with count of hidden proxies
@@ -2981,15 +2987,40 @@ out.GetPointData().AddArray(arr)
             return {"status": "no_view", "hidden": 0}
         
         count = 0
-        for name, proxy in simple.GetSources().items():
+        deleted = 0
+        
+        # Collect proxies first (can't modify during iteration)
+        all_proxies = list(simple.GetSources().items())
+        
+        for name, proxy in all_proxies:
             try:
                 simple.Hide(proxy, view)
                 count += 1
             except:
                 pass
         
+        if delete_derived:
+            # Delete all non-reader proxies to free resources
+            # Readers have names like XMLMultiBlockDataReader, EnSightReader, etc.
+            reader_types = {
+                'XMLMultiBlockDataReader', 'XMLUnstructuredGridReader', 
+                'XMLStructuredGridReader', 'XMLPolyDataReader', 'XMLImageDataReader',
+                'EnSightReader', 'PVDReader', 'OpenFOAMReader', 'CGNSReader',
+                'ExodusIIReader', 'LegacyVTKReader', 'STLReader', 'OBJReader',
+                'PLYReader', 'CSVReader', 'POpenFOAMReader', 'NetCDFReader'
+            }
+            
+            for name, proxy in all_proxies:
+                proxy_type = proxy.__class__.__name__
+                if proxy_type not in reader_types:
+                    try:
+                        simple.Delete(proxy)
+                        deleted += 1
+                    except:
+                        pass
+        
         simple.Render(view)
-        return {"status": "hidden_all", "count": count}
+        return {"status": "hidden_all", "count": count, "deleted": deleted}
     
     def extract_body_surface(
         self,

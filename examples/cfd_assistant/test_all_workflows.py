@@ -106,6 +106,9 @@ for i, (name, query) in enumerate(tests, 1):
     print_log(f"[{i}] {name}: {query}")
     print_log("=" * 60)
     
+    # Clean up derived proxies from previous test to avoid texture exhaustion
+    extended_mcp.hide_all(delete_derived=True)
+    
     result = assistant.query(query)
     
     intent = result['intent'].type.value
