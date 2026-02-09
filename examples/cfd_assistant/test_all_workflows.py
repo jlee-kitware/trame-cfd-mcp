@@ -79,14 +79,17 @@ tests = [
     # Streamlines
     ("streamlines_wake", "Show streamlines in the wake region"),
     
-    # Slicing
-    ("slice_midplane", "Create a slice through the center of the domain"),
+    # Slicing - be more specific about coloring
+    ("slice_pressure", "Create a slice at z=0 colored by pressure"),
     
     # Surface pressure
-    ("surface_pressure", "Show surface pressure distribution"),
+    ("surface_pressure", "Show surface pressure distribution on the body"),
     
     # Field statistics
     ("field_stats", "What is the range of velocity in this dataset?"),
+    
+    # Forces
+    ("forces", "What are the drag and lift forces?"),
 ]
 
 
