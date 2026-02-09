@@ -7,188 +7,151 @@ Natural language interface for CFD post-processing with ParaView.
 ParaView LLM enables natural language queries for CFD visualization:
 
 ```
-"show me the vortices"  →  Q-criterion isosurface with optimal threshold
-"where is the stagnation point"  →  Find minimum velocity location
-"calculate drag and lift"  →  Integrated pressure forces with Cd/Cl
-"what have we done?"  →  Summary of session history
+"show me the vortices"       →  Q-criterion isosurface
+"show streamlines in wake"   →  Detect wake → seed streamlines there
+"what are the forces?"       →  Compute drag and lift
+"describe the data"          →  Characterize loaded dataset
 ```
-
-## Key Features
-
-- **Safe Tiered Architecture**: LLM classifies intent → deterministic workflows execute
-- **13 CFD Workflows**: Vortex detection, forces, wake analysis, flow features
-- **Session Tracking**: Ask "what have we done?" to see analysis history
-- **View-Independent Queries**: QuerySelect works without active view
-- **Auto-Detection**: Streamwise direction, field types, optimal thresholds
 
 ## Installation
 
 ```bash
 pip install paraview-llm
-
-# With OpenAI support
-pip install paraview-llm[openai]
 ```
 
-## Quick Start
+## Two Approaches
+
+### 1. CFDToolsMCP (Recommended) - Composable Tools for trame_llm
+
+LLM chains query → action tools based on descriptions:
 
 ```python
 from paraview import simple
 from trame_llm.paraview import ParaViewMCP
-from paraview_llm import ExtendedParaViewMCP, CFDAssistant
+from trame_llm.core import LLMClient
+from paraview_llm import ExtendedParaViewMCP, CFDToolsMCP
 
 # Load data
 reader = simple.OpenDataFile("simulation.vtm")
-simple.UpdatePipeline()
 
-# Get reader name
-reader_name = None
-for name, proxy in simple.GetSources().items():
-    if proxy == reader:
-        reader_name = name[0]
-        break
+# Setup MCPs
+app = MyTrameApp()
+pv_mcp = ParaViewMCP(app)
+extended_mcp = ExtendedParaViewMCP(pv_mcp)
+cfd_tools = CFDToolsMCP(app, extended_mcp)
 
-# Setup MCP stack
-base_mcp = ParaViewMCP(app)
-extended_mcp = ExtendedParaViewMCP(base_mcp)
+# Register with trame_llm
+llm_client = LLMClient()
+llm_client.register_mcp(pv_mcp)      # Base ParaView tools
+llm_client.register_mcp(cfd_tools)   # CFD analysis tools
+await llm_client.initialize()
 
-# Create assistant
+# LLM sees all tools, chains them appropriately
+await llm_client.process_prompt("Show streamlines in the wake")
+# → detect_wake_region() → create_streamlines(center=wake_centroid)
+```
+
+**How it works:**
+- Query tools return data: `detect_wake_region()`, `find_stagnation_point()`
+- Action tools use that data: `create_streamlines(center=...)`, `create_vortex_isosurface()`
+- Tool docstrings include workflow hints that guide the LLM
+
+### 2. CFDAssistant (Legacy) - Hardcoded Workflows
+
+Intent classification → deterministic workflow execution:
+
+```python
+from paraview_llm import ExtendedParaViewMCP, CFDAssistant
+
 assistant = CFDAssistant(extended_mcp, base_mcp, reader_name)
-
-# Natural language query
 result = assistant.query("show me the vortices")
-print(f"Intent: {result['intent'].type.value}")
-print(f"Success: {result['success']}")
+# → Classifies as VISUALIZE_VORTICES → runs predefined steps
 ```
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                   SAFE TIERED ARCHITECTURE                                  │
-│                                                                             │
-│  PRINCIPLE: LLM never makes execution decisions                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  User: "show me the vortices"                                               │
-│                       │                                                     │
-│                       ▼                                                     │
-│  ┌─────────────────────────────────────────┐                                │
-│  │  Tier 1: Intent Classification (LLM)    │  ~150 tokens                   │
-│  │  Single call to classify user query     │                                │
-│  │  → IntentType.VISUALIZE_VORTICES        │                                │
-│  └─────────────────────────────────────────┘                                │
-│                       │                                                     │
-│                       ▼                                                     │
-│  ┌─────────────────────────────────────────┐                                │
-│  │  Tier 2: Workflow Selection             │  No LLM                        │
-│  │  WORKFLOWS[intent] → predefined steps   │                                │
-│  └─────────────────────────────────────────┘                                │
-│                       │                                                     │
-│                       ▼                                                     │
-│  ┌─────────────────────────────────────────┐                                │
-│  │  Tier 3: Execution                      │  No LLM                        │
-│  │  Run steps deterministically            │                                │
-│  └─────────────────────────────────────────┘                                │
-│                       │                                                     │
-│                       ▼                                                     │
-│  ┌─────────────────────────────────────────┐                                │
-│  │  Tier 4: Result Summary (LLM, optional) │  ~250 tokens                   │
-│  │  Explain what was done                  │                                │
-│  └─────────────────────────────────────────┘                                │
-│                                                                             │
-│  Total: ~1,200 tokens per query (vs 250K+ tokens with tool-loop approach)   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Why This Architecture?
-
-| Old Tool-Loop | Safe Tiered |
-|---------------|-------------|
-| LLM in execution loop | LLM only classifies |
-| 250K+ tokens / query | ~1,200 tokens / query |
-| Endless retries | Deterministic |
-| State confusion | Clean state tracking |
-| $0.04 per query | ~$0.0002 per query |
-
-## Available Workflows (13 tested)
-
-| Category | Workflow | Description |
-|----------|----------|-------------|
-| **Vortex** | visualize_vortices | Q-criterion vortex visualization |
-| | visualize_vortices_lambda2 | Lambda2 vortex cores |
-| | visualize_vortices_helicity | Helical structures |
-| **Flow** | visualize_wake | Wake region with streamlines |
-| | visualize_streamlines | Flow streamlines |
-| **Forces** | compute_forces | Compute drag/lift |
-| | analyze_drag | Drag distribution chart |
-| | analyze_lift | Lift distribution chart |
-| **Analysis** | field_statistics | Min/max/mean of field |
-| | field_histogram | Histogram chart |
-| **Location** | find_stagnation | Find stagnation point |
-| | find_maximum | Find field maximum |
-| | find_by_query | Query-based search |
-| **Session** | describe_session | What have we done? |
-
-## Components
+### CFDToolsMCP - LLM-Driven Composition
 
 ```
-paraview_llm/
-├── cfd_assistant.py     # Safe tiered architecture
-├── extended_mcp.py      # CFD analysis tools (30+ tools)
-├── mock_llm.py          # Deterministic test sequences
-├── ontology_triples.py  # CFD domain knowledge
-└── ontology_planning.py # Semantic planning (research)
+User: "Show streamlines in the wake"
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  LLM reads tool descriptions        │
+│  Picks: detect_wake_region          │
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  detect_wake_region()               │
+│  Returns: {wake_centroid, bounds}   │
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  LLM chains next tool               │
+│  create_streamlines(center=...)     │
+└─────────────────────────────────────┘
+         │
+         ▼
+    Visualization created
 ```
 
-### Extended MCP Tools
+**Key insight:** Tool docstrings guide chaining:
+```python
+def detect_wake_region() -> dict:
+    """Detect wake region behind body.
+    
+    USE RESULT FOR:
+    - create_streamlines(center=result["wake_centroid"])
+    - create_body_slice(location=result["wake_centroid"][0])
+    """
+```
 
-CFD-specific tools built on trame-llm's ParaViewMCP:
+## CFD Tools
 
-| Category | Tools |
-|----------|-------|
-| **Analysis** | `find_minimum`, `find_maximum`, `find_by_query`, `query_select`, `field_statistics` |
-| **Forces** | `compute_forces`, `create_force_distribution_chart` |
-| **Vortex** | `create_vortex_isosurface` (Q, λ2, swirl, vorticity, helicity) |
-| **Wake** | `detect_wake_region`, `find_by_threshold` |
-| **Charts** | `create_histogram_chart`, `field_histogram` |
-| **Visualization** | `create_streamlines`, `create_vortex_isosurface` |
-| **Utility** | `detect_streamwise_direction`, `hide_all`, `show_data_context`, `focus_on` |
+### Query Tools (return data)
+
+| Tool | Returns |
+|------|---------|
+| `describe_dataset` | Fields, bounds, mesh stats |
+| `detect_wake_region` | wake_centroid, wake_bounds, suggested_radius |
+| `detect_streamwise_direction` | streamwise axis, freestream_velocity |
+| `find_stagnation_point` | location, velocity value |
+| `find_maximum(field)` | location, value |
+| `find_minimum(field)` | location, value |
+| `get_field_statistics(field)` | min, max, mean, std |
+
+### Action Tools (create visualizations)
+
+| Tool | Creates |
+|------|---------|
+| `create_streamlines(center, radius)` | Flow streamlines |
+| `create_vortex_isosurface(method)` | Q-criterion/λ2/vorticity isosurface |
+| `create_body_slice(normal, color_by)` | Slice through body region |
+| `compute_forces()` | Drag/lift calculation |
+| `set_streamwise_view()` | Camera along flow |
+| `show_body_context(opacity)` | Transparent body surface |
 
 ## Testing
 
 ```bash
 cd examples/cfd_assistant
 
-# Run all workflow tests (requires OPENAI_API_KEY)
-pvpython -u --venv .venv test_all_workflows.py
-# → 13/13 tests passing
+# Test CFDToolsMCP with trame_llm
+pvpython --venv .venv test_cfd_tools.py
 
-# Headless testing
-pvpython --venv .venv headless.py --mock  # Mock mode (no API)
-pvpython --venv .venv headless.py         # Real LLM mode
+# Test legacy CFDAssistant workflows  
+pvpython --venv .venv test_all_workflows.py
 ```
 
-## Example Outputs
+## Design Philosophy
 
-### Vortex Visualization (Q-criterion)
-![Vortices](docs/images/vortices_q.png)
+**Ontology-informed, not ontology-driven:**
 
-### Accumulated Drag Distribution
-![Drag Distribution](docs/images/drag_distribution.png)
+The CFD domain knowledge (what a wake is, how to detect vortices, when to use Q-criterion) is encoded in tool descriptions, not runtime reasoning. This is simpler and works well in practice.
 
-### Spanwise Lift Distribution
-![Lift Distribution](docs/images/lift_distribution.png)
-
-### Pressure Histogram
-![Pressure Histogram](docs/images/pressure_histogram.png)
-
-## Environment Variables
-
-```bash
-export OPENAI_API_KEY="sk-..."       # Required for real LLM mode
-```
+If LLM selection proves unreliable for specific cases, deterministic intent rules can be added as a fallback layer.
 
 ## License
 
