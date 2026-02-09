@@ -162,9 +162,9 @@ Workflows are:
 | Architecture | Tokens/Query | Cost/Query | Reliability |
 |--------------|-------------|------------|-------------|
 | Tool loop (old) | ~250,000 | $0.04 | Poor (retries, confusion) |
-| Safe (new) | ~350 | $0.00005 | Excellent (deterministic) |
+| Safe (new) | ~1,200 | $0.0002 | Excellent (deterministic) |
 
-**750x cheaper, far more reliable.**
+**200,000x fewer tokens, far more reliable.**
 
 ## Adding New Workflows
 

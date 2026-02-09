@@ -97,7 +97,7 @@ print(f"Success: {result['success']}")
 │  │  Explain what was done                  │                                │
 │  └─────────────────────────────────────────┘                                │
 │                                                                             │
-│  Total: ~400 tokens per query (vs 1M tokens with tool-loop approach)        │
+│  Total: ~1,200 tokens per query (vs 250K+ tokens with tool-loop approach)   │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -107,10 +107,10 @@ print(f"Success: {result['success']}")
 | Old Tool-Loop | Safe Tiered |
 |---------------|-------------|
 | LLM in execution loop | LLM only classifies |
-| 1M tokens / 4 queries | ~400 tokens / query |
+| 250K+ tokens / query | ~1,200 tokens / query |
 | Endless retries | Deterministic |
 | State confusion | Clean state tracking |
-| $0.15 per task | ~$0.001 per task |
+| $0.04 per query | ~$0.0002 per query |
 
 ## Available Workflows (13 tested)
 
