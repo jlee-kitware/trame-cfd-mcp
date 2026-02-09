@@ -169,7 +169,7 @@ WORKFLOWS = {
         "description": "Create a slice plane through the data",
         "steps": [
             ("hide_all", {}),
-            ("show_data_context", {"opacity": 0.15}),
+            ("show_data_context", {"opacity": 0.3}),
             # Get positioning parameters - Z-normal at z=0 shows wing cross-section
             ("get_slice_parameters", {"normal": [0, 0, 1], "position": "center"}),
             # Create slice using base tools
@@ -192,7 +192,8 @@ WORKFLOWS = {
             ("base_update_color", {"proxy_name": "$step_3.name", "field_name": "pressure"}),
             ("rescale_color_map", {"proxy_name": "$step_3.name"}),
             ("set_scalar_bar_visibility", {"visible": True, "proxy_name": "$step_3.name"}),
-            ("focus_on_last", {}),
+            # Focus on context filter (body region) not the slice (full domain)
+            ("focus_on_context", {}),
         ],
     },
     
@@ -413,6 +414,11 @@ class WorkflowExecutor:
                 proxy_name=self.state.data_source,
                 opacity=i.get("opacity", 0.15)
             ),
+            "extract_body_surface": lambda i: self.extended.extract_body_surface(
+                proxy_name=self.state.data_source,
+                color=i.get("color", [0.3, 0.3, 0.3]),
+                line_width=i.get("line_width", 2.0)
+            ),
             "ensure_velocity_vector": lambda i: self.extended.ensure_velocity_vector(
                 proxy_name=self.state.data_source
             ),
@@ -420,6 +426,12 @@ class WorkflowExecutor:
             "create_streamlines": lambda i: self._create_streamlines(i),
             "create_slice_at_center": lambda i: self._create_slice(i),
             "create_clipped_slice": lambda i: self._create_clipped_slice(i),
+            "create_body_slice": lambda i: self.extended.create_body_slice(
+                normal=i.get("normal"),
+                color_field=i.get("color_field", "pressure"),
+                margin=i.get("margin", 0.3),
+                proxy_name=self.state.data_source
+            ),
             "get_slice_parameters": lambda i: self.extended.get_slice_parameters(
                 normal=i.get("normal"),
                 position=i.get("position", "center"),
@@ -473,6 +485,7 @@ class WorkflowExecutor:
             "count_by_query": lambda i: self._count_by_query(i),
             "reset_camera": lambda i: self._reset_camera(),
             "focus_on_last": lambda i: self._focus_on_last(),
+            "focus_on_context": lambda i: self._focus_on_context(),
             "explain_from_ontology": lambda i: self._explain_from_ontology(i),
             "describe_session": lambda i: self._describe_session(),
         }
@@ -821,6 +834,16 @@ class WorkflowExecutor:
         if self.state.last_created_proxy:
             return self.base.focus_on(self.state.last_created_proxy)
         return {"status": "no_proxy_to_focus"}
+    
+    def _focus_on_context(self) -> dict:
+        """Focus camera on context filter (body region, not full domain)."""
+        # Find the context filter (Clip created by show_data_context)
+        from paraview import simple
+        for name, proxy in simple.GetSources().items():
+            if 'Clip' in name[0]:
+                return self.base.focus_on(name[0])
+        # Fallback to reset camera
+        return self._reset_camera()
     
     def _explain_from_ontology(self, params: dict) -> dict:
         topic = params.get("topic", "")

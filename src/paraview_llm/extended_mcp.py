@@ -3183,6 +3183,171 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
 
+    def create_body_slice(
+        self,
+        normal: list[float] = None,
+        color_field: str = "pressure",
+        margin: float = 0.3,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Create a slice cropped to show only the body region.
+        
+        Uses stagnation point and pressure distribution to automatically
+        determine body bounds, then clips the slice to focus on the
+        aerodynamic body rather than showing the full farfield domain.
+        
+        Args:
+            normal: Slice normal [nx, ny, nz]. Default [0, 0, 1] (XY plane, top view).
+            color_field: Field to color by. Default "pressure".
+            margin: Extra margin around body as fraction of body extent. Default 0.3.
+            proxy_name: Data source name.
+            
+        Returns:
+            Dict with slice info and body bounds.
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            simple.UpdatePipeline(proxy=proxy)
+            
+            if normal is None:
+                normal = [0, 0, 1]  # XY plane (top view)
+            
+            # Find body region using stagnation point and high pressure
+            stag_result = self.find_minimum("Velocity", proxy_name=proxy_name)
+            stag_loc = stag_result.get("location", [0, 0, 0])
+            
+            # Get high pressure region bounds (body surface)
+            di = proxy.GetDataInformation()
+            full_bounds = list(di.GetBounds())
+            
+            # Create slice at z=0 (or appropriate plane based on normal)
+            origin = [
+                (full_bounds[0] + full_bounds[1]) / 2,
+                (full_bounds[2] + full_bounds[3]) / 2,
+                (full_bounds[4] + full_bounds[5]) / 2
+            ]
+            # For Z-normal, slice at z=0
+            if abs(normal[2]) > 0.5:
+                origin[2] = 0.0
+            
+            slice_filter = simple.Slice(Input=proxy)
+            slice_filter.SliceType = 'Plane'
+            slice_filter.SliceType.Origin = origin
+            slice_filter.SliceType.Normal = normal
+            simple.UpdatePipeline(proxy=slice_filter)
+            
+            # Find body bounds from high pressure region on slice
+            thresh = simple.Threshold(Input=slice_filter)
+            thresh.Scalars = ['POINTS', 'p']
+            thresh.LowerThreshold = 0.85  # High pressure = near body
+            thresh.UpperThreshold = 2.0
+            simple.UpdatePipeline(proxy=thresh)
+            
+            thresh_di = thresh.GetDataInformation()
+            if thresh_di.GetNumberOfPoints() > 0:
+                body_bounds = list(thresh_di.GetBounds())
+            else:
+                # Fallback: use stagnation point with fixed extent
+                body_bounds = [
+                    stag_loc[0] - 0.5, stag_loc[0] + 1.0,
+                    stag_loc[1] - 0.2, stag_loc[1] + 1.2,
+                    -0.1, 0.1
+                ]
+            
+            simple.Delete(thresh)
+            
+            # Add margin
+            extents = [body_bounds[1]-body_bounds[0], body_bounds[3]-body_bounds[2], body_bounds[5]-body_bounds[4]]
+            clip_bounds = [
+                body_bounds[0] - extents[0] * margin,
+                body_bounds[1] + extents[0] * margin,
+                body_bounds[2] - extents[1] * margin,
+                body_bounds[3] + extents[1] * margin,
+                body_bounds[4] - extents[2] * margin,
+                body_bounds[5] + extents[2] * margin,
+            ]
+            
+            # Clip slice to body region using plane clips
+            current = slice_filter
+            clips = []
+            
+            # Clip X max
+            clip = simple.Clip(Input=current)
+            clip.ClipType = 'Plane'
+            clip.ClipType.Origin = [clip_bounds[1], 0, 0]
+            clip.ClipType.Normal = [1, 0, 0]
+            clip.Invert = 1
+            simple.UpdatePipeline(proxy=clip)
+            clips.append(clip)
+            current = clip
+            
+            # Clip X min
+            clip = simple.Clip(Input=current)
+            clip.ClipType = 'Plane'
+            clip.ClipType.Origin = [clip_bounds[0], 0, 0]
+            clip.ClipType.Normal = [-1, 0, 0]
+            clip.Invert = 1
+            simple.UpdatePipeline(proxy=clip)
+            clips.append(clip)
+            current = clip
+            
+            # Clip Y max
+            clip = simple.Clip(Input=current)
+            clip.ClipType = 'Plane'
+            clip.ClipType.Origin = [0, clip_bounds[3], 0]
+            clip.ClipType.Normal = [0, 1, 0]
+            clip.Invert = 1
+            simple.UpdatePipeline(proxy=clip)
+            clips.append(clip)
+            current = clip
+            
+            # Get view
+            view = simple.GetActiveView()
+            if view is None:
+                view = simple.CreateRenderView()
+                simple.SetActiveView(view)
+            
+            # Hide intermediate filters
+            simple.Hide(slice_filter, view)
+            for c in clips[:-1]:
+                simple.Hide(c, view)
+            
+            # Show final clipped slice
+            display = simple.Show(current, view)
+            
+            # Color by field
+            field_name = self._resolve_field_type(color_field, proxy)
+            simple.ColorBy(display, ('POINTS', field_name))
+            display.RescaleTransferFunctionToDataRange(True)
+            display.SetScalarBarVisibility(view, True)
+            
+            simple.ResetCamera()
+            simple.Render(view)
+            
+            # Get name of final filter
+            final_name = None
+            for name, p in simple.GetSources().items():
+                if p == current:
+                    final_name = name[0]
+                    break
+            
+            return {
+                "status": "created",
+                "name": final_name,
+                "origin": origin,
+                "normal": normal,
+                "body_bounds": body_bounds,
+                "clip_bounds": clip_bounds,
+                "color_field": field_name,
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
     # NOTE: No create_slice wrapper - use base tools with positioning from:
     #   - get_geometry_info() for center/bounds
     #   - find_by_query() for feature-based positioning (stagnation, wake)
