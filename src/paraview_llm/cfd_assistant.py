@@ -41,7 +41,8 @@ class IntentType(Enum):
     # Flow visualization
     VISUALIZE_WAKE = "visualize_wake"
     VISUALIZE_STREAMLINES = "visualize_streamlines"
-    CREATE_SLICE = "create_slice"
+    # Removed: CREATE_SLICE - this is a base ParaView operation, not a CFD intent
+    # trame_llm handles "create a slice" directly via base.create("Slice")
     
     # Force analysis
     COMPUTE_FORCES = "compute_forces"
@@ -164,38 +165,10 @@ WORKFLOWS = {
         ],
     },
     
-    IntentType.CREATE_SLICE: {
-        "name": "Create Slice",
-        "description": "Create a slice plane through the data",
-        "steps": [
-            ("hide_all", {}),
-            ("show_data_context", {"opacity": 0.3}),
-            # Get positioning parameters - Z-normal at z=0 shows wing cross-section
-            ("get_slice_parameters", {"normal": [0, 0, 1], "position": "center"}),
-            # Create slice using base tools
-            ("base_create", {"filter_type": "Slice"}),
-            # Configure slice plane using results from get_slice_parameters (step 2)
-            ("base_update_sub_property", {
-                "proxy_name": "$last.name",
-                "property_name": "SliceType",
-                "sub_property_name": "Origin",
-                "value": "$step_2.origin"
-            }),
-            ("base_update_sub_property", {
-                "proxy_name": "$step_3.name",
-                "property_name": "SliceType",
-                "sub_property_name": "Normal",
-                "value": "$step_2.normal"
-            }),
-            # Show and color
-            ("base_show", {"proxy_name": "$step_3.name"}),
-            ("base_update_color", {"proxy_name": "$step_3.name", "field_name": "pressure"}),
-            ("rescale_color_map", {"proxy_name": "$step_3.name"}),
-            ("set_scalar_bar_visibility", {"visible": True, "proxy_name": "$step_3.name"}),
-            # Focus on context filter (body region) not the slice (full domain)
-            ("focus_on_context", {}),
-        ],
-    },
+    # Removed: CREATE_SLICE workflow
+    # "Create a slice" is a base ParaView operation handled by trame_llm directly.
+    # CFD-specific intents like VISUALIZE_VORTICES add domain knowledge about
+    # *what* to visualize and *how* to configure it.
     
     IntentType.COMPUTE_FORCES: {
         "name": "Compute Forces",
@@ -814,7 +787,6 @@ Vortex visualization:
 Flow visualization:
 - visualize_wake: Show wake region with streamlines
 - visualize_streamlines: Show flow streamlines
-- create_slice: Create a slice/cut plane
 
 Force analysis:
 - compute_forces: Calculate drag and lift forces (when user wants VALUES)

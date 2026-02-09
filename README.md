@@ -16,7 +16,7 @@ ParaView LLM enables natural language queries for CFD visualization:
 ## Key Features
 
 - **Safe Tiered Architecture**: LLM classifies intent → deterministic workflows execute
-- **14 CFD Workflows**: Vortex detection, forces, wake analysis, flow features
+- **13 CFD Workflows**: Vortex detection, forces, wake analysis, flow features
 - **Session Tracking**: Ask "what have we done?" to see analysis history
 - **View-Independent Queries**: QuerySelect works without active view
 - **Auto-Detection**: Streamwise direction, field types, optimal thresholds
@@ -112,7 +112,7 @@ print(f"Success: {result['success']}")
 | State confusion | Clean state tracking |
 | $0.04 per query | ~$0.0002 per query |
 
-## Available Workflows (14 tested)
+## Available Workflows (13 tested)
 
 | Category | Workflow | Description |
 |----------|----------|-------------|
@@ -121,7 +121,6 @@ print(f"Success: {result['success']}")
 | | visualize_vortices_helicity | Helical structures |
 | **Flow** | visualize_wake | Wake region with streamlines |
 | | visualize_streamlines | Flow streamlines |
-| | create_slice | Slice/cut plane |
 | **Forces** | compute_forces | Compute drag/lift |
 | | analyze_drag | Drag distribution chart |
 | | analyze_lift | Lift distribution chart |
@@ -154,7 +153,7 @@ CFD-specific tools built on trame-llm's ParaViewMCP:
 | **Vortex** | `create_vortex_isosurface` (Q, λ2, swirl, vorticity, helicity) |
 | **Wake** | `detect_wake_region`, `find_by_threshold` |
 | **Charts** | `create_histogram_chart`, `field_histogram` |
-| **Visualization** | `create_slice`, `create_streamlines` |
+| **Visualization** | `create_streamlines`, `create_vortex_isosurface` |
 | **Utility** | `detect_streamwise_direction`, `hide_all`, `show_data_context`, `focus_on` |
 
 ## Testing
@@ -164,7 +163,7 @@ cd examples/cfd_assistant
 
 # Run all workflow tests (requires OPENAI_API_KEY)
 pvpython -u --venv .venv test_all_workflows.py
-# → 14/14 tests passing
+# → 13/13 tests passing
 
 # Headless testing
 pvpython --venv .venv headless.py --mock  # Mock mode (no API)
@@ -175,9 +174,6 @@ pvpython --venv .venv headless.py         # Real LLM mode
 
 ### Vortex Visualization (Q-criterion)
 ![Vortices](docs/images/vortices_q.png)
-
-### Pressure Slice
-![Pressure Slice](docs/images/slice_pressure.png)
 
 ### Accumulated Drag Distribution
 ![Drag Distribution](docs/images/drag_distribution.png)

@@ -97,8 +97,8 @@ tests = [
     # Charts
     ("Histogram", "Show a histogram of pressure distribution"),
     
-    # Slice
-    ("Slice pressure", "Create a slice colored by pressure"),
+    # Removed: Slice - this is a base ParaView operation, not a CFD-specific intent
+    # "Create a slice" is handled by trame_llm directly via base.create("Slice")
 ]
 
 results = []
