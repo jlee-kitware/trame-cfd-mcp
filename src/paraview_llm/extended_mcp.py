@@ -2882,6 +2882,305 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
 
+    def create_point_marker(
+        self,
+        location: list[float],
+        radius: float = None,
+        color: list[float] = None,
+        label: str = None,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Create a visible sphere marker at a specific point location.
+        
+        Useful for highlighting found locations like stagnation points,
+        maximum/minimum values, or query results.
+        
+        Args:
+            location: [x, y, z] coordinates for the marker
+            radius: Sphere radius. If None, auto-sized to ~2% of data diagonal.
+            color: [r, g, b] color (0-1). Default is red [1, 0, 0].
+            label: Optional label for the marker (stored in result).
+            proxy_name: Reference proxy for auto-sizing radius.
+            
+        Returns:
+            Dict with marker name, location, and visual properties.
+        """
+        try:
+            # Auto-size radius based on data extent
+            if radius is None:
+                proxy = self._get_proxy(proxy_name)
+                if proxy:
+                    simple.UpdatePipeline(proxy=proxy)
+                    di = proxy.GetDataInformation()
+                    bounds = di.GetBounds()
+                    diag = ((bounds[1]-bounds[0])**2 + (bounds[3]-bounds[2])**2 + (bounds[5]-bounds[4])**2)**0.5
+                    radius = diag * 0.02
+                else:
+                    radius = 0.05  # fallback
+            
+            # Create sphere at location
+            sphere = simple.Sphere()
+            sphere.Center = location
+            sphere.Radius = radius
+            sphere.ThetaResolution = 16
+            sphere.PhiResolution = 16
+            simple.UpdatePipeline(proxy=sphere)
+            
+            # Show with solid color
+            view = simple.GetActiveView()
+            display = simple.Show(sphere, view)
+            
+            if color is None:
+                color = [1.0, 0.0, 0.0]  # Red
+            
+            display.DiffuseColor = color
+            display.AmbientColor = color
+            simple.ColorBy(display, None)  # Solid color
+            
+            simple.Render(view)
+            
+            # Get marker name
+            marker_name = None
+            for name, p in simple.GetSources().items():
+                if p == sphere:
+                    marker_name = name[0]
+                    break
+            
+            return {
+                "status": "created",
+                "marker_name": marker_name,
+                "location": location,
+                "radius": radius,
+                "color": color,
+                "label": label
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_slice_parameters(
+        self,
+        normal: list[float] = None,
+        position: str = "center",
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Get recommended parameters for creating a slice through the data.
+        
+        This is a QUERY tool - it computes slice positioning parameters
+        but does NOT create any filters. Use the returned values with
+        base.create("Slice") to actually create the slice.
+        
+        Args:
+            normal: Slice normal [nx, ny, nz]. Default [0, 1, 0] (XZ plane/side view).
+                Common choices:
+                - [1, 0, 0]: YZ plane (front view, perpendicular to flow)
+                - [0, 1, 0]: XZ plane (side view, spanwise cut)
+                - [0, 0, 1]: XY plane (top view)
+            position: Where to position the slice:
+                - "center": Center of bounding box (default)
+                - "quarter": 1/4 into domain along normal direction
+                - "body": Positioned to intersect body (uses clipped bounds)
+            proxy_name: Data source name.
+            
+        Returns:
+            Dict with:
+            - origin: [x, y, z] recommended slice origin
+            - normal: [nx, ny, nz] slice normal (normalized)
+            - bounds: [xmin, xmax, ymin, ymax, zmin, zmax] data bounds
+            
+        Example workflow:
+            params = get_slice_parameters(normal=[1,0,0], position="center")
+            base.create("Slice", Input=reader_name)
+            base.update_sub_property("Slice1", "SliceType", "Origin", params["origin"])
+            base.update_sub_property("Slice1", "SliceType", "Normal", params["normal"])
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            simple.UpdatePipeline(proxy=proxy)
+            di = proxy.GetDataInformation()
+            bounds = list(di.GetBounds())
+            
+            if normal is None:
+                normal = [0, 1, 0]  # XZ plane (side view)
+            
+            # Normalize
+            import math
+            mag = math.sqrt(sum(n*n for n in normal))
+            if mag > 0:
+                normal = [n/mag for n in normal]
+            
+            # Compute center
+            center = [
+                (bounds[0] + bounds[1]) / 2,
+                (bounds[2] + bounds[3]) / 2,
+                (bounds[4] + bounds[5]) / 2
+            ]
+            
+            # Compute origin based on position strategy
+            origin = center.copy()
+            
+            if position == "quarter":
+                # Position at 1/4 along normal direction
+                extents = [bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4]]
+                for i in range(3):
+                    if abs(normal[i]) > 0.5:
+                        origin[i] = bounds[2*i] + extents[i] * 0.25
+                        
+            elif position == "body":
+                # Position to intersect body (shrink bounds to exclude farfield)
+                margin = 0.2
+                body_bounds = [
+                    bounds[0] + (bounds[1]-bounds[0]) * margin,
+                    bounds[1] - (bounds[1]-bounds[0]) * margin,
+                    bounds[2] + (bounds[3]-bounds[2]) * margin,
+                    bounds[3] - (bounds[3]-bounds[2]) * margin,
+                    bounds[4] + (bounds[5]-bounds[4]) * margin,
+                    bounds[5] - (bounds[5]-bounds[4]) * margin,
+                ]
+                origin = [
+                    (body_bounds[0] + body_bounds[1]) / 2,
+                    (body_bounds[2] + body_bounds[3]) / 2,
+                    (body_bounds[4] + body_bounds[5]) / 2
+                ]
+                # Adjust for normal direction
+                for i in range(3):
+                    if abs(normal[i]) > 0.5:
+                        origin[i] = body_bounds[2*i] + (body_bounds[2*i+1] - body_bounds[2*i]) * 0.25
+            
+            # For Z-normal slices (top view), default to z=0
+            if position == "center" and abs(normal[2]) > 0.5:
+                origin[2] = 0.0
+            
+            return {
+                "origin": origin,
+                "normal": normal,
+                "bounds": bounds,
+                "position_strategy": position,
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+    def create_clipped_slice(
+        self,
+        normal: list[float] = None,
+        origin: list[float] = None,
+        color_field: str = "pressure",
+        clip_to_body: bool = False,
+        clip_margin: float = 0.2,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Create a slice colored by a field.
+        
+        Args:
+            normal: Slice normal [nx, ny, nz]. Default is [0, 1, 0] (XZ plane).
+            origin: Slice origin [x, y, z]. Default is positioned to intersect body.
+            color_field: Field to color by. Default "pressure".
+            clip_to_body: If True, clip farfield (may cause issues with thin slices).
+            clip_margin: Fraction of domain to clip from each edge if clipping.
+            proxy_name: Data source name.
+            
+        Returns:
+            Dict with slice info.
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            simple.UpdatePipeline(proxy=proxy)
+            di = proxy.GetDataInformation()
+            bounds = list(di.GetBounds())
+            
+            if normal is None:
+                normal = [0, 1, 0]  # XZ plane (side view)
+            
+            # Position slice intelligently based on normal direction
+            if origin is None:
+                origin = [
+                    (bounds[0] + bounds[1]) / 2,
+                    (bounds[2] + bounds[3]) / 2,
+                    (bounds[4] + bounds[5]) / 2
+                ]
+                # For Y-normal slices, position at 1/4 height to catch wing flow
+                if abs(normal[1]) > 0.5:
+                    origin[1] = bounds[2] + (bounds[3] - bounds[2]) * 0.25
+                # For Z-normal slices (top view), keep at center (Z=0)
+                elif abs(normal[2]) > 0.5:
+                    origin[2] = 0.0
+            
+            # Create slice
+            slice_filter = simple.Slice(Input=proxy)
+            slice_filter.SliceType = 'Plane'
+            slice_filter.SliceType.Origin = origin
+            slice_filter.SliceType.Normal = normal
+            simple.UpdatePipeline(proxy=slice_filter)
+            
+            final_filter = slice_filter
+            clip = None
+            
+            # Optional clipping (disabled by default - can cause empty results)
+            if clip_to_body:
+                dx = (bounds[1] - bounds[0]) * clip_margin
+                dy = (bounds[3] - bounds[2]) * clip_margin
+                dz = (bounds[5] - bounds[4]) * clip_margin
+                
+                clip_bounds = [
+                    bounds[0] + dx, bounds[1] - dx,
+                    bounds[2] + dy, bounds[3] - dy,
+                    bounds[4] + dz, bounds[5] - dz
+                ]
+                
+                clip = simple.Clip(Input=slice_filter)
+                clip.ClipType = 'Box'
+                clip.ClipType.Bounds = clip_bounds
+                clip.Invert = 1  # Keep inside
+                simple.UpdatePipeline(proxy=clip)
+                
+                # Hide intermediate slice
+                view = simple.GetActiveView()
+                simple.Hide(slice_filter, view)
+                final_filter = clip
+            
+            # Show final filter
+            view = simple.GetActiveView()
+            display = simple.Show(final_filter, view)
+            
+            # Color by field
+            field_name = self._resolve_field_type(color_field, proxy)
+            simple.ColorBy(display, ('POINTS', field_name))
+            display.RescaleTransferFunctionToDataRange(True)
+            display.SetScalarBarVisibility(view, True)
+            
+            simple.Render(view)
+            
+            # Get names
+            slice_name = None
+            clip_name = None
+            for name, p in simple.GetSources().items():
+                if p == slice_filter:
+                    slice_name = name[0]
+                if clip and p == clip:
+                    clip_name = name[0]
+            
+            return {
+                "status": "created",
+                "slice_name": slice_name,
+                "clip_name": clip_name,
+                "origin": origin,
+                "normal": normal,
+                "color_field": field_name,
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
     # NOTE: No create_slice wrapper - use base tools with positioning from:
     #   - get_geometry_info() for center/bounds
     #   - find_by_query() for feature-based positioning (stagnation, wake)

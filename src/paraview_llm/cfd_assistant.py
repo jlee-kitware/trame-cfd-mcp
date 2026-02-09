@@ -170,7 +170,7 @@ WORKFLOWS = {
         "steps": [
             ("hide_all", {}),
             ("show_data_context", {"opacity": 0.15}),
-            ("create_slice_at_center", {}),
+            ("create_clipped_slice", {}),
             ("focus_on_last", {}),
         ],
     },
@@ -223,6 +223,8 @@ WORKFLOWS = {
         "name": "Find Stagnation Point",
         "description": "Find location of minimum velocity (stagnation)",
         "steps": [
+            ("hide_all", {}),
+            ("show_data_context", {"opacity": 0.3}),
             ("find_minimum", {"field": "Velocity"}),
         ],
     },
@@ -231,6 +233,8 @@ WORKFLOWS = {
         "name": "Find Maximum",
         "description": "Find location of maximum field value",
         "steps": [
+            ("hide_all", {}),
+            ("show_data_context", {"opacity": 0.3}),
             ("find_maximum", {}),
         ],
     },
@@ -239,6 +243,8 @@ WORKFLOWS = {
         "name": "Find Minimum",
         "description": "Find location of minimum field value",
         "steps": [
+            ("hide_all", {}),
+            ("show_data_context", {"opacity": 0.3}),
             ("find_minimum", {}),
         ],
     },
@@ -247,6 +253,8 @@ WORKFLOWS = {
         "name": "Find by Query",
         "description": "Find centroid of region matching query expression",
         "steps": [
+            ("hide_all", {}),
+            ("show_data_context", {"opacity": 0.3}),
             ("find_by_query", {}),
         ],
     },
@@ -390,6 +398,15 @@ class WorkflowExecutor:
             "create_vortex_isosurface": lambda i: self._create_vortex_isosurface(i),
             "create_streamlines": lambda i: self._create_streamlines(i),
             "create_slice_at_center": lambda i: self._create_slice(i),
+            "create_clipped_slice": lambda i: self._create_clipped_slice(i),
+            "get_slice_parameters": lambda i: self.extended.get_slice_parameters(
+                normal=i.get("normal"),
+                position=i.get("position", "center"),
+                proxy_name=self.state.data_source
+            ),
+            "get_geometry_info": lambda i: self.extended.get_geometry_info(
+                proxy_name=self.state.data_source
+            ),
             "compute_forces": lambda i: self.extended.compute_forces(
                 proxy_name=self.state.data_source
             ),
@@ -406,9 +423,9 @@ class WorkflowExecutor:
                 proxy_name=self.state.data_source
             ),
             "detect_wake_region": lambda i: self._detect_wake_region(i),
-            "find_minimum": lambda i: self._find_minimum(i),
-            "find_maximum": lambda i: self._find_maximum(i),
-            "find_by_query": lambda i: self._find_by_query(i),
+            "find_minimum": lambda i: self._find_minimum_with_marker(i),
+            "find_maximum": lambda i: self._find_maximum_with_marker(i),
+            "find_by_query": lambda i: self._find_by_query_with_marker(i),
             "count_by_query": lambda i: self._count_by_query(i),
             "reset_camera": lambda i: self._reset_camera(),
             "focus_on_last": lambda i: self._focus_on_last(),
@@ -586,12 +603,88 @@ class WorkflowExecutor:
         field = params.get("field", params.get("target_field", "Velocity"))
         return self.extended.find_maximum(field, proxy_name=self.state.data_source)
     
+    def _find_minimum_with_marker(self, params: dict) -> dict:
+        """Find minimum and create a visual marker at the location."""
+        field = params.get("field", params.get("target_field", "Velocity"))
+        result = self.extended.find_minimum(field, proxy_name=self.state.data_source)
+        
+        if "error" not in result and "location" in result:
+            # Create marker at found location
+            marker_result = self.extended.create_point_marker(
+                location=result["location"],
+                color=[0.0, 1.0, 0.0],  # Green for minimum
+                label=f"Min {field}",
+                proxy_name=self.state.data_source
+            )
+            result["marker"] = marker_result.get("marker_name")
+        
+        return result
+    
+    def _find_maximum_with_marker(self, params: dict) -> dict:
+        """Find maximum and create a visual marker at the location."""
+        field = params.get("field", params.get("target_field", "pressure"))
+        result = self.extended.find_maximum(field, proxy_name=self.state.data_source)
+        
+        if "error" not in result and "location" in result:
+            # Create marker at found location
+            marker_result = self.extended.create_point_marker(
+                location=result["location"],
+                color=[1.0, 0.0, 0.0],  # Red for maximum
+                label=f"Max {field}",
+                proxy_name=self.state.data_source
+            )
+            result["marker"] = marker_result.get("marker_name")
+        
+        return result
+    
     def _find_by_query(self, params: dict) -> dict:
         """Find location by query - uses full NumPy expression capability."""
         query = params.get("query_expression")
         if not query:
             return {"error": "No query expression provided. Use expressions like 'mag(Velocity) < 0.1' or 'Velocity_X < 0'"}
         return self.extended.find_by_query(query, proxy_name=self.state.data_source)
+    
+    def _find_by_query_with_marker(self, params: dict) -> dict:
+        """Find location by query and create a visual marker."""
+        query = params.get("query_expression")
+        if not query:
+            return {"error": "No query expression provided. Use expressions like 'mag(Velocity) < 0.1' or 'Velocity_X < 0'"}
+        
+        result = self.extended.find_by_query(query, proxy_name=self.state.data_source)
+        
+        if "error" not in result and "location" in result:
+            # Create marker at found location
+            marker_result = self.extended.create_point_marker(
+                location=result["location"],
+                color=[1.0, 1.0, 0.0],  # Yellow for query results
+                label=f"Query: {query[:20]}...",
+                proxy_name=self.state.data_source
+            )
+            result["marker"] = marker_result.get("marker_name")
+        
+        return result
+    
+    def _create_clipped_slice(self, params: dict) -> dict:
+        """Create a slice clipped to body region."""
+        normal_str = params.get("slice_normal", "y")  # Default to XZ plane (side view)
+        normal_map = {
+            "x": [1, 0, 0], "streamwise": [1, 0, 0],
+            "y": [0, 1, 0], "vertical": [0, 1, 0], "side": [0, 1, 0],
+            "z": [0, 0, 1], "spanwise": [0, 0, 1], "top": [0, 0, 1],
+        }
+        normal = normal_map.get(normal_str, [1, 0, 0])
+        color_field = params.get("color_by") or params.get("target_field") or "pressure"
+        
+        result = self.extended.create_clipped_slice(
+            normal=normal,
+            color_field=color_field,
+            proxy_name=self.state.data_source
+        )
+        
+        if "clip_name" in result:
+            self.state.register_proxy(result["clip_name"], "ClippedSlice")
+        
+        return result
     
     def _count_by_query(self, params: dict) -> dict:
         query = params.get("query_expression")
