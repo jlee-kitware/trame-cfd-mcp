@@ -62,14 +62,29 @@ class CFDAnalysisMCP:
 
 These tools add arrays or return values. Use base ParaView tools for visualization.
 
-WORKFLOW EXAMPLE - Vortex visualization:
-  1. vortex = compute_vortex_field("q_criterion")  → adds "Q" array
-  2. thresh = suggest_threshold("Q", 50)           → returns threshold value
-  3. [ParaView Contour] on vortex.proxy_name, by "Q", at thresh.value
+WORKFLOW - Vortex visualization:
+  1. vortex = compute_vortex_field("q_criterion")  → adds "Q" array, returns proxy_name
+  2. thresh = suggest_threshold("Q", 50)           → returns threshold value  
+  3. [ParaView create] Contour filter
+  4. [ParaView update_string_property] ContourBy = "Q"
+  5. [ParaView update_list_property] Isosurfaces = [thresh.value]
+  6. [ParaView update_color] field_name="Velocity" to color by velocity
+  7. [ParaView show_or_hide] HIDE the XMLMultiBlockDataReader (original data)
+  8. [ParaView show_or_hide] HIDE the MergeBlocks and Gradient filters
+  9. [ParaView focus_on] "Contour1" to zoom camera to the isosurface
 
-WORKFLOW EXAMPLE - Wake streamlines:
+WORKFLOW - Wake streamlines:
   1. wake = detect_wake_region()                   → returns center, radius
-  2. [ParaView StreamTracer] with PointSource at wake.center, wake.radius
+  2. [ParaView create] StreamTracer filter
+  3. [ParaView update_string_property] SeedType = "Point Cloud"  
+  4. [ParaView update_sub_property] SeedType.Center = wake.center
+  5. [ParaView update_sub_property] SeedType.Radius = wake.radius
+  6. [ParaView create] Tube filter on StreamTracer (Radius=0.003)
+  7. [ParaView show_or_hide] HIDE original data and intermediate filters
+  8. [ParaView focus_on] the Tube to zoom camera
+
+CRITICAL: Use focus_on (not reset_camera) after creating visualization.
+CRITICAL: Hide intermediate filters (MergeBlocks, Gradient) and original data.
 """,
             "tools": [
                 # Dataset info
