@@ -1,29 +1,34 @@
 """
-ParaView LLM - CFD Visualization Tools for LLM Assistants
+ParaView LLM - CFD Analysis Tools for LLM Assistants
 
-TWO APPROACHES:
+RECOMMENDED: CFDAnalysisMCP - Pure analysis tools
+   
+Analysis tools compute fields and find values.
+Base ParaView tools handle visualization.
 
-1. CFDToolsMCP (NEW - Recommended)
-   Composable tools for trame_llm. LLM chains query → action tools.
-   
-   from paraview_llm import ExtendedParaViewMCP, CFDToolsMCP
-   
-   extended_mcp = ExtendedParaViewMCP(paraview_mcp)
-   cfd_tools = CFDToolsMCP(app, extended_mcp)
-   llm_client.register_mcp(cfd_tools)
+    from paraview_llm import ExtendedParaViewMCP, CFDAnalysisMCP
+    
+    extended_mcp = ExtendedParaViewMCP(paraview_mcp)
+    analysis_mcp = CFDAnalysisMCP(app, extended_mcp)
+    llm_client.register_mcp(paraview_mcp)   # Base: Contour, StreamTracer, etc.
+    llm_client.register_mcp(analysis_mcp)   # Analysis: compute_vortex_field, etc.
 
-2. CFDAssistant (Legacy)
-   Hardcoded workflows with intent classification.
-   
-   from paraview_llm import CFDAssistant, ExtendedParaViewMCP
-   assistant = CFDAssistant(extended_mcp, base_mcp, data_source)
-   result = assistant.query("Show me the vortices")
+Example workflow:
+    "Show vortices"
+    → compute_vortex_field("q_criterion")  # Analysis: adds Q array
+    → suggest_threshold("Q")               # Analysis: returns threshold
+    → [ParaView Contour]                   # Base: visualization
+
+LEGACY: CFDToolsMCP, CFDAssistant - still available
 """
 
 from .extended_mcp import ExtendedParaViewMCP
+from .cfd_analysis import CFDAnalysisMCP
+
+# Legacy - composable tools with some visualization
 from .cfd_tools import CFDToolsMCP
 
-# Legacy approach - still works but CFDToolsMCP is preferred
+# Legacy - hardcoded workflows
 from .cfd_assistant import (
     CFDAssistant,
     WorkflowExecutor,
@@ -32,23 +37,21 @@ from .cfd_assistant import (
     WORKFLOWS,
 )
 
-# For testing without LLM
 from .mock_llm import MockLLMExecutor
 
 __all__ = [
-    # New API (recommended)
+    # Recommended
     "ExtendedParaViewMCP",
-    "CFDToolsMCP",
+    "CFDAnalysisMCP",
     
-    # Legacy API
+    # Legacy
+    "CFDToolsMCP",
     "CFDAssistant",
     "WorkflowExecutor",
     "Intent", 
     "IntentType",
     "WORKFLOWS",
-    
-    # Testing
     "MockLLMExecutor",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
