@@ -3032,25 +3032,27 @@ out.GetPointData().AddArray(arr)
                         origin[i] = bounds[2*i] + extents[i] * 0.25
                         
             elif position == "body":
-                # Position to intersect body (shrink bounds to exclude farfield)
-                margin = 0.2
-                body_bounds = [
-                    bounds[0] + (bounds[1]-bounds[0]) * margin,
-                    bounds[1] - (bounds[1]-bounds[0]) * margin,
-                    bounds[2] + (bounds[3]-bounds[2]) * margin,
-                    bounds[3] - (bounds[3]-bounds[2]) * margin,
-                    bounds[4] + (bounds[5]-bounds[4]) * margin,
-                    bounds[5] - (bounds[5]-bounds[4]) * margin,
-                ]
-                origin = [
-                    (body_bounds[0] + body_bounds[1]) / 2,
-                    (body_bounds[2] + body_bounds[3]) / 2,
-                    (body_bounds[4] + body_bounds[5]) / 2
-                ]
-                # Adjust for normal direction
-                for i in range(3):
-                    if abs(normal[i]) > 0.5:
-                        origin[i] = body_bounds[2*i] + (body_bounds[2*i+1] - body_bounds[2*i]) * 0.25
+                # Position to intersect body - use stagnation point as reference
+                # The stagnation point is where velocity is minimum, usually on body surface
+                try:
+                    stag_result = self.find_minimum("Velocity", proxy_name=proxy_name)
+                    if stag_result.get("location"):
+                        body_center = stag_result["location"]
+                        origin = body_center.copy()
+                        # Offset slightly downstream for better visualization
+                        # Assume streamwise is roughly X direction
+                        origin[0] += 0.1 * (bounds[1] - bounds[0]) * 0.1  # 1% of X extent downstream
+                    else:
+                        # Fallback: use shrunk bounds
+                        margin = 0.4  # More aggressive shrink for CFD domains
+                        origin = [
+                            bounds[0] + (bounds[1]-bounds[0]) * margin,
+                            (bounds[2] + bounds[3]) / 2,
+                            (bounds[4] + bounds[5]) / 2
+                        ]
+                except:
+                    # Fallback to simple center
+                    origin = center.copy()
             
             # For Z-normal slices (top view), default to z=0
             if position == "center" and abs(normal[2]) > 0.5:
@@ -3269,6 +3271,68 @@ out.GetPointData().AddArray(arr)
             "confidence": result["confidence"],
             "focal_point": [cx, cy, cz]
         }
+    
+    def rescale_color_map(self, proxy_name: str = None) -> dict:
+        """
+        Rescale the color map to the data range of the current proxy.
+        
+        Call this after coloring a proxy by a field to ensure the color map
+        spans the actual data range.
+        
+        Args:
+            proxy_name: Proxy to rescale. If None, uses active source.
+            
+        Returns:
+            Dict with status
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        view = simple.GetActiveView()
+        if view is None:
+            return {"error": "No active view"}
+        
+        try:
+            display = simple.GetDisplayProperties(proxy, view)
+            if display is None:
+                return {"error": "Proxy not displayed in view"}
+            
+            display.RescaleTransferFunctionToDataRange(True)
+            simple.Render(view)
+            return {"status": "rescaled", "proxy": proxy_name or "active"}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def set_scalar_bar_visibility(self, visible: bool = True, proxy_name: str = None) -> dict:
+        """
+        Show or hide the scalar bar (color legend) for a proxy.
+        
+        Args:
+            visible: True to show, False to hide.
+            proxy_name: Proxy whose scalar bar to modify. If None, uses active source.
+            
+        Returns:
+            Dict with status
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        view = simple.GetActiveView()
+        if view is None:
+            return {"error": "No active view"}
+        
+        try:
+            display = simple.GetDisplayProperties(proxy, view)
+            if display is None:
+                return {"error": "Proxy not displayed in view"}
+            
+            display.SetScalarBarVisibility(view, visible)
+            simple.Render(view)
+            return {"status": "visible" if visible else "hidden", "proxy": proxy_name or "active"}
+        except Exception as e:
+            return {"error": str(e)}
     
     def hide_all(self, delete_derived: bool = False) -> dict:
         """

@@ -170,7 +170,28 @@ WORKFLOWS = {
         "steps": [
             ("hide_all", {}),
             ("show_data_context", {"opacity": 0.15}),
-            ("create_clipped_slice", {}),
+            # Get positioning parameters - Z-normal at z=0 shows wing cross-section
+            ("get_slice_parameters", {"normal": [0, 0, 1], "position": "center"}),
+            # Create slice using base tools
+            ("base_create", {"filter_type": "Slice"}),
+            # Configure slice plane using results from get_slice_parameters (step 2)
+            ("base_update_sub_property", {
+                "proxy_name": "$last.name",
+                "property_name": "SliceType",
+                "sub_property_name": "Origin",
+                "value": "$step_2.origin"
+            }),
+            ("base_update_sub_property", {
+                "proxy_name": "$step_3.name",
+                "property_name": "SliceType",
+                "sub_property_name": "Normal",
+                "value": "$step_2.normal"
+            }),
+            # Show and color
+            ("base_show", {"proxy_name": "$step_3.name"}),
+            ("base_update_color", {"proxy_name": "$step_3.name", "field_name": "pressure"}),
+            ("rescale_color_map", {"proxy_name": "$step_3.name"}),
+            ("set_scalar_bar_visibility", {"visible": True, "proxy_name": "$step_3.name"}),
             ("focus_on_last", {}),
         ],
     },
@@ -407,6 +428,29 @@ class WorkflowExecutor:
             "get_geometry_info": lambda i: self.extended.get_geometry_info(
                 proxy_name=self.state.data_source
             ),
+            "rescale_color_map": lambda i: self.extended.rescale_color_map(
+                proxy_name=i.get("proxy_name")
+            ),
+            "set_scalar_bar_visibility": lambda i: self.extended.set_scalar_bar_visibility(
+                visible=i.get("visible", True),
+                proxy_name=i.get("proxy_name")
+            ),
+            # Base MCP tools - for filter creation and property updates
+            "base_create": lambda i: self._base_create(i),
+            "base_update_sub_property": lambda i: self.base.update_sub_property(
+                i.get("property_name"),
+                i.get("sub_property_name"),
+                i.get("value"),
+                proxy_name=i.get("proxy_name")
+            ),
+            "base_show": lambda i: self.base.show_or_hide(
+                "show",
+                i.get("proxy_name")
+            ),
+            "base_update_color": lambda i: self.base.update_color(
+                proxy_name=i.get("proxy_name"),
+                field_name=i.get("field_name")
+            ),
             "compute_forces": lambda i: self.extended.compute_forces(
                 proxy_name=self.state.data_source
             ),
@@ -438,6 +482,10 @@ class WorkflowExecutor:
         Execute workflow for an intent.
         
         This is DETERMINISTIC - no LLM involved.
+        
+        Workflows can reference previous step results using "$step_N.key" syntax:
+        - "$step_0.origin" references the 'origin' key from step 0's result
+        - "$last.name" references the 'name' key from the most recent step
         """
         self.state.step_results = []
         
@@ -452,7 +500,7 @@ class WorkflowExecutor:
         
         # Execute each step in sequence
         results = []
-        for step_name, step_params in workflow["steps"]:
+        for step_idx, (step_name, step_params) in enumerate(workflow["steps"]):
             tool_fn = self._tools.get(step_name)
             if tool_fn is None:
                 return {
@@ -474,6 +522,9 @@ class WorkflowExecutor:
                 params["topic"] = intent.topic
             if intent.query_expression:
                 params["query_expression"] = intent.query_expression
+            
+            # Resolve references to previous step results
+            params = self._resolve_step_references(params, results)
             
             # Execute tool
             try:
@@ -696,6 +747,75 @@ class WorkflowExecutor:
         from paraview import simple
         simple.ResetCamera()
         return {"status": "camera_reset"}
+    
+    def _resolve_step_references(self, params: dict, results: list) -> dict:
+        """
+        Resolve references to previous step results in parameter values.
+        
+        Supports:
+        - "$step_N.key" - value of 'key' from step N's result
+        - "$last.key" - value of 'key' from most recent step's result
+        """
+        if not results:
+            return params
+        
+        resolved = {}
+        for key, value in params.items():
+            if isinstance(value, str) and value.startswith("$"):
+                # Parse reference
+                if value.startswith("$step_"):
+                    # $step_N.key format
+                    parts = value[6:].split(".", 1)
+                    if len(parts) == 2:
+                        try:
+                            step_idx = int(parts[0])
+                            result_key = parts[1]
+                            if 0 <= step_idx < len(results):
+                                step_result = results[step_idx].get("result", {})
+                                resolved[key] = step_result.get(result_key, value)
+                            else:
+                                resolved[key] = value  # Keep original if invalid
+                        except ValueError:
+                            resolved[key] = value
+                    else:
+                        resolved[key] = value
+                elif value.startswith("$last."):
+                    # $last.key format
+                    result_key = value[6:]
+                    last_result = results[-1].get("result", {})
+                    resolved[key] = last_result.get(result_key, value)
+                else:
+                    resolved[key] = value
+            else:
+                resolved[key] = value
+        
+        return resolved
+    
+    def _base_create(self, params: dict) -> dict:
+        """Create a filter using base MCP and track the created proxy."""
+        from paraview import simple
+        
+        filter_type = params.get("filter_type")
+        input_name = params.get("input_name", self.state.data_source)
+        
+        # Get existing proxies before creation
+        existing = set(name for name, _ in simple.GetSources().items())
+        
+        result = self.base.create(filter_type, input_proxy=input_name)
+        
+        # Find the newly created proxy if name wasn't returned
+        if result.get("name") is None:
+            new_proxies = set(name for name, _ in simple.GetSources().items()) - existing
+            if new_proxies:
+                # Get the first new proxy (there should be exactly one)
+                new_name = list(new_proxies)[0][0]  # name tuple is (name, id)
+                result["name"] = new_name
+        
+        # Track the created proxy name
+        if result.get("name"):
+            self.state.last_created_proxy = result["name"]
+        
+        return result
     
     def _focus_on_last(self) -> dict:
         if self.state.last_created_proxy:
