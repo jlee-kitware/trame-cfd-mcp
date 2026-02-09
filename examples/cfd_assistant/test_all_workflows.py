@@ -126,6 +126,7 @@ async def run_tests():
             if p != reader:
                 simple.Delete(p)
         simple.SetActiveSource(reader)
+        simple.Show(reader)  # Make sure reader is visible
         simple.ResetCamera()
         
         try:
