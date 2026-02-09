@@ -142,14 +142,33 @@ WORKFLOWS = {
     
     IntentType.VISUALIZE_WAKE: {
         "name": "Visualize Wake",
-        "description": "Show wake flow with streamlines",
+        "description": "Show wake flow with slice and streamlines",
         "steps": [
             ("hide_all", {}),
             ("show_data_context", {"opacity": 0.15}),
             ("ensure_velocity_vector", {}),
+            # Create Z-normal slice at z=0 to show velocity in wake
+            ("get_slice_parameters", {"normal": [0, 0, 1], "position": "center"}),
+            ("base_create", {"filter_type": "Slice"}),
+            ("base_update_sub_property", {
+                "proxy_name": "$last.name",
+                "property_name": "SliceType",
+                "sub_property_name": "Origin",
+                "value": "$step_3.origin"
+            }),
+            ("base_update_sub_property", {
+                "proxy_name": "$step_4.name",
+                "property_name": "SliceType",
+                "sub_property_name": "Normal",
+                "value": "$step_3.normal"
+            }),
+            ("base_show", {"proxy_name": "$step_4.name"}),
+            ("base_update_color", {"proxy_name": "$step_4.name", "field_name": "Velocity"}),
+            ("rescale_color_map", {"proxy_name": "$step_4.name"}),
+            # Add streamlines in wake region
             ("detect_wake_region", {}),
             ("create_streamlines", {}),
-            ("focus_on_last", {}),
+            ("focus_on_context", {}),
         ],
     },
     
