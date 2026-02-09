@@ -83,6 +83,9 @@ WORKFLOW - Vortex visualization:
   4. [ParaView Contour] on Gradient1, by Q, at 28.0
 """,
             "tools": [
+                # Dataset inspection (reads resources internally)
+                self.describe_dataset,
+                
                 # Field computation (adds arrays)
                 self.compute_vortex_field,
                 self.ensure_velocity_vector,
@@ -234,6 +237,22 @@ Diagonal: {diag:.4f}"""
     # =========================================================================
     # Tools - Computation and analysis
     # =========================================================================
+    
+    def describe_dataset(self) -> dict:
+        """Get dataset summary - type, cells, fields, bounds.
+        
+        Call this first to understand what data is loaded.
+        
+        Returns:
+            summary: Dataset overview
+            fields: Available field names
+            bounds: Spatial extent
+        """
+        return {
+            "summary": self._resource_dataset_summary(),
+            "fields": self._resource_dataset_fields(),
+            "bounds": self._resource_dataset_bounds(),
+        }
     
     def compute_vortex_field(self, method: str = "q_criterion") -> dict:
         """Compute vortex detection field and add to pipeline.
