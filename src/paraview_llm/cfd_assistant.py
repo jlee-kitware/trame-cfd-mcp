@@ -718,11 +718,14 @@ RESPOND WITH JSON ONLY:
 """
 
 
-def classify_intent_openai(query: str, client, model: str = "gpt-4o-mini") -> Intent:
+def classify_intent_openai(query: str, client, model: str = "gpt-4o-mini") -> tuple[Intent, dict]:
     """
     Classify user query into an Intent using OpenAI.
     
     This is the ONLY LLM call for decision-making.
+    
+    Returns:
+        Tuple of (Intent, usage_dict) where usage_dict has prompt_tokens, completion_tokens, total_tokens
     """
     response = client.chat.completions.create(
         model=model,
@@ -737,6 +740,13 @@ def classify_intent_openai(query: str, client, model: str = "gpt-4o-mini") -> In
     
     result = json.loads(response.choices[0].message.content)
     
+    # Extract usage
+    usage = {
+        "prompt_tokens": response.usage.prompt_tokens,
+        "completion_tokens": response.usage.completion_tokens,
+        "total_tokens": response.usage.total_tokens
+    }
+    
     # Map to enum
     intent_type = IntentType.UNKNOWN
     type_str = result.get("type", "unknown").lower()
@@ -745,7 +755,7 @@ def classify_intent_openai(query: str, client, model: str = "gpt-4o-mini") -> In
             intent_type = it
             break
     
-    return Intent(
+    intent = Intent(
         type=intent_type,
         target_field=result.get("target_field"),
         target_region=result.get("target_region"),
@@ -755,9 +765,11 @@ def classify_intent_openai(query: str, client, model: str = "gpt-4o-mini") -> In
         query_expression=result.get("query_expression"),
         raw_query=query
     )
+    
+    return intent, usage
 
 
-def classify_intent_claude(query: str, client, model: str = "claude-sonnet-4-20250514") -> Intent:
+def classify_intent_claude(query: str, client, model: str = "claude-sonnet-4-20250514") -> tuple[Intent, dict]:
     """Classify user query into an Intent using Claude."""
     response = client.messages.create(
         model=model,
@@ -774,6 +786,13 @@ def classify_intent_claude(query: str, client, model: str = "claude-sonnet-4-202
     
     result = json.loads(text.strip())
     
+    # Extract usage
+    usage = {
+        "prompt_tokens": response.usage.input_tokens,
+        "completion_tokens": response.usage.output_tokens,
+        "total_tokens": response.usage.input_tokens + response.usage.output_tokens
+    }
+    
     intent_type = IntentType.UNKNOWN
     type_str = result.get("type", "unknown").lower()
     for it in IntentType:
@@ -781,7 +800,7 @@ def classify_intent_claude(query: str, client, model: str = "claude-sonnet-4-202
             intent_type = it
             break
     
-    return Intent(
+    intent = Intent(
         type=intent_type,
         target_field=result.get("target_field"),
         target_region=result.get("target_region"),
@@ -791,13 +810,15 @@ def classify_intent_claude(query: str, client, model: str = "claude-sonnet-4-202
         query_expression=result.get("query_expression"),
         raw_query=query
     )
+    
+    return intent, usage
 
 
 # =============================================================================
 # RESULT SUMMARIZER - LLM used only for explanation, not decisions
 # =============================================================================
 
-def summarize_result_openai(query: str, result: dict, client, model: str = "gpt-4o-mini") -> str:
+def summarize_result_openai(query: str, result: dict, client, model: str = "gpt-4o-mini") -> tuple[str, dict]:
     """Generate natural language summary of execution result."""
     prompt = f"""The user asked: "{query}"
 
@@ -814,10 +835,16 @@ Be helpful and concise. Don't mention technical details like proxy names.
         temperature=0.3
     )
     
-    return response.choices[0].message.content
+    usage = {
+        "prompt_tokens": response.usage.prompt_tokens,
+        "completion_tokens": response.usage.completion_tokens,
+        "total_tokens": response.usage.total_tokens
+    }
+    
+    return response.choices[0].message.content, usage
 
 
-def summarize_result_claude(query: str, result: dict, client, model: str = "claude-sonnet-4-20250514") -> str:
+def summarize_result_claude(query: str, result: dict, client, model: str = "claude-sonnet-4-20250514") -> tuple[str, dict]:
     """Generate natural language summary using Claude."""
     prompt = f"""The user asked: "{query}"
 
@@ -833,7 +860,13 @@ Be helpful and concise. Don't mention technical details like proxy names.
         messages=[{"role": "user", "content": prompt}]
     )
     
-    return response.content[0].text
+    usage = {
+        "prompt_tokens": response.usage.input_tokens,
+        "completion_tokens": response.usage.output_tokens,
+        "total_tokens": response.usage.input_tokens + response.usage.output_tokens
+    }
+    
+    return response.content[0].text, usage
 
 
 # =============================================================================
@@ -876,7 +909,12 @@ class CFDAssistant:
             self._summarize = lambda q, r: summarize_result_claude(q, r, self.client, self.model)
         
         self.history = []
-        self._usage = {"requests": 0}
+        self._usage = {
+            "requests": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
     
     def query(self, user_query: str) -> dict:
         """
@@ -888,18 +926,24 @@ class CFDAssistant:
         Tier 4: LLM summarizes result
         """
         # Tier 1: Intent classification (LLM)
-        intent = self._classify(user_query)
+        intent, classify_usage = self._classify(user_query)
         self._usage["requests"] += 1
+        self._usage["prompt_tokens"] += classify_usage["prompt_tokens"]
+        self._usage["completion_tokens"] += classify_usage["completion_tokens"]
+        self._usage["total_tokens"] += classify_usage["total_tokens"]
         
         # Tier 2 & 3: Workflow selection and execution (DETERMINISTIC)
         exec_result = self.executor.execute(intent)
         
         # Tier 4: Result summarization (LLM)
         if exec_result["success"]:
-            response = self._summarize(user_query, exec_result["result"])
+            response, summarize_usage = self._summarize(user_query, exec_result["result"])
+            self._usage["requests"] += 1
+            self._usage["prompt_tokens"] += summarize_usage["prompt_tokens"]
+            self._usage["completion_tokens"] += summarize_usage["completion_tokens"]
+            self._usage["total_tokens"] += summarize_usage["total_tokens"]
         else:
             response = f"I couldn't complete that request: {exec_result.get('error', 'Unknown error')}"
-        self._usage["requests"] += 1
         
         # Track history
         self.history.append({
@@ -918,4 +962,18 @@ class CFDAssistant:
     
     @property
     def usage(self) -> dict:
-        return {**self._usage, "model": self.model}
+        """Get usage statistics including token counts and estimated cost."""
+        # Pricing for gpt-4o-mini (as of 2024): $0.15/1M input, $0.60/1M output
+        # Pricing for claude-sonnet: $3/1M input, $15/1M output
+        if self.provider == "openai":
+            input_cost = self._usage["prompt_tokens"] * 0.15 / 1_000_000
+            output_cost = self._usage["completion_tokens"] * 0.60 / 1_000_000
+        else:
+            input_cost = self._usage["prompt_tokens"] * 3.0 / 1_000_000
+            output_cost = self._usage["completion_tokens"] * 15.0 / 1_000_000
+        
+        return {
+            **self._usage,
+            "model": self.model,
+            "estimated_cost_usd": round(input_cost + output_cost, 6)
+        }

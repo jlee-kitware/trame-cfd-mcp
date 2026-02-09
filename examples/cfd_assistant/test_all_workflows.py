@@ -162,3 +162,14 @@ for r in results:
 
 passed = len([r for r in results if r["success"]])
 print_log(f"\nPassed: {passed}/{len(results)}")
+
+# Usage/Cost summary
+usage = assistant.usage
+print_log("")
+print_log("=" * 60)
+print_log("COST SUMMARY")
+print_log("=" * 60)
+print_log(f"Model: {usage['model']}")
+print_log(f"Requests: {usage['requests']}")
+print_log(f"Tokens: {usage['total_tokens']:,} ({usage['prompt_tokens']:,} prompt + {usage['completion_tokens']:,} completion)")
+print_log(f"Estimated cost: ${usage['estimated_cost_usd']:.4f}")
