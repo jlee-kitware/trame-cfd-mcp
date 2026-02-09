@@ -138,10 +138,13 @@ CRITICAL: Hide intermediate filters (MergeBlocks, Gradient) and original data.
             proxy_name: Name of filter with the array (e.g., "Gradient1")
             field_range: [min, max] of the field
             positive_is_vortex: True if positive values indicate vortices
+            hide_these: List of proxies to HIDE before showing the Contour
         
         NEXT STEPS:
-        - suggest_threshold(field_name) to get isosurface value
-        - [ParaView Contour] on proxy_name, by field_name, at threshold
+        1. suggest_threshold(field_name) to get isosurface value
+        2. [ParaView Contour] on proxy_name, by field_name, at threshold
+        3. [ParaView show_or_hide] HIDE each proxy in hide_these list
+        4. [ParaView focus_on] the Contour to frame it in view
         """
         from vtk.util.numpy_support import vtk_to_numpy
         
@@ -218,6 +221,7 @@ CRITICAL: Hide intermediate filters (MergeBlocks, Gradient) and original data.
             "field_range": [float(np.min(values)), float(np.max(values))],
             "positive_is_vortex": config["positive"],
             "method": method,
+            "hide_these": [proxy_name, "MergeBlocks1", "Gradient1"],  # Hide original data and intermediates
         }
     
     def ensure_velocity_vector(self) -> dict:
@@ -313,8 +317,14 @@ CRITICAL: Hide intermediate filters (MergeBlocks, Gradient) and original data.
             radius: Suggested seed radius
             bounds: [xmin, xmax, ymin, ymax, zmin, zmax]
             velocity_deficit: Fraction of freestream
+            hide_these: List of proxies to HIDE before showing streamlines
         
-        USE FOR: [ParaView StreamTracer] PointSource at center with radius
+        NEXT STEPS:
+        1. [ParaView create] StreamTracer, SeedType="Point Cloud"
+        2. [ParaView update_sub_property] SeedType.Center = center
+        3. [ParaView update_sub_property] SeedType.Radius = radius
+        4. [ParaView show_or_hide] HIDE each proxy in hide_these list
+        5. [ParaView focus_on] the StreamTracer
         """
         proxy_name = self._get_data_source()
         if not proxy_name:
@@ -331,6 +341,7 @@ CRITICAL: Hide intermediate filters (MergeBlocks, Gradient) and original data.
             "radius": result.get("cross_stream_extent", 0.1) / 2,
             "bounds": result.get("wake_bounds"),
             "velocity_deficit": result.get("velocity_threshold"),
+            "hide_these": [proxy_name],  # Hide original data when showing streamlines
         }
     
     def detect_streamwise_direction(self) -> dict:
