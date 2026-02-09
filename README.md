@@ -176,6 +176,9 @@ pvpython --venv .venv headless.py         # Real LLM mode
 ### Vortex Visualization (Q-criterion)
 ![Vortices](docs/images/vortices_q.png)
 
+### Pressure Slice
+![Pressure Slice](docs/images/slice_pressure.png)
+
 ### Accumulated Drag Distribution
 ![Drag Distribution](docs/images/drag_distribution.png)
 
