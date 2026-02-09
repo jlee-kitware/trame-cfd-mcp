@@ -1,10 +1,11 @@
 """
-Test all workflows in the safe CFD Assistant.
+Test all workflows using CFDAnalysisMCP + trame_llm.
 """
 
 import sys
 import os
 sys.path.insert(0, "/Users/jeff.lee/gitsync/paraview_llm/src")
+sys.path.insert(0, "/Users/jeff.lee/gitsync/trame-llm/src")
 
 from paraview import simple
 
@@ -15,6 +16,7 @@ vtk.vtkLogger.SetStderrVerbosity(vtk.vtkLogger.VERBOSITY_WARNING)
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
 
 def print_log(msg):
     print(msg, flush=True)
@@ -42,9 +44,11 @@ simple.SetActiveSource(reader)
 simple.Show(reader, view)
 simple.ResetCamera()
 
-# Initialize
+# Initialize MCPs
 from trame_llm.paraview import ParaViewMCP
-from paraview_llm import ExtendedParaViewMCP, CFDAssistant
+from trame_llm.core import LLMClient, ProgressType
+from paraview_llm import ExtendedParaViewMCP
+from paraview_llm.cfd_analysis import CFDAnalysisMCP
 
 class MinimalApp:
     def update(self): simple.Render()
@@ -60,122 +64,96 @@ class MinimalApp:
 app = MinimalApp()
 base_mcp = ParaViewMCP(app)
 extended_mcp = ExtendedParaViewMCP(base_mcp)
-
-assistant = CFDAssistant(
-    extended_mcp=extended_mcp,
-    base_mcp=base_mcp,
-    data_source=reader_name,
-    provider="openai"
-)
+analysis_mcp = CFDAnalysisMCP(app, extended_mcp)
 
 os.makedirs("output", exist_ok=True)
 
-# Test all key workflows
+# Test queries
 tests = [
-    # Basic
-    ("Describe data", "What data do I have?"),
+    # Basic understanding
+    ("describe_data", "What data do I have?"),
     
-    # Vortex methods
-    ("Vortex Q-criterion", "Show me vortices using Q-criterion"),
-    ("Vortex Lambda2", "Show vortices with lambda2 method"),
-    ("Vortex Helicity", "Visualize helical vortices"),
+    # Vortex visualization
+    ("vortex_q", "Show me vortices using Q-criterion"),
     
-    # Wake/Flow
-    ("Wake detection", "Show me the wake region"),
-    ("Streamlines", "Create streamlines"),
+    # Streamlines
+    ("streamlines_wake", "Show streamlines in the wake region"),
     
-    # Forces
-    ("Compute forces", "What are the drag and lift forces?"),
-    ("Drag distribution", "Show the accumulated drag distribution"),
-    ("Lift distribution", "Show the spanwise lift distribution"),
+    # Slicing
+    ("slice_midplane", "Create a slice through the center of the domain"),
     
-    # Location finding
-    ("Stagnation point", "Find the stagnation point"),
-    ("Max pressure", "Where is the maximum pressure?"),
-    ("Query location", "Where is velocity less than 0.3?"),
+    # Surface pressure
+    ("surface_pressure", "Show surface pressure distribution"),
     
-    # Charts
-    ("Histogram", "Show a histogram of pressure distribution"),
-    
-    # Removed: Slice - this is a base ParaView operation, not a CFD-specific intent
-    # "Create a slice" is handled by trame_llm directly via base.create("Slice")
+    # Field statistics
+    ("field_stats", "What is the range of velocity in this dataset?"),
 ]
 
-results = []
-for i, (name, query) in enumerate(tests, 1):
-    print_log("=" * 60)
-    print_log(f"[{i}] {name}: {query}")
-    print_log("=" * 60)
-    
-    # Clean up derived proxies from previous test to avoid texture exhaustion
-    extended_mcp.hide_all(delete_derived=True)
-    
-    result = assistant.query(query)
-    
-    intent = result['intent'].type.value
-    workflow = result['result'].get('workflow', 'N/A')
-    success = result['success']
-    
-    print_log(f"Intent: {intent}")
-    print_log(f"Workflow: {workflow}")
-    print_log(f"Success: {success}")
-    
-    # Show actual result data for location/value queries
-    workflow_result = result['result'].get('result', {})
-    if isinstance(workflow_result, dict):
-        if 'location' in workflow_result:
-            loc = workflow_result['location']
-            print_log(f"Location: ({loc[0]:.4f}, {loc[1]:.4f}, {loc[2]:.4f})")
-        if 'num_points' in workflow_result:
-            print_log(f"Points matched: {workflow_result['num_points']}")
-        if 'value' in workflow_result:
-            print_log(f"Value: {workflow_result['value']:.4f}")
-        if 'drag' in workflow_result:
-            print_log(f"Drag: {workflow_result['drag']:.4f}, Lift: {workflow_result.get('lift', 0):.4f}")
-    
-    if not success:
-        print_log(f"ERROR: {result['result'].get('error', 'Unknown')}")
-    
-    results.append({
-        "name": name,
-        "intent": intent,
-        "workflow": workflow,
-        "success": success,
-        "error": result['result'].get('error') if not success else None
-    })
-    
-    # Screenshot - use chart view if workflow created one, otherwise 3D view
-    screenshot_view = view
-    if hasattr(extended_mcp, '_last_chart_view') and extended_mcp._last_chart_view is not None:
-        # Chart workflow - capture the chart view
-        screenshot_view = extended_mcp._last_chart_view
-        extended_mcp._last_chart_view = None  # Reset for next iteration
-    
-    simple.Render(screenshot_view)
-    filename = f"output/workflow_test_{i:02d}_{name.replace(' ', '_').lower()}.png"
-    simple.SaveScreenshot(filename, screenshot_view, ImageResolution=[1024, 768])
-    print_log("")
 
-# Summary
-print_log("=" * 60)
-print_log("WORKFLOW TEST SUMMARY")
-print_log("=" * 60)
-for r in results:
-    status = "✓" if r["success"] else "✗"
-    print_log(f"{status} {r['name']:20} → {r['intent']:30} | {r['workflow']}")
-    if r["error"]:
-        print_log(f"   ERROR: {r['error']}")
+def progress_callback(ptype, msg):
+    if ptype == ProgressType.MCP_SELECTION:
+        print_log(f"[tool] {msg}")
+    elif ptype == ProgressType.LLM_RESPONSE:
+        # Truncate long responses
+        if len(msg) > 200:
+            msg = msg[:200] + "..."
+        print_log(f"[response] {msg}")
+    elif ptype == ProgressType.ERROR:
+        print_log(f"[ERROR] {msg}")
 
-passed = len([r for r in results if r["success"]])
-print_log(f"\nPassed: {passed}/{len(results)}")
 
-# Usage/Cost summary
-usage = assistant.usage
-print_log("")
-print_log("=" * 60)
-print_log("COST SUMMARY")
-print_log("=" * 60)
-print_log(f"Model: {usage['model']}")
-print_log(f"Requests: {usage['requests']}")
-print_log(f"Tokens: {usage['total_tokens']:,} ({usage['prompt_tokens']:,} prompt + {usage['completion_tokens']:,} completion)")
-print_log(f"Estimated cost: ${usage['estimated_cost_usd']:.4f}")
+async def run_tests():
+    # Initialize LLM client
+    llm = LLMClient()
+    llm.set_progress_handler(progress_callback)
+    llm.register_mcp(base_mcp)
+    llm.register_mcp(analysis_mcp)
+    await llm.initialize()
+    
+    print_log(f"\n{len(llm.tools)} tools available")
+    print_log(f"{len(llm.resources)} resources available\n")
+    
+    results = []
+    
+    for test_name, query in tests:
+        print_log("=" * 70)
+        print_log(f"TEST: {test_name}")
+        print_log(f"QUERY: {query}")
+        print_log("=" * 70)
+        
+        # Reset pipeline for each test (keep only reader)
+        for name, p in list(simple.GetSources().items()):
+            if p != reader:
+                simple.Delete(p)
+        simple.SetActiveSource(reader)
+        simple.ResetCamera()
+        
+        try:
+            await llm.process_prompt(query)
+            
+            # Save screenshot
+            simple.Render()
+            filename = f"output/workflow_{test_name}.png"
+            simple.SaveScreenshot(filename, view)
+            print_log(f"Saved: {filename}")
+            results.append((test_name, "PASS", ""))
+            
+        except Exception as e:
+            print_log(f"FAILED: {e}")
+            results.append((test_name, "FAIL", str(e)))
+        
+        print_log("")
+    
+    # Summary
+    print_log("=" * 70)
+    print_log("SUMMARY")
+    print_log("=" * 70)
+    passed = sum(1 for _, status, _ in results if status == "PASS")
+    print_log(f"Passed: {passed}/{len(results)}")
+    for name, status, error in results:
+        if status == "FAIL":
+            print_log(f"  FAIL: {name} - {error}")
+
+
+if __name__ == "__main__":
+    asyncio.run(run_tests())
