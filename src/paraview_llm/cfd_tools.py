@@ -203,22 +203,31 @@ Example - wake visualization:
     def create_body_slice(
         self,
         location: float = None,
-        normal: str = "x",
+        normal: str = "z",
         color_by: str = "Velocity"
     ) -> dict:
         """Create a slice through the body region (clipped to exclude farfield).
         
         Args:
             location: Position along normal axis. If None, uses body center.
-            normal: Slice normal - "x", "y", or "z"
+            normal: Slice normal - "x", "y", or "z" (default "z" for top view)
             color_by: Field to color by (default "Velocity")
             
         BEST PRACTICE: wake = detect_wake_region(); create_body_slice(location=wake["wake_centroid"][0])"""
         proxy_name = self._get_data_source()
         if not proxy_name:
             return {"error": "No data source found"}
+        
+        # Convert string normal to vector
+        normal_map = {
+            "x": [1, 0, 0], "-x": [-1, 0, 0],
+            "y": [0, 1, 0], "-y": [0, -1, 0],
+            "z": [0, 0, 1], "-z": [0, 0, -1],
+        }
+        normal_vec = normal_map.get(normal.lower(), [0, 0, 1])
+        
         return self.ext.create_body_slice(
-            normal=normal, color_field=color_by, proxy_name=proxy_name
+            normal=normal_vec, color_field=color_by, proxy_name=proxy_name
         )
     
     def compute_forces(
