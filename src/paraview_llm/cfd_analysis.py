@@ -112,6 +112,9 @@ WORKFLOW - Vortex visualization:
                 
                 # Pipeline state
                 "resource://pipeline/filters": self._resource_pipeline_filters,
+                
+                # Suggested operations based on data
+                "resource://cfd/suggested_operations": self._resource_suggested_operations,
             },
         }
     
@@ -234,24 +237,71 @@ Diagonal: {diag:.4f}"""
         
         return "Pipeline filters:\n  " + "\n  ".join(filters)
     
+    def _resource_suggested_operations(self) -> str:
+        """Suggest ParaView operations based on available data."""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return "No dataset loaded"
+        
+        proxy = simple.FindSource(proxy_name)
+        simple.UpdatePipeline(proxy=proxy)
+        info = proxy.GetDataInformation()
+        
+        suggestions = []
+        
+        # Check for vector fields (velocity)
+        pd = info.GetPointDataInformation()
+        has_velocity = False
+        scalar_fields = []
+        for i in range(pd.GetNumberOfArrays()):
+            arr = pd.GetArrayInformation(i)
+            if arr.GetNumberOfComponents() == 3:
+                has_velocity = True
+            elif arr.GetNumberOfComponents() == 1:
+                scalar_fields.append(arr.GetName())
+        
+        if has_velocity:
+            suggestions.append("StreamTracer - visualize flow paths (needs seed point)")
+            suggestions.append("Glyph - show velocity vectors")
+            suggestions.append("Gradient + Calculator - compute vorticity, Q-criterion")
+        
+        if scalar_fields:
+            suggestions.append(f"Contour - isosurfaces of {', '.join(scalar_fields[:3])}")
+            suggestions.append(f"Threshold - extract regions by {', '.join(scalar_fields[:3])}")
+        
+        # 3D data operations
+        bounds = info.GetBounds()
+        is_3d = (bounds[5] - bounds[4]) > 1e-6
+        if is_3d:
+            suggestions.append("Slice - cut plane through data")
+            suggestions.append("Clip - remove half of domain")
+        
+        suggestions.append("Calculator - compute derived quantities")
+        suggestions.append("IntegrateVariables - compute totals (forces, mass flow)")
+        suggestions.append("PlotOverLine - extract profile along a line")
+        
+        return "Suggested operations:\n  " + "\n  ".join(suggestions)
+    
     # =========================================================================
     # Tools - Computation and analysis
     # =========================================================================
     
     def describe_dataset(self) -> dict:
-        """Get dataset summary - type, cells, fields, bounds.
+        """Get dataset summary - type, cells, fields, bounds, and suggested operations.
         
-        Call this first to understand what data is loaded.
+        Call this first to understand what data is loaded and what you can do with it.
         
         Returns:
             summary: Dataset overview
             fields: Available field names
             bounds: Spatial extent
+            suggestions: Recommended operations based on data
         """
         return {
             "summary": self._resource_dataset_summary(),
             "fields": self._resource_dataset_fields(),
             "bounds": self._resource_dataset_bounds(),
+            "suggestions": self._resource_suggested_operations(),
         }
     
     def compute_vortex_field(self, method: str = "q_criterion") -> dict:
