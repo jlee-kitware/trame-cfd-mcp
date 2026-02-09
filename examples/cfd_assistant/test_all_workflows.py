@@ -143,11 +143,16 @@ for i, (name, query) in enumerate(tests, 1):
         "error": result['result'].get('error') if not success else None
     })
     
-    # Screenshot
-    simple.SetActiveView(view)
-    simple.Render(view)
+    # Screenshot - use chart view if workflow created one, otherwise 3D view
+    screenshot_view = view
+    if hasattr(extended_mcp, '_last_chart_view') and extended_mcp._last_chart_view is not None:
+        # Chart workflow - capture the chart view
+        screenshot_view = extended_mcp._last_chart_view
+        extended_mcp._last_chart_view = None  # Reset for next iteration
+    
+    simple.Render(screenshot_view)
     filename = f"output/workflow_test_{i:02d}_{name.replace(' ', '_').lower()}.png"
-    simple.SaveScreenshot(filename, view, ImageResolution=[1024, 768])
+    simple.SaveScreenshot(filename, screenshot_view, ImageResolution=[1024, 768])
     print_log("")
 
 # Summary

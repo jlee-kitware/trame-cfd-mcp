@@ -178,8 +178,8 @@ pvpython --venv .venv headless.py         # Real LLM mode
 ### Accumulated Drag Distribution
 ![Drag Distribution](docs/images/drag_distribution.png)
 
-### Spanwise Lift Distribution  
-![Lift Distribution](docs/images/lift_distribution.png)
+### Pressure Histogram
+![Pressure Histogram](docs/images/pressure_histogram.png)
 
 ## Environment Variables
 

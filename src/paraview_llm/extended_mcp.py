@@ -1685,6 +1685,9 @@ class ExtendedParaViewMCP:
             display = simple.Show(hist, chart_view)
             simple.Render(chart_view)
             
+            # Store chart view for screenshot capture
+            self._last_chart_view = chart_view
+            
             # Get statistics
             if arr is not None:
                 if arr.ndim > 1 and arr.shape[1] > 1:
@@ -1925,6 +1928,9 @@ class ExtendedParaViewMCP:
             display.SeriesLineThickness = ['Accumulated_Force', '2', 'Sectional_Force', '2']
             
             simple.Render(chart_view)
+            
+            # Store chart view for screenshot capture
+            self._last_chart_view = chart_view
             
             # Cleanup
             simple.Delete(normals_filter)
