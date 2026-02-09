@@ -29,37 +29,44 @@ class CFDToolsMCP:
     """
     
     def __init__(self, app, extended_mcp):
-        """
-        Args:
-            app: Trame application instance
-            extended_mcp: ExtendedParaViewMCP instance with the actual implementations
-        """
         self.app = app
         self.ext = extended_mcp
+        self._data_source_name = None
+    
+    def _get_data_source(self) -> str:
+        """Find and cache the primary data source (reader) name."""
+        if self._data_source_name:
+            if simple.FindSource(self._data_source_name):
+                return self._data_source_name
+            self._data_source_name = None
+        
+        # Find a reader in the pipeline
+        reader_patterns = ['Reader', 'OpenFOAM', 'EnSight', 'CGNS', 'XMLMultiBlock', 'ExodusII', 'XDMF']
+        for name, proxy in simple.GetSources().items():
+            proxy_name = name[0]
+            for pattern in reader_patterns:
+                if pattern in proxy_name:
+                    self._data_source_name = proxy_name
+                    return proxy_name
+        
+        # Fallback: first source that isn't a filter
+        filter_patterns = ['Contour', 'Clip', 'Slice', 'Gradient', 'Calculator', 
+                          'Threshold', 'Extract', 'Merge', 'Stream', 'Glyph']
+        for name, proxy in simple.GetSources().items():
+            proxy_name = name[0]
+            if not any(f in proxy_name for f in filter_patterns):
+                self._data_source_name = proxy_name
+                return proxy_name
+        
+        return None
     
     @property
     def mcp(self):
         return {
             "name": "CFD Analysis Tools",
-            "instructions": """
-CFD-specific tools for aerodynamic analysis and visualization.
+            "instructions": """CFD-specific tools for aerodynamic analysis.
 
-QUERY TOOLS (return data to use in subsequent calls):
-- detect_wake_region: Find wake location and bounds
-- detect_streamwise_direction: Find flow direction  
-- find_stagnation_point: Find where velocity is minimum
-- get_field_statistics: Get min/max/mean of a field
-- describe_dataset: Get overview of loaded data
-
-ACTION TOOLS (create visualizations using query results):
-- create_streamlines: Visualize flow paths (pass center from detect_wake_region)
-- create_vortex_isosurface: Show vortex structures
-- create_body_slice: Create slice through body region
-- compute_forces: Calculate drag and lift
-
-WORKFLOW PATTERN:
-1. Call query tool to get location/bounds
-2. Use result to parameterize action tool
+WORKFLOW: Call query tools first, then use results in action tools.
 
 Example - wake visualization:
   wake = detect_wake_region()
@@ -74,7 +81,6 @@ Example - wake visualization:
                 self.find_maximum,
                 self.find_minimum,
                 self.get_field_statistics,
-                
                 # Action tools
                 self.create_streamlines,
                 self.create_vortex_isosurface,
@@ -86,79 +92,44 @@ Example - wake visualization:
             ],
         }
     
-    # =========================================================================
-    # Query Tools - Return data for LLM to use
-    # =========================================================================
+    # === Query Tools ===
     
     def describe_dataset(self) -> dict:
-        """
-        Describe the loaded CFD dataset.
-        
-        Returns overview including:
-        - Bounds and dimensions
-        - Available fields (velocity, pressure, etc.)
-        - Number of cells/points
-        - Body location (if detected)
-        
-        CALL THIS FIRST to understand what data is available.
-        
-        Returns:
-            Dict with dataset characterization
-        """
-        return self.ext.characterize_dataset()
+        """Describe the loaded CFD dataset (bounds, fields, mesh stats).
+        CALL THIS FIRST to understand what data is available."""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        return self.ext.characterize_dataset(proxy_name=proxy_name)
     
     def detect_wake_region(self) -> dict:
-        """
-        Detect the wake region behind a body.
+        """Detect the wake region (velocity deficit behind body).
         
-        Finds where velocity is significantly lower than freestream,
-        indicating the wake/deficit region.
+        Returns: wake_centroid, wake_bounds, suggested_radius
         
-        Returns:
-            Dict with:
-            - wake_centroid: [x, y, z] center of wake region
-            - wake_bounds: [xmin, xmax, ymin, ymax, zmin, zmax]
-            - velocity_threshold: velocity value used for detection
-            - suggested_radius: good radius for seeding streamlines
-            
-        USE THE RESULT TO:
-        - create_streamlines(center=result["wake_centroid"])
-        - create_body_slice(location=result["wake_centroid"][0])
-        """
-        return self.ext.detect_wake_region()
+        USE RESULT FOR: create_streamlines(center=result["wake_centroid"])"""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        return self.ext.detect_wake_region(proxy_name=proxy_name)
     
     def detect_streamwise_direction(self) -> dict:
-        """
-        Detect the primary flow direction (streamwise axis).
+        """Detect primary flow direction.
         
-        Analyzes the velocity field to determine which axis
-        aligns with the main flow direction.
-        
-        Returns:
-            Dict with:
-            - streamwise: axis name ("+x", "-x", "+y", etc.)
-            - freestream_velocity: magnitude of freestream
-            
-        USE THE RESULT TO:
-        - set_streamwise_view() to look along flow
-        - interpret wake_bounds from detect_wake_region()
-        """
-        return self.ext.detect_streamwise_direction()
+        Returns: streamwise axis (+x, -x, +y, etc.), freestream_velocity"""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        return self.ext.detect_streamwise_direction(proxy_name=proxy_name)
     
     def find_stagnation_point(self) -> dict:
-        """
-        Find the stagnation point where flow velocity is zero/minimum.
+        """Find stagnation point (minimum velocity location).
         
-        Returns:
-            Dict with:
-            - location: [x, y, z] coordinates
-            - value: velocity magnitude at that point
-            
-        USE THE RESULT TO:
-        - create_point_marker(location=result["location"]) to mark it
-        - understand leading edge location
-        """
-        result = self.ext.find_minimum(field="Velocity", exclude_boundaries=True)
+        Returns: location [x,y,z], value"""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        result = self.ext.find_minimum(field="Velocity", proxy_name=proxy_name, exclude_boundaries=True)
         return {
             "location": result.get("location"),
             "value": result.get("value"),
@@ -166,44 +137,27 @@ Example - wake visualization:
         }
     
     def find_maximum(self, field: str = "pressure") -> dict:
-        """
-        Find location of maximum value for a field.
-        
-        Args:
-            field: Field name (pressure, Velocity, etc.)
-            
-        Returns:
-            Dict with location and value
-        """
-        return self.ext.find_maximum(field=field)
+        """Find location of maximum value for a field."""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        return self.ext.find_maximum(field=field, proxy_name=proxy_name)
     
     def find_minimum(self, field: str = "pressure") -> dict:
-        """
-        Find location of minimum value for a field.
-        
-        Args:
-            field: Field name (pressure, Velocity, etc.)
-            
-        Returns:
-            Dict with location and value
-        """
-        return self.ext.find_minimum(field=field)
+        """Find location of minimum value for a field."""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        return self.ext.find_minimum(field=field, proxy_name=proxy_name)
     
     def get_field_statistics(self, field: str = "pressure") -> dict:
-        """
-        Get statistics for a field (min, max, mean, std).
-        
-        Args:
-            field: Field name to analyze
-            
-        Returns:
-            Dict with min, max, mean, std, and percentiles
-        """
-        return self.ext.field_statistics(field=field)
+        """Get statistics for a field (min, max, mean, std)."""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        return self.ext.field_statistics(field=field, proxy_name=proxy_name)
     
-    # =========================================================================
-    # Action Tools - Create visualizations
-    # =========================================================================
+    # === Action Tools ===
     
     def create_streamlines(
         self,
@@ -212,33 +166,21 @@ Example - wake visualization:
         num_points: int = 100,
         direction: str = "both"
     ) -> dict:
-        """
-        Create streamlines to visualize flow patterns.
-        
-        Seeds streamlines from a spherical point cloud centered at
-        the specified location.
+        """Create streamlines to visualize flow patterns.
         
         Args:
-            center: [x, y, z] seed center. If None, auto-detects from wake.
-            radius: Seed sphere radius. If None, auto-sized to wake.
+            center: [x,y,z] seed center. If None, auto-detects from wake.
+            radius: Seed sphere radius. If None, auto-sized.
             num_points: Number of seed points (default 100)
             direction: "forward", "backward", or "both"
             
-        Returns:
-            Dict with streamline info
-            
-        BEST PRACTICE - get location first:
-            wake = detect_wake_region()
-            create_streamlines(
-                center=wake["wake_centroid"],
-                radius=wake["suggested_radius"]
-            )
-        """
+        BEST PRACTICE: wake = detect_wake_region(); create_streamlines(center=wake["wake_centroid"])"""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
         return self.ext.create_streamlines(
-            center=center,
-            radius=radius,
-            num_points=num_points,
-            direction=direction
+            center=center, radius=radius, num_points=num_points,
+            direction=direction, proxy_name=proxy_name
         )
     
     def create_vortex_isosurface(
@@ -246,23 +188,16 @@ Example - wake visualization:
         method: str = "q_criterion",
         threshold_percentile: float = 50.0
     ) -> dict:
-        """
-        Create isosurface showing vortical structures.
+        """Create isosurface showing vortical structures.
         
         Args:
-            method: Detection method
-                - "q_criterion": Q-criterion (default, good general choice)
-                - "lambda2": Lambda2 criterion (vortex cores)
-                - "vorticity": Vorticity magnitude
-            threshold_percentile: Percentile for threshold (default 50)
-                Higher = fewer/stronger vortices shown
-                
-        Returns:
-            Dict with isosurface info and threshold used
-        """
+            method: "q_criterion" (default), "lambda2", or "vorticity"
+            threshold_percentile: Higher = fewer/stronger vortices (default 50)"""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
         return self.ext.create_vortex_isosurface(
-            method=method,
-            percentile=threshold_percentile
+            method=method, percentile=threshold_percentile, proxy_name=proxy_name
         )
     
     def create_body_slice(
@@ -271,27 +206,19 @@ Example - wake visualization:
         normal: str = "x",
         color_by: str = "Velocity"
     ) -> dict:
-        """
-        Create a slice through the body region.
-        
-        The slice is automatically clipped to the body region
-        (excluding farfield).
+        """Create a slice through the body region (clipped to exclude farfield).
         
         Args:
             location: Position along normal axis. If None, uses body center.
-            normal: Slice normal direction - "x", "y", or "z"
+            normal: Slice normal - "x", "y", or "z"
             color_by: Field to color by (default "Velocity")
             
-        Returns:
-            Dict with slice info
-            
-        BEST PRACTICE - use detected locations:
-            wake = detect_wake_region()
-            create_body_slice(location=wake["wake_centroid"][0])
-        """
+        BEST PRACTICE: wake = detect_wake_region(); create_body_slice(location=wake["wake_centroid"][0])"""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
         return self.ext.create_body_slice(
-            normal=normal,
-            color_field=color_by
+            normal=normal, color_field=color_by, proxy_name=proxy_name
         )
     
     def compute_forces(
@@ -299,22 +226,13 @@ Example - wake visualization:
         freestream_velocity: float = None,
         reference_area: float = None
     ) -> dict:
-        """
-        Compute aerodynamic forces (drag and lift).
+        """Compute drag and lift forces.
         
-        Integrates pressure and skin friction over body surfaces.
-        
-        Args:
-            freestream_velocity: Reference velocity for Cd/Cl (auto-detected if None)
-            reference_area: Reference area for Cd/Cl (auto-detected if None)
-            
-        Returns:
-            Dict with:
-            - drag_force, lift_force: Absolute forces
-            - cd, cl: Coefficients (if reference values provided)
-            - pressure_drag, friction_drag: Drag breakdown
-        """
-        kwargs = {}
+        Returns: drag_force, lift_force, and coefficients if reference values provided."""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        kwargs = {"proxy_name": proxy_name}
         if freestream_velocity is not None:
             kwargs["freestream_velocity"] = freestream_velocity
         if reference_area is not None:
@@ -322,37 +240,22 @@ Example - wake visualization:
         return self.ext.compute_forces(**kwargs)
     
     def set_streamwise_view(self) -> dict:
-        """
-        Set camera to look along the flow direction.
-        
-        Useful after creating visualizations to get a good view.
-        
-        Returns:
-            Dict with camera info
-        """
-        return self.ext.set_streamwise_view()
+        """Set camera to look along flow direction."""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        return self.ext.set_streamwise_view(proxy_name=proxy_name)
     
     def hide_all(self) -> dict:
-        """
-        Hide all visualizations.
-        
-        Call before creating new visualizations for a clean view.
-        
-        Returns:
-            Dict with status
-        """
+        """Hide all visualizations. Call before creating new ones for clean view."""
         return self.ext.hide_all()
     
     def show_body_context(self, opacity: float = 0.15) -> dict:
-        """
-        Show the body surface as transparent context.
-        
-        Useful as background when showing flow features.
+        """Show body surface as transparent context.
         
         Args:
-            opacity: Surface opacity (default 0.15 = very transparent)
-            
-        Returns:
-            Dict with status
-        """
-        return self.ext.show_data_context(opacity=opacity)
+            opacity: Surface opacity (default 0.15 = very transparent)"""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return {"error": "No data source found"}
+        return self.ext.show_data_context(opacity=opacity, proxy_name=proxy_name)

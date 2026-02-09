@@ -1,18 +1,29 @@
 """
-ParaView LLM - Safe CFD Visualization Assistant
+ParaView LLM - CFD Visualization Tools for LLM Assistants
 
-ARCHITECTURE:
-    LLM does: Intent classification, result summarization
-    LLM does NOT: Tool selection, execution decisions, retry logic
+TWO APPROACHES:
 
-Usage:
-    from paraview_llm import CFDAssistant, ExtendedParaViewMCP
-    
-    assistant = CFDAssistant(extended_mcp, base_mcp, data_source)
-    result = assistant.query("Show me the vortices")
+1. CFDToolsMCP (NEW - Recommended)
+   Composable tools for trame_llm. LLM chains query → action tools.
+   
+   from paraview_llm import ExtendedParaViewMCP, CFDToolsMCP
+   
+   extended_mcp = ExtendedParaViewMCP(paraview_mcp)
+   cfd_tools = CFDToolsMCP(app, extended_mcp)
+   llm_client.register_mcp(cfd_tools)
+
+2. CFDAssistant (Legacy)
+   Hardcoded workflows with intent classification.
+   
+   from paraview_llm import CFDAssistant, ExtendedParaViewMCP
+   assistant = CFDAssistant(extended_mcp, base_mcp, data_source)
+   result = assistant.query("Show me the vortices")
 """
 
 from .extended_mcp import ExtendedParaViewMCP
+from .cfd_tools import CFDToolsMCP
+
+# Legacy approach - still works but CFDToolsMCP is preferred
 from .cfd_assistant import (
     CFDAssistant,
     WorkflowExecutor,
@@ -25,11 +36,12 @@ from .cfd_assistant import (
 from .mock_llm import MockLLMExecutor
 
 __all__ = [
-    # Main API
-    "CFDAssistant",
+    # New API (recommended)
     "ExtendedParaViewMCP",
+    "CFDToolsMCP",
     
-    # For advanced usage
+    # Legacy API
+    "CFDAssistant",
     "WorkflowExecutor",
     "Intent", 
     "IntentType",
@@ -39,4 +51,4 @@ __all__ = [
     "MockLLMExecutor",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
