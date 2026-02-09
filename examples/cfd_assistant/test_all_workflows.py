@@ -87,6 +87,7 @@ tests = [
     # Forces
     ("Compute forces", "What are the drag and lift forces?"),
     ("Drag distribution", "Show the accumulated drag distribution"),
+    ("Lift distribution", "Show the spanwise lift distribution"),
     
     # Location finding
     ("Stagnation point", "Find the stagnation point"),

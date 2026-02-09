@@ -46,6 +46,7 @@ class IntentType(Enum):
     # Force analysis
     COMPUTE_FORCES = "compute_forces"
     ANALYZE_DRAG = "analyze_drag"
+    ANALYZE_LIFT = "analyze_lift"
     
     # Field analysis
     FIELD_STATISTICS = "field_statistics"
@@ -189,6 +190,16 @@ WORKFLOWS = {
             ("hide_all", {}),
             ("show_data_context", {"opacity": 0.3}),
             ("create_force_distribution_chart", {"force_axis": "drag"}),
+        ],
+    },
+    
+    IntentType.ANALYZE_LIFT: {
+        "name": "Analyze Lift Distribution",
+        "description": "Show accumulated lift distribution along body",
+        "steps": [
+            ("hide_all", {}),
+            ("show_data_context", {"opacity": 0.3}),
+            ("create_force_distribution_chart", {"force_axis": "lift"}),
         ],
     },
     
@@ -650,6 +661,7 @@ Flow visualization:
 Force analysis:
 - compute_forces: Calculate drag and lift forces (when user wants VALUES)
 - analyze_drag: Show accumulated drag distribution chart
+- analyze_lift: Show accumulated lift distribution chart
 
 Field analysis:
 - field_statistics: Get min/max/mean of a field
@@ -695,6 +707,8 @@ EXAMPLES:
 - "What are the forces?" → compute_forces
 - "Calculate the forces" → compute_forces
 - "Show drag distribution" → analyze_drag
+- "Show lift distribution" → analyze_lift
+- "Spanwise lift" → analyze_lift
 - "Show histogram of pressure" → field_histogram (target_field: "pressure")
 - "Distribution of velocity" → field_histogram (target_field: "Velocity")
 - "Find high gradient" → find_maximum (NOT find_by_query - gradient isn't a queryable field)

@@ -16,7 +16,7 @@ ParaView LLM enables natural language queries for CFD visualization:
 ## Key Features
 
 - **Safe Tiered Architecture**: LLM classifies intent → deterministic workflows execute
-- **13+ CFD Workflows**: Vortex detection, forces, wake analysis, flow features
+- **14 CFD Workflows**: Vortex detection, forces, wake analysis, flow features
 - **Session Tracking**: Ask "what have we done?" to see analysis history
 - **View-Independent Queries**: QuerySelect works without active view
 - **Auto-Detection**: Streamwise direction, field types, optimal thresholds
@@ -112,7 +112,7 @@ print(f"Success: {result['success']}")
 | State confusion | Clean state tracking |
 | $0.04 per query | ~$0.0002 per query |
 
-## Available Workflows (13 tested)
+## Available Workflows (14 tested)
 
 | Category | Workflow | Description |
 |----------|----------|-------------|
@@ -124,6 +124,7 @@ print(f"Success: {result['success']}")
 | | create_slice | Slice/cut plane |
 | **Forces** | compute_forces | Compute drag/lift |
 | | analyze_drag | Drag distribution chart |
+| | analyze_lift | Lift distribution chart |
 | **Analysis** | field_statistics | Min/max/mean of field |
 | | field_histogram | Histogram chart |
 | **Location** | find_stagnation | Find stagnation point |
@@ -163,7 +164,7 @@ cd examples/cfd_assistant
 
 # Run all workflow tests (requires OPENAI_API_KEY)
 pvpython -u --venv .venv test_all_workflows.py
-# → 13/13 tests passing
+# → 14/14 tests passing
 
 # Headless testing
 pvpython --venv .venv headless.py --mock  # Mock mode (no API)
@@ -177,6 +178,9 @@ pvpython --venv .venv headless.py         # Real LLM mode
 
 ### Accumulated Drag Distribution
 ![Drag Distribution](docs/images/drag_distribution.png)
+
+### Spanwise Lift Distribution
+![Lift Distribution](docs/images/lift_distribution.png)
 
 ### Pressure Histogram
 ![Pressure Histogram](docs/images/pressure_histogram.png)
