@@ -424,14 +424,6 @@ class WorkflowExecutor:
             ),
             "create_vortex_isosurface": lambda i: self._create_vortex_isosurface(i),
             "create_streamlines": lambda i: self._create_streamlines(i),
-            "create_slice_at_center": lambda i: self._create_slice(i),
-            "create_clipped_slice": lambda i: self._create_clipped_slice(i),
-            "create_body_slice": lambda i: self.extended.create_body_slice(
-                normal=i.get("normal"),
-                color_field=i.get("color_field", "pressure"),
-                margin=i.get("margin", 0.3),
-                proxy_name=self.state.data_source
-            ),
             "get_slice_parameters": lambda i: self.extended.get_slice_parameters(
                 normal=i.get("normal"),
                 position=i.get("position", "center"),
@@ -604,54 +596,6 @@ class WorkflowExecutor:
             self.state.register_proxy(result["streamlines_name"], "StreamTracer")
         return result
     
-    def _create_slice(self, params: dict) -> dict:
-        from paraview import simple
-        
-        # Get center position
-        geo = self.extended.get_geometry_info(proxy_name=self.state.data_source)
-        origin = geo.get("center", [0, 0, 0])
-        
-        # Get normal from intent
-        normal_map = {
-            "x": [1, 0, 0], "streamwise": [1, 0, 0],
-            "y": [0, 1, 0], "vertical": [0, 1, 0],
-            "z": [0, 0, 1], "spanwise": [0, 0, 1],
-        }
-        normal = normal_map.get(params.get("slice_normal"), [1, 0, 0])
-        
-        # Create slice
-        create_result = self.base.create("Slice", input_proxy=self.state.data_source)
-        
-        # Get slice name
-        slice_name = create_result.get("name")
-        if slice_name is None:
-            active = simple.GetActiveSource()
-            if active:
-                for name, p in simple.GetSources().items():
-                    if p == active:
-                        slice_name = name[0]
-                        break
-        
-        if not slice_name:
-            return {"error": "Failed to create slice"}
-        
-        # Configure
-        self.base.update_sub_property("SliceType", "Origin", origin, slice_name)
-        self.base.update_sub_property("SliceType", "Normal", normal, slice_name)
-        
-        # Color
-        color_field = params.get("color_by") or params.get("target_field") or "Velocity"
-        self.base.update_color(slice_name, color_field)
-        
-        self.state.register_proxy(slice_name, "Slice")
-        
-        return {
-            "name": slice_name,
-            "origin": origin,
-            "normal": normal,
-            "color_by": color_field
-        }
-    
     def _field_statistics(self, params: dict) -> dict:
         field = params.get("target_field", "Velocity")
         return self.extended.field_statistics(field, proxy_name=self.state.data_source)
@@ -725,28 +669,6 @@ class WorkflowExecutor:
                 proxy_name=self.state.data_source
             )
             result["marker"] = marker_result.get("marker_name")
-        
-        return result
-    
-    def _create_clipped_slice(self, params: dict) -> dict:
-        """Create a slice clipped to body region."""
-        normal_str = params.get("slice_normal", "y")  # Default to XZ plane (side view)
-        normal_map = {
-            "x": [1, 0, 0], "streamwise": [1, 0, 0],
-            "y": [0, 1, 0], "vertical": [0, 1, 0], "side": [0, 1, 0],
-            "z": [0, 0, 1], "spanwise": [0, 0, 1], "top": [0, 0, 1],
-        }
-        normal = normal_map.get(normal_str, [1, 0, 0])
-        color_field = params.get("color_by") or params.get("target_field") or "pressure"
-        
-        result = self.extended.create_clipped_slice(
-            normal=normal,
-            color_field=color_field,
-            proxy_name=self.state.data_source
-        )
-        
-        if "clip_name" in result:
-            self.state.register_proxy(result["clip_name"], "ClippedSlice")
         
         return result
     
