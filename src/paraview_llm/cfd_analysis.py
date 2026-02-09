@@ -108,7 +108,54 @@ CRITICAL: Hide intermediate filters (MergeBlocks, Gradient) and original data.
                 # Utility
                 self.get_body_bounds,
             ],
+            "resources": {
+                "resource://cfd/fields": self._resource_cfd_fields,
+                "resource://cfd/computed": self._resource_computed_fields,
+            },
         }
+    
+    # =========================================================================
+    # Resources - Read-only context for LLM
+    # =========================================================================
+    
+    def _resource_cfd_fields(self) -> str:
+        """List available CFD fields in the dataset."""
+        proxy_name = self._get_data_source()
+        if not proxy_name:
+            return "No data loaded"
+        
+        result = self.ext.characterize_dataset(proxy_name=proxy_name)
+        fields = result.get("fields", {})
+        
+        lines = ["Available CFD fields:"]
+        for name, info in fields.items():
+            ftype = info.get("type", "unknown")
+            lines.append(f"  - {name} ({ftype})")
+        
+        return "\n".join(lines)
+    
+    def _resource_computed_fields(self) -> str:
+        """List derived fields that have been computed (Q, vorticity, etc.)."""
+        computed = []
+        
+        for name, proxy in simple.GetSources().items():
+            proxy_name = name[0]
+            if "Gradient" in proxy_name:
+                # Check what was computed
+                simple.UpdatePipeline(proxy=proxy)
+                data = proxy.GetClientSideObject().GetOutput()
+                if data:
+                    if hasattr(data, 'GetPointData'):
+                        pd = data.GetPointData()
+                        for i in range(pd.GetNumberOfArrays()):
+                            arr_name = pd.GetArrayName(i)
+                            if arr_name in ["Q", "QCriterion", "Vorticity", "Lambda2"]:
+                                computed.append(arr_name)
+        
+        if not computed:
+            return "No derived fields computed yet. Use compute_vortex_field() to add Q-criterion or other vortex detection fields."
+        
+        return f"Computed fields: {', '.join(set(computed))}"
     
     # =========================================================================
     # Dataset Info
