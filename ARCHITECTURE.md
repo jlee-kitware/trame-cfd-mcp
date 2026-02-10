@@ -1,197 +1,196 @@
 # Architecture
 
-## Design Principle
+## Design Evolution
 
-**LLM NEVER MAKES EXECUTION DECISIONS.**
+We tried several approaches before arriving at the current architecture:
 
-This is the core architectural constraint. The LLM is restricted to:
-- Understanding what the user wants (intent classification)
-- Explaining what happened (result summarization)
+| Approach | Problem |
+|----------|---------|
+| LLM orchestrates 40+ tools | Skips steps, wrong order, burns tokens |
+| LLM with detailed instructions | Still unreliable, 1M+ tokens for simple tasks |
+| Intent classification → workflow | Works but limited to predefined intents |
+| **Workflow tools + ontology** | ✅ Reliable execution + rich explanations |
 
-The LLM is NEVER allowed to:
-- Decide which tools to call
-- Manage proxy names or pipeline state
-- Loop or retry on failures
-- Compose novel tool sequences
-
-### Why This Constraint?
-
-We observed that giving the LLM free reign to orchestrate tools resulted in:
-- **1M tokens for 4 queries** (token explosion)
-- **16+ retries** of the same failing tool
-- **State confusion** with proxy names despite explicit instructions
-- **$0.15 for simple tasks** that should cost $0.001
-
-The LLM excels at understanding language but fails at:
-- State management
-- Knowing when to stop
-- Following multi-step procedures
-- Recovering from errors
-
-## Tiered Architecture
+## Current Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  USER QUERY                                                 │
-│  "Show me the vortices"                                     │
+│  User Query                                                 │
+│  "Analyze the wake and explain how it affects drag"         │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  TIER 1: Intent Classification (LLM)                        │
+│  LLM (Intent Matching)                                      │
 │                                                             │
-│  Single LLM call (~150 tokens)                              │
-│  Input: User query                                          │
-│  Output: Intent enum + parameters                           │
+│  Sees 11 workflow tools with clear descriptions             │
+│  Decides: show_streamlines, show_slice, show_forces,        │
+│           get_ontology, save_screenshot                     │
 │                                                             │
-│  Example: "Show me vortices" → VISUALIZE_VORTICES           │
+│  Multiple tool calls in one response (parallel execution)   │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  TIER 2: Workflow Selection (DETERMINISTIC)                 │
+│  WorkflowMCP (Deterministic Execution)                      │
 │                                                             │
-│  No LLM - pure lookup                                       │
-│  Input: Intent enum                                         │
-│  Output: Predefined workflow                                │
+│  Each workflow:                                             │
+│  1. Gets data reader (explicit, not active source)          │
+│  2. Calls analysis tools (compute_*, detect_*)              │
+│  3. Creates visualization (Contour, Slice, etc.)            │
+│  4. Returns rich result with analysis data                  │
 │                                                             │
-│  WORKFLOWS[VISUALIZE_VORTICES] → [hide_all, show_context,   │
-│                                   ensure_velocity,          │
-│                                   create_isosurface,        │
-│                                   focus_on_last]            │
+│  NO LLM involved during execution                           │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  TIER 3: Execution (DETERMINISTIC)                          │
+│  LLM (Explanation)                                          │
 │                                                             │
-│  No LLM - sequential tool execution                         │
-│  - Manages all state (proxy names, pipeline)                │
-│  - Handles errors without LLM consultation                  │
-│  - Uses ontology for domain knowledge (not LLM reasoning)   │
+│  Combines:                                                  │
+│  - Workflow results (threshold, location, ranges)           │
+│  - Ontology knowledge (what Q-criterion means)              │
+│  - CFD understanding (wake → base pressure → drag)          │
 │                                                             │
-│  Returns structured result                                  │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│  TIER 4: Result Summary (LLM)                               │
-│                                                             │
-│  Single LLM call (~200 tokens)                              │
-│  Input: Execution result                                    │
-│  Output: Natural language explanation                       │
-│                                                             │
-│  "Created vortex visualization using Q-criterion..."        │
+│  Produces coherent explanation of the physics               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Intent Types
+## Why This Works
 
-The LLM classifies into exactly ONE of these predefined intents:
+### 1. Workflow Tools Are Self-Contained
 
-| Intent | Description | Workflow |
-|--------|-------------|----------|
-| `visualize_vortices` | Show vortical structures | Q-criterion isosurface |
-| `visualize_wake` | Show wake flow | Streamlines |
-| `visualize_streamlines` | Show flow streamlines | Streamlines |
-| `create_slice` | Create cut plane | Slice at center |
-| `compute_forces` | Calculate drag/lift | Force integration |
-| `analyze_drag` | Show drag distribution | Distribution chart |
-| `field_statistics` | Get field stats | Min/max/mean |
-| `describe_data` | Describe dataset | Characterize |
-| `reset_view` | Reset camera | Camera reset |
-| `hide_all` | Clear viz | Hide all |
-| `explain_concept` | Explain CFD concept | Ontology lookup |
-| `unknown` | Fallback | Error message |
+Each workflow tool (e.g., `show_vortices`) handles everything:
+- Finding the right proxy (not relying on active source)
+- Computing derived fields (Q-criterion, vorticity)
+- Creating visualization (Contour with correct properties)
+- Setting up display (colors, camera)
+- Returning analysis data (threshold, range, location)
 
-## Workflow Definitions
+The LLM just needs to pick the right tool, not orchestrate steps.
 
-Each workflow is a predefined sequence of tool calls:
+### 2. Ontology Provides Domain Knowledge
+
+The ontology is a JSON file with CFD knowledge:
+- What each visualization method means
+- Causal relationships (wake → drag)
+- Interpretation guidance
+
+The LLM retrieves it via `get_ontology()` tool when it needs to explain results.
+This separates execution (deterministic) from explanation (LLM strength).
+
+### 3. Rich Return Values Enable Reasoning
+
+Workflows return analysis data, not just "done":
 
 ```python
-WORKFLOWS = {
-    IntentType.VISUALIZE_VORTICES: {
-        "name": "Visualize Vortices",
-        "steps": [
-            ("hide_all", {}),
-            ("show_data_context", {"opacity": 0.15}),
-            ("ensure_velocity_vector", {}),
-            ("create_vortex_isosurface", {"method": "q_criterion"}),
-            ("focus_on_last", {}),
-        ],
-    },
-    # ... more workflows
+{
+    "status": "created",
+    "type": "vortex_isosurface", 
+    "method": "q_criterion",
+    "threshold": 28.06,
+    "field_range": [-23929, 75723],
+    "color_by": "Velocity",
+    "tip": "Threshold auto-computed. Adjust percentile for more/fewer structures."
 }
 ```
 
-Workflows are:
-- **Predefined** - No runtime composition
-- **Deterministic** - Same intent → same execution
-- **Complete** - Each workflow is self-contained
+The LLM can use this to:
+- Answer follow-up questions ("what threshold was used?")
+- Explain the visualization ("threshold 28 shows strongest vortex cores")
+- Suggest next steps ("try lower threshold to see weaker structures")
 
-## Component Roles
+## Component Responsibilities
 
-### LLM (OpenAI/Claude)
-- Intent classification (Tier 1)
-- Result summarization (Tier 4)
-- **Total: 2 calls per query**
+### WorkflowMCP
 
-### Ontology (CFDOntology)
-- Domain knowledge for workflow validation
-- Requirement checking (does data have velocity?)
-- Concept explanations
-- **NOT used for LLM reasoning**
+High-level interface exposed to LLM. 11 tools:
+- Discovery: `list_data`, `get_fields`, `analyze_data`
+- Visualization: `show_vortices`, `show_streamlines`, `show_slice`, `show_histogram`, `show_forces`
+- Knowledge: `get_ontology`
+- Utilities: `save_screenshot`, `set_view`
 
-### Extended MCP (ExtendedParaViewMCP)
-- High-level CFD tools
-- Vortex detection, force computation, streamlines
-- Used by executor, not by LLM directly
+### CFDWorkflows
 
-### Base MCP (ParaViewMCP from trame-llm)
-- Low-level ParaView operations
-- Proxy creation, property updates, rendering
+Implementation of workflow tools. Each method:
+1. Gets data reader explicitly (not active source)
+2. Calls ExtendedParaViewMCP analysis methods
+3. Creates ParaView filters/sources
+4. Returns rich result dict
 
-### Workflow Executor
-- Runs predefined workflows
-- Manages all state
-- Handles errors deterministically
-- **LLM never involved in execution**
+### ExtendedParaViewMCP
 
-## Cost Comparison
+40+ CFD analysis tools. Two categories:
 
-| Architecture | Tokens/Query | Cost/Query | Reliability |
-|--------------|-------------|------------|-------------|
-| Tool loop (old) | ~250,000 | $0.04 | Poor (retries, confusion) |
-| Safe (new) | ~1,200 | $0.0002 | Excellent (deterministic) |
+**Analysis tools** (return data, no visualization):
+- `compute_vortex_field` → threshold, field_range
+- `detect_wake_region` → centroid, bounds
+- `compute_forces` → Cd, Cl, distribution
 
-**200,000x fewer tokens, far more reliable.**
+**Visualization tools** (create ParaView objects):
+- `create` → generic filter creation
+- `update_property` → set filter properties
+- `focus_on` → camera setup
+
+### Ontology (ontology.json)
+
+CFD domain knowledge:
+- `flow_features` → What each visualization type means
+- `causal_relationships` → What causes drag/lift changes
+- `analysis_recommendations` → Which tools for which questions
+
+### TrackedLLMClient
+
+Wrapper around trame-llm's LLMClient that tracks:
+- Token usage (input, output)
+- Tool calls
+- Estimated cost
+
+## Cost Analysis
+
+Typical costs for different query types:
+
+| Query Type | Tool Calls | Tokens | Cost |
+|------------|------------|--------|------|
+| Simple visualization | 2-3 | ~5K | ~$0.001 |
+| Visualization + explanation | 3-4 | ~15K | ~$0.003 |
+| Multi-step analysis | 10-15 | ~45K | ~$0.008 |
+
+Compare to LLM orchestrating 40+ tools: 200K+ tokens, $0.04+
 
 ## Adding New Workflows
 
-To add a new capability:
+1. Add method to `CFDWorkflows` class in `workflows.py`
+2. Add tool to `WorkflowMCP.get_mcp()` tools list
+3. Update ontology if new flow feature type
+4. Test with natural language prompt
 
-1. **Add IntentType enum value** in `cfd_assistant.py`
-2. **Add workflow definition** in `WORKFLOWS` dict
-3. **Implement tool function** if new tool needed
-4. **Update classification prompt** with new intent description
+Example:
 
-The LLM will automatically classify queries to the new intent.
+```python
+# In workflows.py
+def show_pressure_contours(self, num_contours: int = 10) -> dict:
+    """Show pressure contours on body surface."""
+    proxy = self._get_data_reader()
+    # ... implementation
+    return {
+        "status": "created",
+        "type": "pressure_contours",
+        "num_contours": num_contours,
+        # ... analysis data
+    }
+
+# In workflow_mcp.py get_mcp()
+"tools": [
+    # ... existing tools
+    self._workflows.show_pressure_contours,
+]
+```
 
 ## What This Architecture Cannot Do
 
-- **Novel compositions**: Cannot combine tools in ways not predefined
-- **Adaptive retry**: Won't try alternative approaches on failure
-- **Complex reasoning**: Won't figure out multi-step analysis
+- **Novel tool combinations** - Only predefined workflows
+- **Adaptive debugging** - Won't figure out why a workflow failed
+- **Complex multi-case comparison** - Need to add comparison workflows
 
-This is intentional. For complex exploratory analysis, use the tools directly or add new predefined workflows. The LLM should not improvise.
-
-## Files
-
-```
-src/paraview_llm/
-├── cfd_assistant.py      # Safe tiered architecture
-├── extended_mcp.py       # CFD tools
-├── ontology_triples.py   # Domain knowledge
-├── ontology_planning.py  # Workflow prerequisites
-└── mock_llm.py          # Testing without API
-```
+These are intentional limitations. The value is reliable execution + rich explanation, not unbounded exploration.

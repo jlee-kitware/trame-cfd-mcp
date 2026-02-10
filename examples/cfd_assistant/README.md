@@ -1,6 +1,6 @@
 # CFD Assistant Example
 
-End-to-end example and test suite for ParaView LLM.
+Example tests for ParaView LLM workflow tools.
 
 ## Setup
 
@@ -10,166 +10,114 @@ End-to-end example and test suite for ParaView LLM.
 
 # Activate and install dependencies
 source .venv/bin/activate
-pip install openai  # Only needed for --real mode
+pip install openai python-dotenv
+
+# Set API key
+echo "OPENAI_API_KEY=sk-..." > .env
 ```
 
 ## Test Data
 
 The example uses `test.vtm` - a multiblock VTK dataset with:
-- CFD simulation results (velocity, pressure fields)
+- CFD simulation results (velocity, pressure, density fields)
 - Body geometry for force integration
+- Turbulence quantities
 
 ## Running Tests
 
-### Mock Mode (Default)
+### Test All Workflows
 
-Fast, free, deterministic testing:
+Validates each workflow tool with simple prompts:
 
 ```bash
-pvpython --venv .venv test_e2e.py
+pvpython --venv .venv test_workflows.py
 ```
 
 Output:
 ```
-============================================================
-E2E Test Suite - MOCK LLM
-============================================================
-Data source: XMLMultiBlockDataReader1
-
-✓ shear_layer (0.9s)
-✓ stagnation (0.2s)
+TEST: vortex
+PROMPT: Show vortices. Save to output/test_vortex.png
+[call] Calling: show_vortices
+[result] {"status":"created","type":"vortex_isosurface",...}
+[call] Calling: save_screenshot
 ...
 
-Passed: 17/17
-Total time: 4.0s
+==================================================
+COST REPORT
+==================================================
+Model: gpt-5-mini
+Tool calls: 10
+Estimated cost: $0.003
+==================================================
 ```
 
-### Real LLM Mode
+### Test Ontology Explanations
 
-Tests intent classification with real LLM:
+Tests that the LLM uses ontology knowledge to explain visualizations:
 
 ```bash
-export OPENAI_API_KEY="sk-..."
-pvpython --venv .venv test_e2e.py --real
+pvpython --venv .venv test_ontology.py
 ```
 
-Output:
-```
-============================================================
-E2E Test Suite - REAL LLM (intent-based)
-============================================================
+Prompt: "Show me the vortex structures and explain what I'm seeing."
 
-✓ shear_layer → shear_layer (0.7s)
-✓ stagnation → stagnation (0.6s)
-...
+Output includes physics explanation using ontology knowledge.
 
-Passed: 17/17
-Total time: 12.5s
+### Test Multi-Step Analysis
+
+Open-ended exploration - LLM decides what visualizations to create:
+
+```bash
+pvpython --venv .venv test_analysis.py
 ```
 
-## Test Cases
+Prompt: "Analyze this CFD dataset to understand the flow physics. I want to understand the wake structure and how it relates to drag."
 
-| Test | Query | Workflow |
-|------|-------|----------|
-| `shear_layer` | "show me the shear layer" | Vorticity + high gradient |
-| `stagnation` | "where is the stagnation point" | find_minimum(velocity) |
-| `flow_pattern` | "visualize the flow pattern" | Streamlines in wake |
-| `pressure` | "show me the pressure distribution" | Color by pressure |
-| `velocity_stats` | "what are the velocity statistics" | field_statistics |
-| `velocity_distribution` | "show me a histogram of velocity" | Histogram chart |
-| `forces` | "calculate drag and lift forces" | compute_forces |
-| `drag_distribution` | "drag accumulates along streamwise" | Force distribution chart |
-| `lift_distribution` | "spanwise lift distribution" | Force distribution chart |
-| `max_velocity` | "where is the maximum velocity" | find_maximum(velocity) |
-| `wake_slice` | "slice through the wake" | detect_wake + slice |
-| `wake_streamlines` | "streamlines in the wake" | detect_wake + streamlines |
-| `vortices_q` | "vortices using Q-criterion" | Q-criterion isosurface |
-| `vortices_lambda2` | "vortex cores using lambda2" | λ2 isosurface |
-| `vortices_swirl` | "swirling strength" | Swirl isosurface |
-| `vortices_helicity` | "helical vortex structures" | Helicity isosurface |
-| `characterize` | "characterize the flowfield" | Multi-tool analysis |
+Typical output:
+- Vortices (Q-criterion and lambda2)
+- Streamlines in wake
+- Wake slice
+- Pressure histogram  
+- Force distribution
+- Physics explanation connecting all results
 
 ## Output
 
-Screenshots are saved to `output/`:
+Screenshots saved to `output/`:
 
 ```
 output/
-├── mock_01_shear_layer.png
-├── mock_02_stagnation.png
-├── ...
-├── real_01_shear_layer.png  # When using --real
-└── ...
+├── test_vortex.png
+├── test_streamlines.png
+├── test_slice.png
+├── test_histogram.png
+├── test_forces.png
+├── test_vortex_explained.png
+├── analysis_vortices_qcriterion.png
+├── analysis_vortices_lambda2.png
+├── analysis_streamlines.png
+├── analysis_slice_wake.png
+├── analysis_pressure_histogram.png
+└── analysis_forces.png
 ```
 
-## Architecture
+## Test Files
 
-```
-User Query
-    │
-    ▼
-┌─────────────────────────┐
-│  MockLLMExecutor        │  (mock mode)
-│  - Keyword matching     │
-│  - No LLM calls         │
-└─────────────────────────┘
-    or
-┌─────────────────────────┐
-│  IntentExecutor         │  (real mode)
-│  - LLM classifies       │
-│  - {"workflow": "..."}  │
-└─────────────────────────┘
-    │
-    ▼
-┌─────────────────────────┐
-│  WORKFLOWS[name]        │
-│  - Predefined sequence  │
-│  - Deterministic        │
-└─────────────────────────┘
-    │
-    ▼
-ExtendedParaViewMCP → ParaView
-```
+| File | Purpose |
+|------|---------|
+| `test_workflows.py` | Validate all 5 workflow tools |
+| `test_ontology.py` | Test explanation with ontology |
+| `test_analysis.py` | Test multi-step exploration |
 
-## Adding New Workflows
+## Cost Tracking
 
-1. Add workflow to `intent_executor.py`:
+All tests use `TrackedLLMClient` which reports:
+- LLM calls
+- Tool calls
+- Input/output tokens
+- Estimated cost
 
-```python
-WORKFLOWS = {
-    "my_workflow": {
-        "description": "Description for LLM",
-        "sequence": [
-            ("hide_all", {}),
-            ("show_data_context", {"proxy_name": "{data_source}"}),
-            ("my_tool", {"proxy_name": "{data_source}"}),
-            ("focus_on", {"proxy_name": "{last_created}"}),
-        ]
-    },
-}
-```
-
-2. Add mock response in `mock_llm.py`:
-
-```python
-MOCK_RESPONSES = {
-    "my_workflow": [
-        # Same sequence as WORKFLOWS
-    ],
-}
-```
-
-3. Add test query in `test_e2e.py`:
-
-```python
-QUERY_TEXT = {
-    "my_workflow": "natural language query",
-}
-```
-
-4. Run tests:
-
-```bash
-pvpython --venv .venv test_e2e.py
-pvpython --venv .venv test_e2e.py --real
-```
+Typical costs:
+- Simple workflow test: ~$0.001
+- With explanation: ~$0.003
+- Full analysis: ~$0.008

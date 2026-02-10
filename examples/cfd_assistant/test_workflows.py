@@ -12,9 +12,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from paraview import simple
-from paraview_llm import WorkflowMCP
+from paraview_llm import WorkflowMCP, TrackedLLMClient
 from trame_llm.paraview import ParaViewMCP
-from trame_llm.core import LLMClient, ProgressType
+from trame_llm.core import ProgressType
 
 
 class MinimalApp:
@@ -63,7 +63,7 @@ async def main():
     base_mcp = ParaViewMCP(app)
     workflow_mcp = WorkflowMCP(base_mcp)
     
-    llm = LLMClient(max_iteractions=10)
+    llm = TrackedLLMClient(max_iteractions=10)
     llm.set_progress_handler(progress_callback)
     llm.register_mcp(workflow_mcp)
     await llm.initialize()
@@ -103,7 +103,7 @@ async def main():
                     pass
         
         simple.SetActiveView(view)
-        simple.SetActiveSource(reader)  # Set active source BEFORE Show
+        simple.SetActiveSource(reader)
         simple.Show(reader, view)
         simple.ResetCamera(view)
         simple.Render(view)
@@ -111,6 +111,7 @@ async def main():
         await llm.process_prompt(prompt)
     
     print(f'\n{"="*60}')
+    llm.print_report()
     print("DONE - check output/*.png files")
 
 

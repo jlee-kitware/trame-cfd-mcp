@@ -21,6 +21,7 @@ Usage (fine-grained mode):
 from .extended_mcp import ExtendedParaViewMCP
 from .workflow_mcp import WorkflowMCP
 from .workflows import CFDWorkflows
+from .cost_tracker import TrackedLLMClient, UsageStats
 
-__all__ = ["ExtendedParaViewMCP", "WorkflowMCP", "CFDWorkflows"]
-__version__ = "0.6.0"
+__all__ = ["ExtendedParaViewMCP", "WorkflowMCP", "CFDWorkflows", "TrackedLLMClient", "UsageStats"]
+__version__ = "0.7.0"

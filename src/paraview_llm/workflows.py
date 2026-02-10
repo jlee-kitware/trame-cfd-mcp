@@ -105,12 +105,14 @@ class CFDWorkflows:
             Dict with visualization info including proxy_name
         """
         view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        proxy_name = self._get_proxy_name(proxy)
         
         # Hide all first
         self._mcp.hide_all()
         
         # Compute vortex field
-        vortex = self._mcp.compute_vortex_field(method=method)
+        vortex = self._mcp.compute_vortex_field(method=method, proxy_name=proxy_name)
         if "error" in vortex:
             return vortex
         
@@ -173,12 +175,13 @@ class CFDWorkflows:
         """
         view = simple.GetActiveView()
         proxy = self._get_data_reader()
+        proxy_name = self._get_proxy_name(proxy)
         
         # Hide all first
         self._mcp.hide_all()
         
         # Compute seed parameters
-        seed = self._mcp.compute_streamline_seed()
+        seed = self._mcp.compute_streamline_seed(proxy_name=proxy_name)
         if "error" in seed:
             return seed
         
@@ -244,22 +247,23 @@ class CFDWorkflows:
         """
         view = simple.GetActiveView()
         proxy = self._get_data_reader()
+        proxy_name = self._get_proxy_name(proxy)
         
         # Hide all first
         self._mcp.hide_all()
         
         # Determine slice origin
         if location == "wake":
-            wake = self._mcp.detect_wake_region()
+            wake = self._mcp.detect_wake_region(proxy_name=proxy_name)
             if "error" in wake:
                 # Fallback: use streamline seed location (has better fallback logic)
-                seed = self._mcp.compute_streamline_seed()
+                seed = self._mcp.compute_streamline_seed(proxy_name=proxy_name)
                 if "error" not in seed:
                     origin = seed["center"]
                     location = "downstream (wake detection failed)"
                 else:
                     # Last resort: domain center
-                    params = self._mcp.compute_slice_params(normal=normal)
+                    params = self._mcp.compute_slice_params(normal=normal, proxy_name=proxy_name)
                     if "error" in params:
                         return params
                     origin = params["origin"]
@@ -267,7 +271,7 @@ class CFDWorkflows:
             else:
                 origin = wake["wake_centroid"]
         elif location == "center":
-            params = self._mcp.compute_slice_params(normal=normal)
+            params = self._mcp.compute_slice_params(normal=normal, proxy_name=proxy_name)
             if "error" in params:
                 return params
             origin = params["origin"]

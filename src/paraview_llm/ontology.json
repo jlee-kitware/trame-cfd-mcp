@@ -1,0 +1,93 @@
+{
+  "version": "0.1",
+  "domain": "cfd_postprocessing",
+  
+  "flow_features": {
+    "vortex_isosurface": {
+      "description": "Isosurface of vortex identification criterion",
+      "methods": {
+        "q_criterion": {
+          "definition": "Q = 0.5*(||Ω||² - ||S||²) where Ω is rotation-rate tensor and S is strain-rate tensor",
+          "interpretation": "Q > 0 indicates regions where rotation dominates strain, identifying vortex cores",
+          "typical_use": "Visualizing coherent vortical structures like wingtip vortices, C-pillar vortices, A-pillar vortices"
+        },
+        "vorticity": {
+          "definition": "ω = ∇ × V, vorticity magnitude ||ω||",
+          "interpretation": "High vorticity indicates strong rotation, but includes shear layers (not purely vortices)",
+          "typical_use": "Quick identification of rotational regions, less selective than Q-criterion"
+        },
+        "lambda2": {
+          "definition": "Second eigenvalue of S² + Ω²",
+          "interpretation": "λ₂ < 0 identifies vortex cores more precisely than Q-criterion, excludes shear",
+          "typical_use": "Accurate vortex core identification, more expensive to compute"
+        }
+      },
+      "threshold_guidance": "Higher threshold shows stronger/tighter vortex cores, lower threshold shows weaker/larger structures",
+      "coloring_guidance": "Color by velocity magnitude to see flow speed through vortex, or by pressure to see vortex-induced pressure drop"
+    },
+    
+    "streamlines": {
+      "description": "Particle paths following velocity field",
+      "interpretation": "Shows flow direction and path. In wake region, reveals recirculation, entrainment, and vortex structure",
+      "seed_placement": "Seeding downstream of body captures wake development. Seed radius controls coverage.",
+      "coloring_guidance": "Color by velocity magnitude to identify acceleration/deceleration, or by pressure for pressure recovery"
+    },
+    
+    "slice": {
+      "description": "2D plane cutting through 3D field",
+      "locations": {
+        "wake": "Slice normal to flow direction, positioned downstream of body, shows wake cross-section",
+        "center": "Slice through domain center, shows overall flow field"
+      },
+      "interpretation": {
+        "velocity": "Low velocity regions indicate wake deficit, flow separation, or stagnation",
+        "pressure": "Low pressure indicates suction (upper surface, vortex cores), high pressure indicates stagnation"
+      }
+    },
+    
+    "histogram": {
+      "description": "Distribution of field values across the domain",
+      "interpretation": {
+        "pressure": "Peak location indicates dominant pressure level. Wide distribution suggests large pressure variation. Bimodal distribution may indicate separation.",
+        "velocity": "Peak near freestream indicates attached flow. Lower peak indicates wake/separated region contribution."
+      }
+    },
+    
+    "force_distribution": {
+      "description": "Sectional and accumulated force along body axis",
+      "interpretation": "Shows where forces are generated. Sectional force peaks indicate high-load regions. Accumulated force shows running total.",
+      "design_relevance": "Identifies which body sections contribute most to drag/lift. Useful for targeting geometry changes."
+    }
+  },
+  
+  "causal_relationships": {
+    "drag_increase": [
+      {"cause": "larger_wake", "effect": "lower_base_pressure", "evidence": ["wake_slice", "streamlines"]},
+      {"cause": "lower_base_pressure", "effect": "higher_pressure_drag", "evidence": ["force_distribution"]},
+      {"cause": "flow_separation", "effect": "larger_wake", "evidence": ["streamlines", "velocity_slice"]},
+      {"cause": "stronger_vortex", "effect": "induced_drag", "evidence": ["vortex_isosurface"]}
+    ],
+    "lift_change": [
+      {"cause": "pressure_distribution_change", "effect": "lift_change", "evidence": ["pressure_slice", "force_distribution"]},
+      {"cause": "separation_location_change", "effect": "pressure_distribution_change", "evidence": ["streamlines", "velocity_slice"]}
+    ]
+  },
+  
+  "analysis_recommendations": {
+    "vortex_analysis": {
+      "primary": "show_vortices",
+      "supporting": ["show_streamlines", "show_slice"],
+      "metrics": ["analyze_data"]
+    },
+    "wake_analysis": {
+      "primary": "show_streamlines", 
+      "supporting": ["show_slice"],
+      "metrics": ["show_forces"]
+    },
+    "force_analysis": {
+      "primary": "show_forces",
+      "supporting": ["show_histogram"],
+      "metrics": ["analyze_data"]
+    }
+  }
+}
