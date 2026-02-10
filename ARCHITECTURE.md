@@ -8,8 +8,20 @@ We tried several approaches before arriving at the current architecture:
 |----------|---------|
 | LLM orchestrates 40+ tools | Skips steps, wrong order, burns tokens |
 | LLM with detailed instructions | Still unreliable, 1M+ tokens for simple tasks |
+| Ontology-driven execution | RAG not deterministic, wrong workflow retrieval |
 | Intent classification → workflow | Works but limited to predefined intents |
-| **Workflow tools + ontology** | ✅ Reliable execution + rich explanations |
+| **Workflow tools + ontology for explanation** | ✅ Reliable execution + rich explanations |
+
+## Key Insight: Separate Execution from Explanation
+
+**Ontology is for EXPLANATION, not EXECUTION.**
+
+- **Execution**: Hardcoded workflows in Python. Deterministic, no LLM, no RAG.
+- **Explanation**: Ontology provides CFD domain knowledge the LLM uses to interpret results.
+
+This separation is critical:
+- Execution must be reliable → hardcode it
+- Explanation benefits from LLM reasoning → give it domain knowledge
 
 ## Current Architecture
 
@@ -134,10 +146,14 @@ Implementation of workflow tools. Each method:
 
 ### Ontology (ontology.json)
 
-CFD domain knowledge:
-- `flow_features` → What each visualization type means
-- `causal_relationships` → What causes drag/lift changes
+**Used for EXPLANATION only, not execution.**
+
+CFD domain knowledge that helps LLM interpret results:
+- `flow_features` → What each visualization type means (Q > 0 = vortex core)
+- `causal_relationships` → What causes drag/lift changes (wake → base pressure → drag)
 - `analysis_recommendations` → Which tools for which questions
+
+The LLM calls `get_ontology()` when it needs to explain results. The ontology never influences which workflow runs or how it executes.
 
 ### TrackedLLMClient
 
