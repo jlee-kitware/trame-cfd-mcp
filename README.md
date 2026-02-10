@@ -1,10 +1,12 @@
-# ParaView LLM
+# trame-cfd-mcp
 
-Natural language interface for CFD post-processing with ParaView.
+CFD workflow tools for ParaView via MCP (Model Context Protocol).
+
+Extends [trame-llm](https://github.com/Kitware/trame-llm)'s ParaViewMCP with CFD-specific visualization workflows.
 
 ## Overview
 
-ParaView LLM enables natural language queries for CFD visualization and analysis:
+trame-cfd-mcp enables natural language queries for CFD visualization and analysis:
 
 ```
 "show me the vortices"                →  Q-criterion isosurface
@@ -43,11 +45,11 @@ The LLM acts as a **CFD analyst**, not just a command translator:
    export OPENAI_API_KEY=sk-your-key-here
    ```
 
-### Install paraview-llm
+### Install trame-cfd-mcp
 
 ```bash
-git clone https://github.com/Kitware/paraview-llm.git
-cd paraview-llm
+git clone https://github.com/Kitware/trame-cfd-mcp.git
+cd trame-cfd-mcp
 pip install -e ".[openai]"
 ```
 
@@ -77,7 +79,7 @@ cp .env.example .env
 import asyncio
 from paraview import simple
 from trame_llm.paraview import ParaViewMCP
-from paraview_llm import WorkflowMCP, TrackedLLMClient
+from trame_cfd_mcp import WorkflowMCP, TrackedLLMClient
 
 # Minimal app interface for ParaViewMCP
 class MinimalApp:
@@ -103,8 +105,8 @@ async def main():
     
     # Create MCP stack
     app = MinimalApp()
-    base_mcp = ParaViewMCP(app)
-    workflow_mcp = WorkflowMCP(base_mcp)
+    base_mcp = ParaViewMCP(app)          # from trame-llm
+    workflow_mcp = WorkflowMCP(base_mcp)  # from trame-cfd-mcp
     
     # Create LLM client with cost tracking
     llm = TrackedLLMClient(max_iteractions=20)
@@ -138,24 +140,24 @@ User Query: "Analyze the wake and explain drag"
                     │
                     ▼
         ┌───────────────────────┐
-        │    WorkflowMCP        │  12 high-level tools
-        │  - show_vortices()    │  Deterministic execution
-        │  - show_streamlines() │  Full provenance tracking
-        │  - show_slice()       │
-        │  - get_ontology()     │  CFD domain knowledge
+        │    WorkflowMCP        │  12 high-level tools     ─┐
+        │  - show_vortices()    │  Deterministic execution  │
+        │  - show_streamlines() │  Full provenance tracking │
+        │  - show_slice()       │                           │ trame-cfd-mcp
+        │  - get_ontology()     │  CFD domain knowledge     │
+        └───────────────────────┘                          ─┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │   ExtendedParaViewMCP │  CFD analysis tools      ─┐
+        │  - compute_vortex_field()                         │ trame-cfd-mcp
+        │  - detect_wake_region()                           │
+        │  - compute_forces()   │                          ─┘
         └───────────────────────┘
                     │
                     ▼
         ┌───────────────────────┐
-        │   ExtendedParaViewMCP │  CFD analysis tools
-        │  - compute_vortex_field()
-        │  - detect_wake_region()
-        │  - compute_forces()   │
-        └───────────────────────┘
-                    │
-                    ▼
-        ┌───────────────────────┐
-        │   ParaViewMCP         │  Base ParaView operations
+        │   ParaViewMCP         │  Base ParaView operations ─ trame-llm
         │  (from trame-llm)     │
         └───────────────────────┘
                     │
@@ -249,7 +251,7 @@ Every test automatically reports costs:
 ==================================================
 COST REPORT
 ==================================================
-Model: gpt-5-mini
+Model: gpt-4o-mini
 LLM calls: 13
 Tool calls: 12
 Input tokens: 39,207
@@ -278,34 +280,10 @@ All tests save:
 - Screenshots to `output/*.png`
 - Full provenance to `output/*_results.json`
 
-## Dependencies
-
-### trame-llm
-
-This package depends on [trame-llm](https://github.com/Kitware/trame-llm) for LLM orchestration. trame-llm provides:
-
-- **ParaViewMCP** - Base MCP (Model Context Protocol) interface for ParaView
-- **LLMClient** - Async LLM client with tool calling support
-- **ProgressType** - Callbacks for monitoring tool execution
-
-paraview-llm extends this with:
-
-- **WorkflowMCP** - High-level CFD workflow tools
-- **ExtendedParaViewMCP** - CFD-specific analysis functions  
-- **TrackedLLMClient** - LLMClient wrapper with automatic cost tracking
-
-### ParaView
-
-ParaView provides the visualization engine. The package uses:
-
-- `paraview.simple` - Python scripting API
-- VTK filters via ParaView proxies
-- Offscreen rendering for headless operation
-
 ## Files
 
 ```
-src/paraview_llm/
+src/trame_cfd_mcp/
 ├── __init__.py          # Package exports
 ├── workflow_mcp.py      # High-level workflow tools (12 tools)
 ├── workflows.py         # Workflow implementations

@@ -4,14 +4,14 @@ Test multi-step analysis - let LLM explore the flow physics.
 """
 import sys
 import asyncio
-sys.path.insert(0, '/Users/jeff.lee/gitsync/paraview_llm/src')
+sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-cfd-mcp/src')
 sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-llm/src')
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from paraview import simple
-from paraview_llm import WorkflowMCP, TrackedLLMClient
+from trame_cfd_mcp import WorkflowMCP, TrackedLLMClient
 from trame_llm.paraview import ParaViewMCP
 from test_utils import ResultCollector, MinimalApp
 

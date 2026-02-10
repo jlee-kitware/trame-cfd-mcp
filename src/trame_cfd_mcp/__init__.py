@@ -1,8 +1,10 @@
 """
-ParaView LLM - CFD Analysis Tools for LLM Assistants
+trame-cfd-mcp - CFD Workflow Tools for ParaView via MCP
+
+Extends trame-llm's ParaViewMCP with CFD-specific visualization workflows.
 
 Usage:
-    from paraview_llm import WorkflowMCP, TrackedLLMClient
+    from trame_cfd_mcp import WorkflowMCP, TrackedLLMClient
     from trame_llm.paraview import ParaViewMCP
     
     base_mcp = ParaViewMCP(app)
@@ -22,4 +24,4 @@ from .workflows import CFDWorkflows
 from .cost_tracker import TrackedLLMClient, UsageStats
 
 __all__ = ["ExtendedParaViewMCP", "WorkflowMCP", "CFDWorkflows", "TrackedLLMClient", "UsageStats"]
-__version__ = "0.7.0"
+__version__ = "0.1.0"
