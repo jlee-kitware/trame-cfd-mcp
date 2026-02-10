@@ -82,6 +82,26 @@ class WorkflowMCP:
         """
         return self._extended.set_view(direction)
     
+    def save_state(self, filename: str) -> dict:
+        """
+        Save ParaView state for reproducibility.
+        
+        Saves complete pipeline state that can be loaded in ParaView GUI
+        or via LoadState() in Python.
+        
+        Args:
+            filename: Output filename (.pvsm for XML, .py for Python script)
+            
+        Returns:
+            Dict with filename and status
+        """
+        simple.SaveState(filename)
+        return {
+            "status": "saved",
+            "filename": filename,
+            "tip": "Load with File > Load State in ParaView GUI, or simple.LoadState() in Python"
+        }
+    
     def get_ontology(self) -> dict:
         """
         Get CFD domain knowledge for interpreting results.
@@ -137,6 +157,7 @@ Knowledge:
 
 Utilities:
 - save_screenshot(filename="output/result.png") - Save current view
+- save_state(filename="output/state.pvsm") - Save pipeline for reproducibility
 - set_view(direction="+x") - Set camera angle
 
 EXPLANATION GUIDANCE:
@@ -156,6 +177,7 @@ When explaining visualizations, use the ontology to provide:
                 self._workflows.analyze_data,
                 self.get_ontology,
                 self.save_screenshot,
+                self.save_state,
                 self.set_view,
             ],
             "resources": {},

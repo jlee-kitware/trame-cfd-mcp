@@ -1,8 +1,15 @@
 """
-Extended ParaViewMCP
+ExtendedParaViewMCP - CFD Analysis Implementation
 
-Extends trame-llm's ParaViewMCP with query and analysis tools.
-These additions could be contributed upstream to trame-llm.
+Provides CFD analysis methods used by WorkflowMCP workflows.
+Not intended for direct LLM use - use WorkflowMCP instead.
+
+Methods include:
+- Vortex field computation (Q-criterion, vorticity, lambda2)
+- Wake detection
+- Force computation and distribution
+- Field statistics and histograms
+- Streamline seed computation
 """
 
 from paraview import simple
@@ -24,16 +31,16 @@ FIELD_TYPE_PATTERNS = {
 
 class ExtendedParaViewMCP:
     """
-    Wraps ParaViewMCP and adds analysis/query tools.
+    CFD analysis methods for ParaView.
+    
+    Used internally by WorkflowMCP to implement high-level workflows.
+    Not intended for direct LLM use.
     
     Usage:
-        from trame_llm.paraview import ParaViewMCP
-        from paraview_llm.extended_mcp import ExtendedParaViewMCP
-        
-        base_mcp = ParaViewMCP(app)
-        extended = ExtendedParaViewMCP(base_mcp)
-        
-        llm_client.register_mcp(extended)
+        # Don't use directly - use WorkflowMCP instead:
+        from paraview_llm import WorkflowMCP
+        workflow_mcp = WorkflowMCP(base_mcp)
+        llm_client.register_mcp(workflow_mcp)
     """
     
     def __init__(self, paraview_mcp):
@@ -156,143 +163,21 @@ class ExtendedParaViewMCP:
     
     @property
     def mcp(self):
-        """Return combined MCP definition with base + extended tools."""
-        base_mcp = self._base.mcp
+        """
+        DEPRECATED: Use WorkflowMCP instead.
         
-        # Add our tools to the base tools
-        extended_tools = [
-            # Data validation and characterization (call first!)
-            self.characterize_dataset,
-            # HIGH-LEVEL WORKFLOW TOOLS (exposed to LLM)
-            self.show_vortices,
-            self.show_streamlines,
-            self.show_slice,
-            self.show_histogram,
-            self.show_forces,
-            self.analyze_data,
-            # Essentials
-            self.list_data,
-            self.save_screenshot,
-            self.set_view,
-        ]
-        
-        return {
-            "name": base_mcp["name"],
-            "instructions": base_mcp["instructions"] + """
-                
-                You have high-level visualization tools. Call list_data() first to see what's loaded.
-                
-                VISUALIZATION TOOLS:
-                - show_vortices(method="q_criterion") - Show vortex structures
-                - show_streamlines() - Show flow streamlines in wake region  
-                - show_slice(normal="x", location="wake") - Show slice through data
-                - show_histogram(field="p") - Show field distribution chart
-                - show_forces() - Show force distribution chart
-                
-                ANALYSIS:
-                - analyze_data() - Get dataset characteristics and recommendations
-                
-                UTILITIES:
-                - list_data() - See loaded data sources
-                - save_screenshot(filename="output/result.png") - Save current view
-                - set_view(direction="+x") - Set camera angle
-                
-                After creating a visualization, call save_screenshot() to save the result.
-                  4. update_string_property(proxy_name=result["name"], property_name="ContourBy", value=["POINTS", vortex["field_name"]])
-                  5. update_list_property(proxy_name=result["name"], property_name="Isosurfaces", value=[vortex["threshold"]])
-                  6. update_color(proxy_name=result["name"], field_name="Velocity")
-                  7. focus_on(proxy_name=result["name"])
-                  8. save_screenshot(filename="...")
-                
-                STREAMLINES - follow these steps exactly:
-                  1. hide_all()
-                  2. seed = compute_streamline_seed()
-                  3. result = create("StreamTracer")
-                  4. update_string_property(proxy_name=result["name"], property_name="SeedType", value="Point Cloud")
-                  5. update_sub_property(proxy_name=result["name"], property_name="SeedType", sub_property="Center", value=seed["center"])
-                  6. update_sub_property(proxy_name=result["name"], property_name="SeedType", sub_property="Radius", value=seed["radius"])
-                  7. update_sub_property(proxy_name=result["name"], property_name="SeedType", sub_property="NumberOfPoints", value=seed["num_points"])
-                  8. update_float_property(proxy_name=result["name"], property_name="MaximumStreamlineLength", value=seed["max_length"])
-                  9. focus_on(proxy_name=result["name"])
-                  10. save_screenshot(filename="...")
-                
-                SLICES - follow these steps exactly:
-                  1. hide_all()
-                  2. wake = detect_wake_region()  # For wake slice
-                  3. result = create("Slice")
-                  4. update_sub_property(proxy_name=result["name"], property_name="SliceType", sub_property="Origin", value=wake["wake_centroid"])
-                  5. update_sub_property(proxy_name=result["name"], property_name="SliceType", sub_property="Normal", value=[1,0,0])  # X-normal for wake
-                  6. update_color(proxy_name=result["name"], field_name="Velocity")
-                  7. set_view(direction="-x")  # Look at slice face-on
-                  8. focus_on(proxy_name=result["name"])
-                  9. save_screenshot(filename="...")
-                
-                CHARTS:
-                  create_histogram_chart(field="p")  # Then save_screenshot
-                  create_force_distribution_chart()  # Then save_screenshot
-                
-                CFD ANALYSIS TOOLS (return data/parameters, chain with base tools for visualization):
-                
-                DATA VALIDATION (call first with new datasets!):
-                - characterize_dataset: Analyze CFD data - simulation type, available fields
-                - ensure_velocity_vector: Create Velocity from u,v,w components if needed
-                - validate_for_analysis: Check prerequisites for analysis type
-                
-                FIELD ANALYSIS:
-                - find_minimum: Location of minimum field value (stagnation points)
-                - find_maximum: Location of maximum field value
-                - find_high_gradient: Location of max gradient (shear layers)
-                - find_by_query: Centroid of points matching expression
-                - field_statistics: min/max/mean/std of a field
-                - field_histogram: Histogram bins and counts
-                - query_select: Count points/cells matching expression
-                - get_selection_info: Info about current selection
-                
-                FLOW ANALYSIS:
-                - detect_wake_region: Find wake center/radius for streamline seeding
-                - detect_streamwise_direction: Detect principal flow direction
-                
-                VORTEX ANALYSIS:
-                - compute_vortex_field: Compute Q/vorticity/lambda2 field.
-                  Returns {proxy_name, field_name, threshold}.
-                  IMPORTANT: Use returned proxy_name as input_proxy for create("Contour"):
-                    result = compute_vortex_field("q_criterion")
-                    create("Contour", input_proxy=result["proxy_name"])
-                    update_list_property("Isosurfaces", [result["threshold"]])
-                
-                FORCE ANALYSIS:
-                - compute_forces: Integrate pressure for drag/lift coefficients
-                - compute_force_distribution: Sectional and accumulated force along axis
-                
-                CHARTS:
-                - create_histogram_chart: Bar chart of field distribution
-                - create_force_distribution_chart: XY plot of force distribution
-                
-                VISUALIZATION (use base tools):
-                - create("Slice") + update_sub_property for slices
-                - create("Contour") + update_list_property for isosurfaces
-                - create("StreamTracer") + update_sub_property for streamlines
-                
-                VISIBILITY/CAMERA:
-                - hide_all: Hide all proxies
-                - show_data_context: Show body surface as context
-                - set_view: Set camera to standard view
-                - set_streamwise_view: Auto-detect flow direction and set view
-            """,
-            "tools": base_mcp["tools"] + extended_tools,
-            "resources": {
-                **base_mcp.get("resources", {}),
-                "resource://visibility": self.get_visibility_state,
-            },
-        }
+        This property was used for direct LLM orchestration of fine-grained tools,
+        which proved unreliable. WorkflowMCP provides high-level workflow tools
+        that execute deterministically.
+        """
+        raise NotImplementedError(
+            "ExtendedParaViewMCP.mcp is deprecated. Use WorkflowMCP instead:\n"
+            "  workflow_mcp = WorkflowMCP(base_mcp)\n"
+            "  llm.register_mcp(workflow_mcp)"
+        )
     
     def get_visibility_state(self) -> dict:
-        """
-        Get visibility state of all proxies in the current view.
-        
-        Returns dict mapping proxy name to visibility (True/False).
-        Use this to understand what's currently shown before creating new visualizations.
-        """
+        """Get visibility state of all proxies in the current view."""
         view = simple.GetActiveView()
         if view is None:
             return {"error": "No active view"}
@@ -2087,6 +1972,9 @@ out.GetPointData().AddArray(arr)
         Returns:
             Dict with chart info and statistics
         """
+        # Save original view to restore later (charts create new views)
+        original_view = simple.GetActiveView()
+        
         # Get histogram data from analysis function
         hist_data = self.field_histogram(
             field=field,
@@ -2137,9 +2025,11 @@ out.GetPointData().AddArray(arr)
             if merge:
                 simple.Delete(merge)
             
-            # Restore active source
+            # Restore active source and view
             if original_source:
                 simple.SetActiveSource(original_source)
+            if original_view:
+                simple.SetActiveView(original_view)
             
             return {
                 "status": "created",
@@ -2187,6 +2077,7 @@ out.GetPointData().AddArray(arr)
             import os
             
             original_source = simple.GetActiveSource()  # Save for restore
+            original_view = simple.GetActiveView()  # Save view too
             
             stations = dist_data["stations"]
             sectional = dist_data["sectional_force"]
@@ -2222,9 +2113,11 @@ out.GetPointData().AddArray(arr)
             simple.Render(chart_view)
             self._last_chart_view = chart_view
             
-            # Restore active source
+            # Restore active source and view
             if original_source:
                 simple.SetActiveSource(original_source)
+            if original_view:
+                simple.SetActiveView(original_view)
             
             return {
                 "status": "created",
@@ -2982,7 +2875,14 @@ out.GetPointData().AddArray(arr)
         Returns:
             Dict with filename and status
         """
-        view = simple.GetActiveView()
+        # Check if a chart was just created - if so, save that instead
+        view = getattr(self, '_last_chart_view', None)
+        if view is None:
+            view = simple.GetActiveView()
+        else:
+            # Clear after use so next screenshot uses active view
+            self._last_chart_view = None
+        
         if view is None:
             return {"error": "No active view"}
         

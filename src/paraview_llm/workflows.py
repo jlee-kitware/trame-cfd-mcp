@@ -13,13 +13,22 @@ class CFDWorkflows:
     """High-level workflow tools for CFD visualization."""
     
     def __init__(self, extended_mcp):
-        """Initialize with reference to ExtendedParaViewMCP for internal tool access."""
+        """
+        Initialize with reference to ExtendedParaViewMCP for internal tool access.
+        
+        Args:
+            extended_mcp: ExtendedParaViewMCP instance
+        """
         self._mcp = extended_mcp
     
     def _get_data_reader(self):
-        """Get the first data reader in the pipeline."""
+        """Get the original data reader (not CSV/temporary readers)."""
+        # Skip temporary readers like CSVReader created by charts
+        skip_types = ['CSVReader', 'DelimitedTextReader']
+        
         for name, proxy in simple.GetSources().items():
-            if 'Reader' in proxy.GetXMLName():
+            xml_name = proxy.GetXMLName()
+            if 'Reader' in xml_name and xml_name not in skip_types:
                 return proxy
         return simple.GetActiveSource()
     
@@ -29,6 +38,16 @@ class CFDWorkflows:
             if p == proxy:
                 return name[0]
         return None
+    
+    def _get_dataset_filename(self, proxy) -> str:
+        """Get dataset filename from a proxy."""
+        if hasattr(proxy, 'FileName'):
+            fn = proxy.FileName
+            if hasattr(fn, '__iter__') and not isinstance(fn, str):
+                fn = list(fn)
+                return fn[0] if fn else "unknown"
+            return str(fn)
+        return "unknown"
 
     def get_fields(self, proxy_name: str = None) -> dict:
         """
@@ -151,11 +170,24 @@ class CFDWorkflows:
             "type": "vortex_isosurface", 
             "method": method,
             "proxy_name": contour_name,
-            "field": vortex["field_name"],
-            "threshold": vortex["threshold"],
-            "field_range": vortex.get("field_range"),
-            "color_by": color_array or color_by,
-            "tip": f"Threshold {vortex['threshold']:.2f} is auto-computed. Use show_vortices with different percentile for more/fewer structures."
+            "provenance": {
+                "dataset": self._get_dataset_filename(proxy),
+                "filter_chain": ["MergeBlocks", "Gradient", "Contour"],
+                "arrays_used": ["Velocity", vortex["field_name"]],
+                "parameters": {
+                    "method": method,
+                    "threshold": vortex["threshold"],
+                    "ContourBy": vortex["field_name"],
+                    "color_by": color_array or color_by
+                }
+            },
+            "interpretation": {
+                "field": vortex["field_name"],
+                "threshold": vortex["threshold"],
+                "field_range": vortex.get("field_range"),
+                "claim": f"{method.replace('_', ' ').title()} > 0 indicates vortex cores where rotation dominates strain"
+            },
+            "tip": f"Threshold {vortex['threshold']:.2f} is auto-computed. Adjust for more/fewer structures."
         }
 
     def show_streamlines(
@@ -220,11 +252,22 @@ class CFDWorkflows:
             "status": "created",
             "type": "streamlines",
             "proxy_name": stream_name,
-            "seed_center": seed["center"],
-            "seed_radius": seed["radius"],
-            "num_points": num_points,
-            "max_length": seed["max_length"],
-            "color_by": color_array or color_by,
+            "provenance": {
+                "dataset": self._get_dataset_filename(proxy),
+                "filter_chain": ["StreamTracer"],
+                "arrays_used": ["Velocity"],
+                "parameters": {
+                    "seed_center": seed["center"],
+                    "seed_radius": seed["radius"],
+                    "num_points": num_points,
+                    "max_length": seed["max_length"],
+                    "color_by": color_array or color_by
+                }
+            },
+            "interpretation": {
+                "seed_location": seed.get("source", "wake"),
+                "claim": "Streamlines show flow path lines. In wake region, they reveal recirculation and separation."
+            },
             "tip": "Seed placed in wake region. Adjust num_points for density."
         }
 
@@ -316,10 +359,21 @@ class CFDWorkflows:
             "status": "created",
             "type": "slice",
             "proxy_name": slice_name,
-            "origin": list(origin),
-            "normal": normal,
-            "location": location,
-            "color_by": color_array or color_by,
+            "provenance": {
+                "dataset": self._get_dataset_filename(proxy),
+                "filter_chain": ["Slice"],
+                "arrays_used": [color_array or color_by],
+                "parameters": {
+                    "origin": list(origin),
+                    "normal": normal,
+                    "location": location,
+                    "color_by": color_array or color_by
+                }
+            },
+            "interpretation": {
+                "location_type": location,
+                "claim": f"Slice shows {color_array or color_by} distribution on a plane. Wake slices reveal base pressure deficit."
+            },
             "tip": f"Slice at {normal}-normal through {location}. Use location='center' for domain center."
         }
 
@@ -349,7 +403,24 @@ class CFDWorkflows:
                 proxy_name = name[0]
                 break
         
-        return self._mcp.create_histogram_chart(field=field, num_bins=num_bins, proxy_name=proxy_name)
+        result = self._mcp.create_histogram_chart(field=field, num_bins=num_bins, proxy_name=proxy_name)
+        
+        # Add provenance and interpretation
+        if "error" not in result:
+            result["provenance"] = {
+                "dataset": self._get_dataset_filename(proxy),
+                "filter_chain": ["Histogram"],
+                "arrays_used": [result.get("field", field)],
+                "parameters": {
+                    "field": result.get("field", field),
+                    "num_bins": num_bins
+                }
+            }
+            result["interpretation"] = {
+                "claim": f"Histogram shows distribution of {result.get('field', field)}. Asymmetric distributions may indicate flow features."
+            }
+        
+        return result
 
     def show_forces(self) -> dict:
         """
@@ -369,7 +440,21 @@ class CFDWorkflows:
                 proxy_name = name[0]
                 break
         
-        return self._mcp.create_force_distribution_chart(proxy_name=proxy_name)
+        result = self._mcp.create_force_distribution_chart(proxy_name=proxy_name)
+        
+        # Add provenance and interpretation
+        if "error" not in result:
+            result["provenance"] = {
+                "dataset": self._get_dataset_filename(proxy),
+                "filter_chain": ["ExtractSurface", "Calculator", "PlotOverLine"],
+                "arrays_used": ["p", "Normals"],
+                "parameters": {}
+            }
+            result["interpretation"] = {
+                "claim": "Force distribution shows where drag/lift accumulates along the body. Peaks indicate high-drag regions."
+            }
+        
+        return result
 
     def analyze_data(self) -> dict:
         """

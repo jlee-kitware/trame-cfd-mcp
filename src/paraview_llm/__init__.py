@@ -1,21 +1,19 @@
 """
 ParaView LLM - CFD Analysis Tools for LLM Assistants
 
-Usage (workflow mode - recommended):
-    from paraview_llm import WorkflowMCP
+Usage:
+    from paraview_llm import WorkflowMCP, TrackedLLMClient
     from trame_llm.paraview import ParaViewMCP
     
     base_mcp = ParaViewMCP(app)
     workflow_mcp = WorkflowMCP(base_mcp)
-    llm_client.register_mcp(workflow_mcp)
-
-Usage (fine-grained mode):
-    from paraview_llm import ExtendedParaViewMCP
-    from trame_llm.paraview import ParaViewMCP
     
-    base_mcp = ParaViewMCP(app)
-    extended_mcp = ExtendedParaViewMCP(base_mcp)
-    llm_client.register_mcp(extended_mcp)
+    llm = TrackedLLMClient(max_iteractions=15)
+    llm.register_mcp(workflow_mcp)
+    await llm.initialize()
+    
+    await llm.process_prompt("Show me the vortices and explain what I see")
+    llm.print_report()  # Token usage and cost
 """
 
 from .extended_mcp import ExtendedParaViewMCP
