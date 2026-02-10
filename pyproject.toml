@@ -5,18 +5,18 @@ build-backend = "hatchling.build"
 [project]
 name = "paraview-llm"
 version = "0.1.0"
-description = "CFD ontology-based orchestrator for ParaView LLM integration"
+description = "Natural language interface for CFD post-processing with ParaView"
 readme = "README.md"
-license = "Apache-2.0"
+license = "BSD-3-Clause"
 requires-python = ">=3.10"
 authors = [
-    { name = "Jeff Lee", email = "jlee1549@gmail.com" }
+    { name = "Kitware, Inc." }
 ]
-keywords = ["paraview", "cfd", "llm", "ontology", "visualization"]
+keywords = ["paraview", "cfd", "llm", "visualization", "scientific-computing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -24,16 +24,15 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 
-# No required LLM dependency - user chooses
-dependencies = []
+dependencies = [
+    "numpy",
+    "python-dotenv",
+]
 
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
-anthropic = ["anthropic>=0.18.0"]
-all = ["openai>=1.0", "anthropic>=0.18.0"]
 dev = [
     "openai>=1.0",
-    "anthropic>=0.18.0",
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "ruff>=0.1",
@@ -47,7 +46,7 @@ Repository = "https://github.com/Kitware/paraview-llm"
 packages = ["src/paraview_llm"]
 
 [tool.ruff]
-line-length = 88
+line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]

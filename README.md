@@ -25,14 +25,51 @@ The LLM acts as a **CFD analyst**, not just a command translator:
 
 ## Installation
 
+### Prerequisites
+
+1. **ParaView** with Python bindings (pvpython)
+   - Download from [paraview.org](https://www.paraview.org/download/) or build from source
+   
+2. **trame-llm** - LLM orchestration library
+   ```bash
+   # Clone and install trame-llm (not yet on PyPI)
+   git clone https://github.com/Kitware/trame-llm.git
+   cd trame-llm
+   pip install -e .
+   ```
+
+3. **OpenAI API key**
+   ```bash
+   export OPENAI_API_KEY=sk-your-key-here
+   ```
+
+### Install paraview-llm
+
 ```bash
-pip install paraview-llm
+git clone https://github.com/Kitware/paraview-llm.git
+cd paraview-llm
+pip install -e ".[openai]"
 ```
 
-Requires:
-- ParaView with Python bindings
-- trame-llm
-- OpenAI API key (or compatible)
+## Running the Examples
+
+```bash
+cd examples/cfd_assistant
+
+# Create virtual environment for pvpython
+python -m venv .venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+pip install openai python-dotenv
+
+# Copy and edit .env
+cp .env.example .env
+# Edit .env with your OPENAI_API_KEY
+
+# Run with pvpython (NOT regular python)
+/path/to/paraview/bin/pvpython --venv .venv test_analysis.py
+```
+
+**Important:** You must use `pvpython` (ParaView's Python) with the `--venv` flag to load packages from your virtual environment. Regular Python won't have ParaView bindings.
 
 ## Quick Start
 
@@ -240,6 +277,30 @@ pvpython --venv .venv test_analysis.py
 All tests save:
 - Screenshots to `output/*.png`
 - Full provenance to `output/*_results.json`
+
+## Dependencies
+
+### trame-llm
+
+This package depends on [trame-llm](https://github.com/Kitware/trame-llm) for LLM orchestration. trame-llm provides:
+
+- **ParaViewMCP** - Base MCP (Model Context Protocol) interface for ParaView
+- **LLMClient** - Async LLM client with tool calling support
+- **ProgressType** - Callbacks for monitoring tool execution
+
+paraview-llm extends this with:
+
+- **WorkflowMCP** - High-level CFD workflow tools
+- **ExtendedParaViewMCP** - CFD-specific analysis functions  
+- **TrackedLLMClient** - LLMClient wrapper with automatic cost tracking
+
+### ParaView
+
+ParaView provides the visualization engine. The package uses:
+
+- `paraview.simple` - Python scripting API
+- VTK filters via ParaView proxies
+- Offscreen rendering for headless operation
 
 ## Files
 
