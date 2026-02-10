@@ -39,6 +39,8 @@ class ExtendedParaViewMCP:
     def __init__(self, paraview_mcp):
         self._base = paraview_mcp
         self.base_mcp = paraview_mcp  # Also expose as base_mcp for convenience
+        self._last_chart_view = None
+        self._body_bounds_cache = {}
     
     def _resolve_field_type(self, field_type: str, proxy) -> str:
         """
@@ -161,89 +163,148 @@ class ExtendedParaViewMCP:
         extended_tools = [
             # Data validation and characterization (call first!)
             self.characterize_dataset,
-            self.ensure_velocity_vector,
-            self.validate_for_analysis,
-            # Query and selection
-            self.query_select,
-            self.find_by_query,
-            self.get_selection_info,
-            # Field analysis
-            self.find_minimum,
-            self.find_maximum,
-            self.find_high_gradient,
-            self.field_statistics,
-            self.field_histogram,
-            # Force computation
-            self.compute_forces,
-            # Charts
-            self.create_histogram_chart,
-            self.create_force_distribution_chart,
-            # Visualization
-            self.create_vortex_isosurface,
-            # Flow detection
-            self.detect_streamwise_direction,
-            self.detect_wake_region,
-            # Camera/view control
+            # HIGH-LEVEL WORKFLOW TOOLS (exposed to LLM)
+            self.show_vortices,
+            self.show_streamlines,
+            self.show_slice,
+            self.show_histogram,
+            self.show_forces,
+            self.analyze_data,
+            # Essentials
+            self.list_data,
+            self.save_screenshot,
             self.set_view,
-            self.set_streamwise_view,
-            self.hide_all,
-            self.show_data_context,
         ]
         
         return {
             "name": base_mcp["name"],
             "instructions": base_mcp["instructions"] + """
                 
-                Additional CFD tools (always specify proxy_name for explicit input):
+                You have high-level visualization tools. Call list_data() first to see what's loaded.
+                
+                VISUALIZATION TOOLS:
+                - show_vortices(method="q_criterion") - Show vortex structures
+                - show_streamlines() - Show flow streamlines in wake region  
+                - show_slice(normal="x", location="wake") - Show slice through data
+                - show_histogram(field="p") - Show field distribution chart
+                - show_forces() - Show force distribution chart
+                
+                ANALYSIS:
+                - analyze_data() - Get dataset characteristics and recommendations
+                
+                UTILITIES:
+                - list_data() - See loaded data sources
+                - save_screenshot(filename="output/result.png") - Save current view
+                - set_view(direction="+x") - Set camera angle
+                
+                After creating a visualization, call save_screenshot() to save the result.
+                  4. update_string_property(proxy_name=result["name"], property_name="ContourBy", value=["POINTS", vortex["field_name"]])
+                  5. update_list_property(proxy_name=result["name"], property_name="Isosurfaces", value=[vortex["threshold"]])
+                  6. update_color(proxy_name=result["name"], field_name="Velocity")
+                  7. focus_on(proxy_name=result["name"])
+                  8. save_screenshot(filename="...")
+                
+                STREAMLINES - follow these steps exactly:
+                  1. hide_all()
+                  2. seed = compute_streamline_seed()
+                  3. result = create("StreamTracer")
+                  4. update_string_property(proxy_name=result["name"], property_name="SeedType", value="Point Cloud")
+                  5. update_sub_property(proxy_name=result["name"], property_name="SeedType", sub_property="Center", value=seed["center"])
+                  6. update_sub_property(proxy_name=result["name"], property_name="SeedType", sub_property="Radius", value=seed["radius"])
+                  7. update_sub_property(proxy_name=result["name"], property_name="SeedType", sub_property="NumberOfPoints", value=seed["num_points"])
+                  8. update_float_property(proxy_name=result["name"], property_name="MaximumStreamlineLength", value=seed["max_length"])
+                  9. focus_on(proxy_name=result["name"])
+                  10. save_screenshot(filename="...")
+                
+                SLICES - follow these steps exactly:
+                  1. hide_all()
+                  2. wake = detect_wake_region()  # For wake slice
+                  3. result = create("Slice")
+                  4. update_sub_property(proxy_name=result["name"], property_name="SliceType", sub_property="Origin", value=wake["wake_centroid"])
+                  5. update_sub_property(proxy_name=result["name"], property_name="SliceType", sub_property="Normal", value=[1,0,0])  # X-normal for wake
+                  6. update_color(proxy_name=result["name"], field_name="Velocity")
+                  7. set_view(direction="-x")  # Look at slice face-on
+                  8. focus_on(proxy_name=result["name"])
+                  9. save_screenshot(filename="...")
+                
+                CHARTS:
+                  create_histogram_chart(field="p")  # Then save_screenshot
+                  create_force_distribution_chart()  # Then save_screenshot
+                
+                CFD ANALYSIS TOOLS (return data/parameters, chain with base tools for visualization):
                 
                 DATA VALIDATION (call first with new datasets!):
-                - characterize_dataset: Analyze CFD data to determine simulation type, available fields,
-                  and applicable analysis tools. Returns incompressible/compressible, turbulent/laminar,
-                  resolved field mappings, and recommendations.
-                - ensure_velocity_vector: Create 3-component velocity vector from u,v,w components.
-                  Required before vortex detection or streamlines if velocity is stored as components.
-                - validate_for_analysis: Check if dataset has required fields for specific analysis
-                  (vortex, forces, wake, streamlines). Returns missing fields and suggestions.
+                - characterize_dataset: Analyze CFD data - simulation type, available fields
+                - ensure_velocity_vector: Create Velocity from u,v,w components if needed
+                - validate_for_analysis: Check prerequisites for analysis type
                 
-                ANALYSIS (return data, no visualization):
-                - find_minimum: Find location of minimum field value (stagnation points)
-                - find_maximum: Find location of maximum field value (freestream)
-                - find_high_gradient: Find max gradient location (shear layers, wakes)
-                - find_by_query: Find centroid of points matching a query expression
-                - field_statistics: Get min/max/mean/std of a field
-                - query_select: Count points/cells matching expression (analysis only)
-                - get_selection_info: Get info about current selection
-                - detect_wake_region: Find wake using velocity deficit criterion
-                - detect_streamwise_direction: Detect principal flow direction from velocity
+                FIELD ANALYSIS:
+                - find_minimum: Location of minimum field value (stagnation points)
+                - find_maximum: Location of maximum field value
+                - find_high_gradient: Location of max gradient (shear layers)
+                - find_by_query: Centroid of points matching expression
+                - field_statistics: min/max/mean/std of a field
+                - field_histogram: Histogram bins and counts
+                - query_select: Count points/cells matching expression
+                - get_selection_info: Info about current selection
+                
+                FLOW ANALYSIS:
+                - detect_wake_region: Find wake center/radius for streamline seeding
+                - detect_streamwise_direction: Detect principal flow direction
+                
+                VORTEX ANALYSIS:
+                - compute_vortex_field: Compute Q/vorticity/lambda2 field.
+                  Returns {proxy_name, field_name, threshold}.
+                  IMPORTANT: Use returned proxy_name as input_proxy for create("Contour"):
+                    result = compute_vortex_field("q_criterion")
+                    create("Contour", input_proxy=result["proxy_name"])
+                    update_list_property("Isosurfaces", [result["threshold"]])
+                
+                FORCE ANALYSIS:
                 - compute_forces: Integrate pressure for drag/lift coefficients
+                - compute_force_distribution: Sectional and accumulated force along axis
                 
-                VISUALIZATION:
-                - create_vortex_isosurface: Visualize vortical structures. Methods:
-                    method="q_criterion" (default): Q = 0.5*(||Ω||² - ||S||²), positive Q = vortex
-                    method="vorticity": Vorticity magnitude, includes shear layers
-                    method="lambda2": Second eigenvalue of S²+Ω², negative λ2 = vortex core
-                    method="swirling_strength": Imaginary eigenvalues of ∇u
-                    method="helicity": Normalized helicity |Hn|, identifies helical vortices
+                CHARTS:
+                - create_histogram_chart: Bar chart of field distribution
+                - create_force_distribution_chart: XY plot of force distribution
                 
-                For Slice and StreamTracer, use base tools (see ontology recipes):
-                - base__create("Slice") then configure with update_sub_property
-                - base__create("StreamTracer") then configure seed with update_sub_property
+                VISUALIZATION (use base tools):
+                - create("Slice") + update_sub_property for slices
+                - create("Contour") + update_list_property for isosurfaces
+                - create("StreamTracer") + update_sub_property for streamlines
                 
-                VISIBILITY CONTROL:
-                - hide_all: Hide all proxies - call first for clean slate
-                - show_data_context: Extract and show body surface as semi-transparent gray context.
-                  For volumetric CFD data, extracts the external surface and clips away farfield 
-                  domain boundaries, leaving just the body shape visible as context geometry.
-                  Always call after hide_all() and before creating visualizations.
-                  Workflow: hide_all() → show_data_context() → create filter → focus_on(filter_name)
-                
-                CAMERA CONTROL:
-                - set_view: Set camera to standard view (front/back/top/side/iso)
-                - set_streamwise_view: Auto-detect flow direction and set optimal view
+                VISIBILITY/CAMERA:
+                - hide_all: Hide all proxies
+                - show_data_context: Show body surface as context
+                - set_view: Set camera to standard view
+                - set_streamwise_view: Auto-detect flow direction and set view
             """,
             "tools": base_mcp["tools"] + extended_tools,
-            "resources": base_mcp.get("resources", {}),
+            "resources": {
+                **base_mcp.get("resources", {}),
+                "resource://visibility": self.get_visibility_state,
+            },
         }
+    
+    def get_visibility_state(self) -> dict:
+        """
+        Get visibility state of all proxies in the current view.
+        
+        Returns dict mapping proxy name to visibility (True/False).
+        Use this to understand what's currently shown before creating new visualizations.
+        """
+        view = simple.GetActiveView()
+        if view is None:
+            return {"error": "No active view"}
+        
+        result = {}
+        for name, proxy in simple.GetSources().items():
+            rep = simple.GetRepresentation(proxy, view)
+            if rep:
+                result[name[0]] = rep.Visibility == 1
+            else:
+                result[name[0]] = False
+        return result
     
     # =========================================================================
     # DATA VALIDATION AND CHARACTERIZATION
@@ -278,6 +339,7 @@ class ExtendedParaViewMCP:
             (domain_bounds[5] - domain_bounds[4])**2
         ))
         
+        original_source = simple.GetActiveSource()  # Save for restore
         surface = None
         clip = None
         try:
@@ -333,10 +395,45 @@ class ExtendedParaViewMCP:
                     simple.Delete(surface)
                 except:
                     pass
+            # Restore active source
+            if original_source is not None:
+                simple.SetActiveSource(original_source)
     
     def _invalidate_body_bounds(self):
         """Clear cached body bounds (call if data changes)."""
         self._body_bounds_cache.clear()
+
+    def list_data(self) -> dict:
+        """
+        List all loaded data sources and filters in the pipeline.
+        
+        Call this FIRST to discover what data is available before performing
+        any analysis or visualization. Returns the names of all proxies,
+        distinguishing between data readers (sources) and filters.
+        
+        Returns:
+            Dict with 'readers' (data sources) and 'filters' lists
+        """
+        readers = []
+        filters = []
+        
+        for name, proxy in simple.GetSources().items():
+            proxy_name = name[0]
+            proxy_type = proxy.GetXMLName()
+            
+            # Check if it's a reader (data source) or filter
+            if 'Reader' in proxy_type or proxy_type in ['OpenDataFile', 'XMLMultiBlockDataReader', 
+                'XMLUnstructuredGridReader', 'XMLPolyDataReader', 'LegacyVTKReader',
+                'EnSightReader', 'PVDReader', 'CGNSReader', 'ExodusIIReader']:
+                readers.append({"name": proxy_name, "type": proxy_type})
+            else:
+                filters.append({"name": proxy_name, "type": proxy_type})
+        
+        return {
+            "readers": readers,
+            "filters": filters,
+            "active_source": simple.GetActiveSource().GetXMLName() if simple.GetActiveSource() else None
+        }
     
     def characterize_dataset(self, proxy_name: str = None) -> dict:
         """
@@ -445,7 +542,7 @@ class ExtendedParaViewMCP:
             if characteristics["has_velocity"]:
                 recommendations.append("Velocity field available - can compute vorticity, Q-criterion, streamlines")
                 applicable_tools.extend([
-                    "create_vortex_isosurface",
+                    "compute_vortex_field",
                     "detect_wake_region",
                     "detect_streamwise_direction",
                     "find_minimum (stagnation points)",
@@ -1417,6 +1514,172 @@ class ExtendedParaViewMCP:
             "std": float(arr.std()),
         }
     
+    def compute_vortex_field(
+        self,
+        method: str = "q_criterion",
+        percentile: float = 50.0,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Compute vortex detection field (ANALYSIS ONLY - no visualization).
+        
+        Creates the vortex field array and suggests a threshold value.
+        Use the returned proxy_name with create("Contour") to visualize.
+        
+        Methods:
+        - "q_criterion": Q = 0.5*(||Ω||² - ||S||²). Positive Q = vortex. (default)
+        - "vorticity": Vorticity magnitude ||ω||. High = rotation.
+        - "lambda2": Second eigenvalue of S² + Ω². Negative λ2 = vortex core.
+        
+        Args:
+            method: "q_criterion", "vorticity", or "lambda2"
+            percentile: Percentile of positive values for threshold (default: 50)
+            proxy_name: Source proxy name
+            
+        Returns:
+            {field_name, proxy_name, threshold, field_range} 
+            - Use proxy_name as input to create("Contour")
+            - Use threshold for Isosurfaces property
+            
+        Example workflow:
+            result = compute_vortex_field("q_criterion")
+            create("Contour", input_proxy=result["proxy_name"])
+            update_list_property("Isosurfaces", [result["threshold"]])
+            update_color(field_name="Velocity")
+        """
+        from vtk.util.numpy_support import vtk_to_numpy
+        
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            # Merge blocks for gradient computation
+            merge = simple.MergeBlocks(Input=proxy)
+            simple.UpdatePipeline(proxy=merge)
+            
+            # Compute gradient with appropriate fields
+            gradient = simple.Gradient(Input=merge)
+            gradient.ScalarArray = ['POINTS', 'Velocity']
+            
+            if method == "q_criterion":
+                gradient.ComputeQCriterion = 1
+                gradient.QCriterionArrayName = "Q"
+                field_name = "Q"
+            elif method == "vorticity":
+                gradient.ComputeVorticity = 1
+                gradient.VorticityArrayName = "Vorticity"
+                field_name = "Vorticity"
+            elif method == "lambda2":
+                gradient.ComputeGradient = 1
+                gradient.ResultArrayName = "VelocityGradient"
+                field_name = "Lambda2"
+            else:
+                simple.Delete(merge)
+                return {"error": f"Unknown method: {method}. Use 'q_criterion', 'vorticity', or 'lambda2'"}
+            
+            simple.UpdatePipeline(proxy=gradient)
+            
+            # For vorticity, compute magnitude
+            if method == "vorticity":
+                calc = simple.Calculator(Input=gradient)
+                calc.ResultArrayName = "VorticityMagnitude"
+                calc.Function = "mag(Vorticity)"
+                simple.UpdatePipeline(proxy=calc)
+                output_proxy = calc
+                field_name = "VorticityMagnitude"
+            elif method == "lambda2":
+                # Lambda2 needs eigenvalue computation via ProgrammableFilter
+                prog = simple.ProgrammableFilter(Input=gradient)
+                prog.Script = '''
+import numpy as np
+from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+
+inp = inputs[0]
+out = output
+out.ShallowCopy(inp.VTKObject)
+
+grad_vtk = inp.PointData.GetArray("VelocityGradient")
+n = grad_vtk.GetNumberOfTuples()
+G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
+
+lambda2 = np.zeros(n, dtype=np.float64)
+valid_mask = np.all(np.isfinite(G), axis=(1, 2))
+valid_indices = np.where(valid_mask)[0]
+
+if len(valid_indices) > 0:
+    G_valid = G[valid_indices]
+    S = 0.5 * (G_valid + np.transpose(G_valid, (0, 2, 1)))
+    Omega = 0.5 * (G_valid - np.transpose(G_valid, (0, 2, 1)))
+    M = np.matmul(S, S) + np.matmul(Omega, Omega)
+    try:
+        eigvals = np.linalg.eigvalsh(M)
+        lambda2[valid_indices] = eigvals[:, 1]
+    except:
+        pass
+
+arr = numpy_to_vtk(np.ascontiguousarray(lambda2))
+arr.SetName("Lambda2")
+out.GetPointData().AddArray(arr)
+'''
+                simple.UpdatePipeline(proxy=prog)
+                output_proxy = prog
+            else:
+                output_proxy = gradient
+            
+            # Get field array for threshold calculation
+            output_data = output_proxy.GetClientSideObject().GetOutput()
+            field_vtk = output_data.GetPointData().GetArray(field_name)
+            if field_vtk is None:
+                return {"error": f"Could not compute {field_name}"}
+            
+            field_array = vtk_to_numpy(field_vtk)
+            field_min, field_max = float(field_array.min()), float(field_array.max())
+            
+            # Compute threshold
+            if method == "lambda2":
+                # Lambda2: use 1% of min (small negative)
+                threshold = 0.01 * field_min
+            else:
+                # Q-criterion, vorticity: percentile of positive values
+                positive_vals = field_array[field_array > 0]
+                if len(positive_vals) > 0:
+                    threshold = float(np.percentile(positive_vals, percentile))
+                else:
+                    threshold = max(0.0, field_max * 0.01)
+            
+            # Get output proxy name
+            output_name = None
+            for name, p in simple.GetSources().items():
+                if p == output_proxy:
+                    output_name = name[0]
+                    break
+            
+            # Hide intermediate filters (MergeBlocks, Gradient, etc.) so they don't block visualization
+            view = simple.GetActiveView()
+            if view:
+                for p in [merge, gradient]:
+                    if p and p != output_proxy:
+                        rep = simple.GetRepresentation(p, view)
+                        if rep:
+                            rep.Visibility = 0
+                # Also hide output proxy - user will show it via Contour
+                rep = simple.GetRepresentation(output_proxy, view)
+                if rep:
+                    rep.Visibility = 0
+            
+            return {
+                "field_name": field_name,
+                "proxy_name": output_name,
+                "threshold": float(threshold),
+                "field_range": [field_min, field_max],
+                "method": method,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    # NOTE: create_vortex_isosurface and create_slice removed - use compute_* then base create()
+    
     def compute_forces(
         self,
         freestream_velocity: float = None,
@@ -1578,14 +1841,14 @@ class ExtendedParaViewMCP:
                     freestream_velocity = 1.0
             
             if reference_area is None:
-                # Use frontal area (projected area perpendicular to streamwise)
-                bounds = surf_data.GetBounds()
+                # Use frontal area from body bounds (not domain bounds)
+                body_bounds, _ = self._get_body_bounds(proxy)
                 if drag_idx == 0:  # streamwise = x
-                    reference_area = (bounds[3] - bounds[2]) * (bounds[5] - bounds[4])
+                    reference_area = (body_bounds[3] - body_bounds[2]) * (body_bounds[5] - body_bounds[4])
                 elif drag_idx == 1:  # streamwise = y
-                    reference_area = (bounds[1] - bounds[0]) * (bounds[5] - bounds[4])
+                    reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[5] - body_bounds[4])
                 else:  # streamwise = z
-                    reference_area = (bounds[1] - bounds[0]) * (bounds[3] - bounds[2])
+                    reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[3] - body_bounds[2])
             
             # Compute coefficients: C = F / (0.5 * ρ * V² * A)
             dynamic_pressure = 0.5 * density * freestream_velocity ** 2
@@ -1623,100 +1886,7 @@ class ExtendedParaViewMCP:
         except Exception as e:
             return {"error": str(e)}
     
-    def create_histogram_chart(
-        self,
-        field: str,
-        num_bins: int = 20,
-        proxy_name: str = None
-    ) -> dict:
-        """
-        Create a histogram chart showing field value distribution.
-        
-        Uses ParaView's Histogram filter and BarChartView.
-        
-        Args:
-            field: Field name or semantic type (e.g., "velocity", "pressure")
-            num_bins: Number of histogram bins (default: 20)
-            proxy_name: Name of proxy, or None for active source
-            
-        Returns:
-            Dict with chart info and statistics
-        """
-        from vtk.util.numpy_support import vtk_to_numpy
-        
-        proxy = self._get_proxy(proxy_name)
-        if proxy is None:
-            return {"error": "No proxy found"}
-        
-        try:
-            field_name = self._resolve_field_type(field, proxy)
-            
-            # Merge if multiblock
-            simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutput()
-            if data.IsA("vtkMultiBlockDataSet"):
-                merge = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge)
-                hist_input = merge
-            else:
-                merge = None
-                hist_input = proxy
-            
-            # Create histogram
-            hist = simple.Histogram(Input=hist_input)
-            hist.SelectInputArray = ['POINTS', field_name]
-            hist.BinCount = num_bins
-            
-            # Check if vector - use magnitude
-            arr, _ = self._get_array(proxy, field_name)
-            if arr is not None and arr.ndim > 1 and arr.shape[1] > 1:
-                hist.Component = 'Magnitude'
-                display_name = f"{field_name} Magnitude"
-            else:
-                display_name = field_name
-            
-            simple.UpdatePipeline(proxy=hist)
-            
-            # Create bar chart view
-            chart_view = simple.CreateBarChartView()
-            chart_view.ViewSize = [800, 400]
-            chart_view.ChartTitle = f'Distribution of {display_name}'
-            
-            display = simple.Show(hist, chart_view)
-            simple.Render(chart_view)
-            
-            # Store chart view for screenshot capture
-            self._last_chart_view = chart_view
-            
-            # Get statistics
-            if arr is not None:
-                if arr.ndim > 1 and arr.shape[1] > 1:
-                    arr = np.linalg.norm(arr, axis=1)
-                stats = {
-                    "min": float(arr.min()),
-                    "max": float(arr.max()),
-                    "mean": float(arr.mean()),
-                    "std": float(arr.std()),
-                }
-            else:
-                stats = {}
-            
-            # Cleanup merge if created
-            if merge:
-                simple.Delete(merge)
-            
-            return {
-                "status": "created",
-                "chart_type": "histogram",
-                "field": display_name,
-                "num_bins": num_bins,
-                **stats
-            }
-            
-        except Exception as e:
-            return {"error": str(e)}
-    
-    def create_force_distribution_chart(
+    def compute_force_distribution(
         self,
         force_axis: str = "auto",
         distribution_axis: str = "auto",
@@ -1724,35 +1894,29 @@ class ExtendedParaViewMCP:
         proxy_name: str = None
     ) -> dict:
         """
-        Create a chart showing accumulated force distribution along an axis.
+        Compute force distribution along an axis (ANALYSIS ONLY - no visualization).
         
-        Integrates pressure forces on body surfaces and shows:
-        - Sectional force: Local force contribution per station
-        - Accumulated force: Cumulative sum along the distribution axis
+        Integrates pressure forces on body surfaces and returns:
+        - stations: Position along distribution axis
+        - sectional_force: Local force contribution per station
+        - accumulated_force: Cumulative sum along the distribution axis
         
-        Useful for spanwise loading, chordwise pressure distribution, etc.
+        Use field_histogram or a charting library to visualize the results.
         
         Args:
             force_axis: Force component direction:
-                - "auto" or "streamwise" or "drag": Auto-detect streamwise (drag direction)
-                - "lift": Perpendicular to streamwise (typically y)
+                - "auto" or "streamwise" or "drag": Auto-detect streamwise
+                - "lift": Perpendicular to streamwise
                 - "x", "y", "z": Explicit axis
             distribution_axis: Axis to distribute along:
-                - "auto" or "streamwise": Along flow direction (chordwise)
-                - "span": Perpendicular to flow, largest extent (spanwise)
+                - "auto" or "streamwise": Along flow direction
+                - "span": Perpendicular to flow, largest extent
                 - "x", "y", "z": Explicit axis
-            num_bins: Number of stations along distribution axis (default: 40)
-            proxy_name: Name of proxy, or None for active source
+            num_bins: Number of stations (default: 40)
+            proxy_name: Source proxy name
             
         Returns:
-            Dict with chart info and force data
-            
-        Examples:
-            # Chordwise drag distribution (auto-detect flow direction)
-            create_force_distribution_chart(force_axis="drag", distribution_axis="streamwise")
-            
-            # Spanwise lift distribution
-            create_force_distribution_chart(force_axis="lift", distribution_axis="span")
+            {stations, sectional_force, accumulated_force, total_force, ...}
         """
         from vtk.util.numpy_support import vtk_to_numpy
         
@@ -1763,7 +1927,7 @@ class ExtendedParaViewMCP:
         try:
             simple.UpdatePipeline(proxy=proxy)
             
-            # Auto-detect streamwise and span directions if needed
+            # Auto-detect streamwise and span directions
             streamwise_axis = None
             span_axis = None
             
@@ -1772,17 +1936,15 @@ class ExtendedParaViewMCP:
                 if "error" in streamwise_result:
                     return {"error": f"Could not detect streamwise direction: {streamwise_result['error']}"}
                 
-                streamwise = streamwise_result["streamwise"]  # e.g., "+x", "-y"
-                streamwise_axis = streamwise[-1].lower()  # "x", "y", or "z"
+                streamwise = streamwise_result["streamwise"]
+                streamwise_axis = streamwise[-1].lower()
                 
-                # Detect span: perpendicular axis with largest domain extent
                 bounds = proxy.GetDataInformation().GetBounds()
                 extents = {
                     "x": bounds[1] - bounds[0],
                     "y": bounds[3] - bounds[2],
                     "z": bounds[5] - bounds[4],
                 }
-                # Find largest extent among non-streamwise axes
                 perp_axes = [a for a in ["x", "y", "z"] if a != streamwise_axis]
                 span_axis = max(perp_axes, key=lambda a: extents[a])
             
@@ -1790,13 +1952,8 @@ class ExtendedParaViewMCP:
             if force_axis in ("auto", "streamwise", "drag"):
                 force_axis = streamwise_axis
             elif force_axis == "lift":
-                # Lift is perpendicular to streamwise, typically vertical (y) or the non-span perp axis
                 perp_axes = [a for a in ["x", "y", "z"] if a != streamwise_axis]
-                # Prefer y for lift if available, otherwise use the non-span axis
-                if "y" in perp_axes:
-                    force_axis = "y"
-                else:
-                    force_axis = [a for a in perp_axes if a != span_axis][0] if span_axis else perp_axes[0]
+                force_axis = "y" if "y" in perp_axes else perp_axes[0]
             
             # Resolve distribution_axis
             if distribution_axis in ("auto", "streamwise"):
@@ -1847,7 +2004,6 @@ class ExtendedParaViewMCP:
                 pts = vtk_to_numpy(cell.GetPoints().GetData())
                 centers[i] = pts.mean(axis=0)
                 
-                # Area
                 if cell.GetCellType() == 5:  # Triangle
                     v1, v2 = pts[1] - pts[0], pts[2] - pts[0]
                     areas[i] = 0.5 * np.linalg.norm(np.cross(v1, v2))
@@ -1855,7 +2011,6 @@ class ExtendedParaViewMCP:
                     v1, v2 = pts[2] - pts[0], pts[3] - pts[1]
                     areas[i] = 0.5 * np.linalg.norm(np.cross(v1, v2))
                 
-                # Cell pressure
                 pt_ids = [cell.GetPointId(j) for j in range(cell.GetNumberOfPoints())]
                 cell_pressure[i] = np.mean([pressure[pid] for pid in pt_ids])
             
@@ -1868,25 +2023,25 @@ class ExtendedParaViewMCP:
                 (centers[:, 2] > bounds[4] + eps) & (centers[:, 2] < bounds[5] - eps)
             )
             
+            # Cleanup filters
+            simple.Delete(normals_filter)
+            simple.Delete(surface)
+            if merge_input != proxy:
+                simple.Delete(merge_input)
+            
             if body_mask.sum() == 0:
-                simple.Delete(normals_filter)
-                simple.Delete(surface)
-                if merge_input != proxy:
-                    simple.Delete(merge_input)
                 return {"error": "No body cells found (all cells at boundaries)"}
             
-            # Axis mapping
+            # Compute force distribution
             axis_map = {"x": 0, "y": 1, "z": 2}
             force_idx = axis_map.get(force_axis.lower(), 0)
             dist_idx = axis_map.get(distribution_axis.lower(), 0)
             
-            # Local force = -p * n_i * dA
             force_per_cell = -cell_pressure * surf_normals[:, force_idx] * areas
             
             pos_body = centers[body_mask, dist_idx]
             force_body = force_per_cell[body_mask]
             
-            # Bin by position
             pos_min, pos_max = pos_body.min(), pos_body.max()
             bin_edges = np.linspace(pos_min, pos_max, num_bins + 1)
             bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
@@ -1898,26 +2053,163 @@ class ExtendedParaViewMCP:
             
             accumulated = np.cumsum(binned_force)
             
-            # Write CSV for plotting
+            return {
+                "force_axis": force_axis,
+                "distribution_axis": distribution_axis,
+                "stations": bin_centers.tolist(),
+                "sectional_force": binned_force.tolist(),
+                "accumulated_force": accumulated.tolist(),
+                "total_force": float(accumulated[-1]),
+                "position_range": [float(pos_min), float(pos_max)],
+                "num_body_cells": int(body_mask.sum()),
+                "num_bins": num_bins,
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def create_histogram_chart(
+        self,
+        field: str,
+        num_bins: int = 20,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Create bar chart showing field distribution (VISUALIZATION ONLY).
+        
+        Uses field_histogram() for data, then creates ParaView chart.
+        
+        Args:
+            field: Field name or semantic type (e.g., "velocity", "pressure")
+            num_bins: Number of histogram bins (default: 20)
+            proxy_name: Source proxy name
+            
+        Returns:
+            Dict with chart info and statistics
+        """
+        # Get histogram data from analysis function
+        hist_data = self.field_histogram(
+            field=field,
+            num_bins=num_bins,
+            proxy_name=proxy_name
+        )
+        
+        if "error" in hist_data:
+            return hist_data
+        
+        try:
+            proxy = self._get_proxy(proxy_name)
+            original_source = simple.GetActiveSource()  # Save for restore
+            field_name = hist_data["field"]
+            
+            # Merge if multiblock
+            simple.UpdatePipeline(proxy=proxy)
+            data = proxy.GetClientSideObject().GetOutput()
+            if data.IsA("vtkMultiBlockDataSet"):
+                merge = simple.MergeBlocks(Input=proxy)
+                simple.UpdatePipeline(proxy=merge)
+                hist_input = merge
+            else:
+                merge = None
+                hist_input = proxy
+            
+            # Create histogram filter for visualization
+            hist = simple.Histogram(Input=hist_input)
+            hist.SelectInputArray = ['POINTS', self._resolve_field_type(field, proxy)]
+            hist.BinCount = num_bins
+            
+            # Use magnitude for vectors
+            if "Magnitude" in field_name:
+                hist.Component = 'Magnitude'
+            
+            simple.UpdatePipeline(proxy=hist)
+            
+            # Create bar chart view
+            chart_view = simple.CreateBarChartView()
+            chart_view.ViewSize = [800, 400]
+            chart_view.ChartTitle = f'Distribution of {field_name}'
+            
+            display = simple.Show(hist, chart_view)
+            simple.Render(chart_view)
+            
+            self._last_chart_view = chart_view
+            
+            if merge:
+                simple.Delete(merge)
+            
+            # Restore active source
+            if original_source:
+                simple.SetActiveSource(original_source)
+            
+            return {
+                "status": "created",
+                "chart_type": "histogram",
+                **hist_data
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+        
+    def create_force_distribution_chart(
+        self,
+        force_axis: str = "auto",
+        distribution_axis: str = "auto",
+        num_bins: int = 40,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Create XY chart showing force distribution (VISUALIZATION ONLY).
+        
+        Uses compute_force_distribution() for data, then creates ParaView chart.
+        
+        Args:
+            force_axis: "auto"/"drag", "lift", or "x"/"y"/"z"
+            distribution_axis: "auto"/"streamwise", "span", or "x"/"y"/"z"
+            num_bins: Number of stations (default: 40)
+            proxy_name: Source proxy name
+            
+        Returns:
+            Dict with chart info and force data
+        """
+        # Get force distribution data from analysis function
+        dist_data = self.compute_force_distribution(
+            force_axis=force_axis,
+            distribution_axis=distribution_axis,
+            num_bins=num_bins,
+            proxy_name=proxy_name
+        )
+        
+        if "error" in dist_data:
+            return dist_data
+        
+        try:
             import tempfile
             import os
+            
+            original_source = simple.GetActiveSource()  # Save for restore
+            
+            stations = dist_data["stations"]
+            sectional = dist_data["sectional_force"]
+            accumulated = dist_data["accumulated_force"]
+            
+            # Write CSV for plotting
             csv_path = os.path.join(tempfile.gettempdir(), 'force_distribution.csv')
             with open(csv_path, 'w') as f:
                 f.write('Position,Sectional_Force,Accumulated_Force\n')
-                for i in range(num_bins):
-                    f.write(f'{bin_centers[i]:.6f},{binned_force[i]:.8f},{accumulated[i]:.8f}\n')
+                for i in range(len(stations)):
+                    f.write(f'{stations[i]:.6f},{sectional[i]:.8f},{accumulated[i]:.8f}\n')
             
             # Create XY plot
             table = simple.CSVReader(FileName=[csv_path])
             simple.UpdatePipeline(proxy=table)
             
             force_names = {"x": "Drag", "y": "Lift", "z": "Side Force"}
-            force_name = force_names.get(force_axis.lower(), "Force")
+            force_name = force_names.get(dist_data["force_axis"].lower(), "Force")
             
             chart_view = simple.CreateXYPlotView()
             chart_view.ViewSize = [800, 400]
             chart_view.ChartTitle = f'Accumulated {force_name} Distribution'
-            chart_view.BottomAxisTitle = f'{distribution_axis.upper()} Position'
+            chart_view.BottomAxisTitle = f'{dist_data["distribution_axis"].upper()} Position'
             chart_view.LeftAxisTitle = f'{force_name}'
             
             display = simple.Show(table, chart_view)
@@ -1928,423 +2220,18 @@ class ExtendedParaViewMCP:
             display.SeriesLineThickness = ['Accumulated_Force', '2', 'Sectional_Force', '2']
             
             simple.Render(chart_view)
-            
-            # Store chart view for screenshot capture
             self._last_chart_view = chart_view
             
-            # Cleanup
-            simple.Delete(normals_filter)
-            simple.Delete(surface)
-            if merge_input != proxy:
-                simple.Delete(merge_input)
-            
-            # Find key statistics from the distribution
-            peak_bin = int(np.argmax(np.abs(binned_force)))
-            peak_position = float(bin_centers[peak_bin])
-            peak_force = float(binned_force[peak_bin])
-            
-            # Find where 50% of total force is reached
-            total = accumulated[-1]
-            half_idx = int(np.searchsorted(np.abs(accumulated), np.abs(total) * 0.5))
-            half_position = float(bin_centers[min(half_idx, num_bins-1)])
-            
-            # Find steepest gradient (biggest change between bins)
-            gradients = np.diff(accumulated)
-            steepest_bin = int(np.argmax(np.abs(gradients)))
-            steepest_position = float(bin_centers[steepest_bin])
-            steepest_rate = float(gradients[steepest_bin])
+            # Restore active source
+            if original_source:
+                simple.SetActiveSource(original_source)
             
             return {
                 "status": "created",
                 "chart_type": "force_distribution",
-                "force_axis": force_axis,
-                "distribution_axis": distribution_axis,
-                "position_range": [float(pos_min), float(pos_max)],
-                "total_force": float(accumulated[-1]),
-                "num_body_cells": int(body_mask.sum()),
-                "num_bins": num_bins,
-                # Distribution analysis
-                "peak_section": {
-                    "position": peak_position,
-                    "force": peak_force,
-                    "description": f"Highest sectional force at position {peak_position:.3f}"
-                },
-                "half_force_position": half_position,
-                "steepest_buildup": {
-                    "position": steepest_position,
-                    "rate": steepest_rate,
-                    "description": f"Fastest force buildup at position {steepest_position:.3f}"
-                },
+                **dist_data
             }
             
-        except Exception as e:
-            return {"error": str(e)}
-    
-    def create_vortex_isosurface(
-        self,
-        method: str = "q_criterion",
-        threshold: float = None,
-        percentile: float = 50.0,
-        normalize: bool = True,
-        color_field: str = "Velocity",
-        proxy_name: str = None
-    ) -> dict:
-        """
-        Create isosurface to visualize vortical structures using various methods.
-        
-        Methods:
-        - "q_criterion": Q = 0.5*(||Ω||² - ||S||²). Positive Q = vortex. (default, fast)
-        - "vorticity": Vorticity magnitude ||ω||. High = rotation. (simple but includes shear)
-        - "lambda2": Second eigenvalue of S² + Ω². Negative λ2 = vortex core. (accurate)
-        - "swirling_strength": Max imaginary eigenvalue of ∇u. Positive = rotation.
-        - "helicity": Normalized helicity Hn = (u·ω)/(|u||ω|). |Hn|≈1 = helical vortex.
-        
-        Threshold selection:
-        - Q-criterion, vorticity, swirl: percentile of positive values
-        - Lambda2: Uses 1% of min(λ2) by default (small negative, close to 0)
-        - Helicity: |Hn| > 0.7 by default (strongly aligned)
-        
-        Normalization (when normalize=True):
-        - Scales by (U_ref)² where U_ref = max|velocity|
-        - Makes thresholds more transferable across flow conditions
-        
-        After creation, use focus_on(name) to focus camera on the isosurface.
-        
-        Args:
-            method: "q_criterion", "vorticity", "lambda2", "swirling_strength", or "helicity"
-            threshold: Explicit value for isosurface. If None, auto-computed.
-            percentile: Percentile for auto-threshold (default: 50). Not used for lambda2/helicity.
-            normalize: If True, normalize by characteristic velocity (default: True)
-            color_field: Field to color the isosurface by (default: Velocity)
-            proxy_name: Source proxy name (required for explicit input)
-            
-        Returns:
-            Dict with field range, threshold, method, and isosurface name
-        """
-        from vtk.util.numpy_support import vtk_to_numpy
-        
-        proxy = self._get_proxy(proxy_name)
-        if proxy is None:
-            return {"error": "No proxy found"}
-        
-        try:
-            # Need to merge blocks first for gradient computation
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
-            
-            # Compute gradient with appropriate fields
-            gradient = simple.Gradient(Input=merge)
-            gradient.ScalarArray = ['POINTS', 'Velocity']
-            
-            if method == "q_criterion":
-                gradient.ComputeQCriterion = 1
-                gradient.QCriterionArrayName = "Q"
-                field_name = "Q"
-                positive_is_vortex = True
-            elif method == "vorticity":
-                gradient.ComputeVorticity = 1
-                gradient.VorticityArrayName = "Vorticity"
-                field_name = "Vorticity"  # Will use magnitude
-                positive_is_vortex = True
-            elif method == "helicity":
-                # Need both vorticity and velocity for helicity
-                gradient.ComputeVorticity = 1
-                gradient.VorticityArrayName = "Vorticity"
-                field_name = "NormalizedHelicity"
-                positive_is_vortex = True  # We'll use |Hn|
-            elif method in ("lambda2", "swirling_strength"):
-                # Both require velocity gradient tensor
-                gradient.ComputeGradient = 1
-                gradient.ResultArrayName = "VelocityGradient"
-                field_name = "Lambda2" if method == "lambda2" else "SwirlingStrength"
-                positive_is_vortex = (method == "swirling_strength")  # lambda2 uses negative
-            else:
-                simple.Delete(merge)
-                return {"error": f"Unknown method: {method}. Use 'q_criterion', 'vorticity', 'lambda2', 'swirling_strength', or 'helicity'"}
-            
-            simple.UpdatePipeline(proxy=gradient)
-            grad_data = gradient.GetClientSideObject().GetOutput()
-            
-            # For methods needing custom computation, use ProgrammableFilter
-            # This ensures arrays are properly in the pipeline (not just client-side)
-            programmable = None
-            
-            if method == "vorticity":
-                # Use Calculator for vorticity magnitude (simpler than ProgrammableFilter)
-                calc = simple.Calculator(Input=gradient)
-                calc.ResultArrayName = "VorticityMagnitude"
-                calc.Function = "mag(Vorticity)"
-                simple.UpdatePipeline(proxy=calc)
-                
-                # Get the data for threshold calculation
-                calc_data = calc.GetClientSideObject().GetOutput()
-                field_vtk = calc_data.GetPointData().GetArray("VorticityMagnitude")
-                field_array = vtk_to_numpy(field_vtk)
-                field_name = "VorticityMagnitude"
-                contour_input = calc
-            
-            elif method == "helicity":
-                # Normalized helicity needs ProgrammableFilter for dot product
-                # Mask low |u| and |ω| regions to avoid noise
-                programmable = simple.ProgrammableFilter(Input=gradient)
-                programmable.Script = '''
-import numpy as np
-from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
-
-inp = inputs[0]
-out = output
-
-# Copy input to output
-out.ShallowCopy(inp.VTKObject)
-
-vort = np.ascontiguousarray(vtk_to_numpy(inp.PointData["Vorticity"]))
-vel = np.ascontiguousarray(vtk_to_numpy(inp.PointData["Velocity"]))
-
-vel_mag = np.linalg.norm(vel, axis=1)
-vort_mag = np.linalg.norm(vort, axis=1)
-
-# Compute thresholds - 10th percentile to filter noise
-vel_thresh = np.percentile(vel_mag[vel_mag > 0], 10) if np.any(vel_mag > 0) else 0.01
-vort_thresh = np.percentile(vort_mag[vort_mag > 0], 10) if np.any(vort_mag > 0) else 0.01
-
-# Mask low magnitude regions
-valid_mask = (vel_mag > vel_thresh) & (vort_mag > vort_thresh)
-
-denom = np.maximum(vel_mag * vort_mag, 1e-10)
-helicity = np.abs(np.sum(vel * vort, axis=1) / denom)
-
-# Set invalid regions to 0
-helicity = np.where(valid_mask, helicity, 0.0)
-helicity = np.ascontiguousarray(helicity)
-
-arr = numpy_to_vtk(helicity)
-arr.SetName("NormalizedHelicity")
-out.GetPointData().AddArray(arr)
-'''
-                simple.UpdatePipeline(proxy=programmable)
-                
-                prog_data = programmable.GetClientSideObject().GetOutput()
-                field_vtk = prog_data.GetPointData().GetArray("NormalizedHelicity")
-                field_array = vtk_to_numpy(field_vtk)
-                contour_input = programmable
-                
-            elif method == "lambda2":
-                # Lambda2 needs eigenvalue computation
-                programmable = simple.ProgrammableFilter(Input=gradient)
-                programmable.Script = '''
-import numpy as np
-from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
-
-inp = inputs[0]
-out = output
-out.ShallowCopy(inp.VTKObject)
-
-# Get velocity gradient - handle non-contiguous VTK arrays
-grad_vtk = inp.PointData.GetArray("VelocityGradient")
-n = grad_vtk.GetNumberOfTuples()
-G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
-
-# Initialize output array
-lambda2 = np.zeros(n, dtype=np.float64)
-
-# Find valid cells (no NaN/Inf in gradient)
-valid_mask = np.all(np.isfinite(G), axis=(1, 2))
-valid_indices = np.where(valid_mask)[0]
-
-if len(valid_indices) > 0:
-    G_valid = G[valid_indices]
-    
-    # Compute lambda2: second eigenvalue of S^2 + Omega^2 (vectorized)
-    S = 0.5 * (G_valid + np.transpose(G_valid, (0, 2, 1)))
-    Omega = 0.5 * (G_valid - np.transpose(G_valid, (0, 2, 1)))
-    M = np.matmul(S, S) + np.matmul(Omega, Omega)
-    
-    # Compute eigenvalues with error handling
-    try:
-        eigvals = np.linalg.eigvalsh(M)
-        lambda2[valid_indices] = eigvals[:, 1]
-    except np.linalg.LinAlgError:
-        # Fall back to per-cell computation
-        for i, idx in enumerate(valid_indices):
-            try:
-                eig = np.linalg.eigvalsh(M[i])
-                lambda2[idx] = eig[1]
-            except:
-                lambda2[idx] = 0.0
-
-lambda2 = np.ascontiguousarray(lambda2)
-arr = numpy_to_vtk(lambda2)
-arr.SetName("Lambda2")
-out.GetPointData().AddArray(arr)
-'''
-                simple.UpdatePipeline(proxy=programmable)
-                
-                prog_data = programmable.GetClientSideObject().GetOutput()
-                field_vtk = prog_data.GetPointData().GetArray("Lambda2")
-                field_array = vtk_to_numpy(field_vtk)
-                contour_input = programmable
-                
-            elif method == "swirling_strength":
-                # Swirling strength needs complex eigenvalues
-                programmable = simple.ProgrammableFilter(Input=gradient)
-                programmable.Script = '''
-import numpy as np
-from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
-
-inp = inputs[0]
-out = output
-out.ShallowCopy(inp.VTKObject)
-
-# Get velocity gradient - handle non-contiguous VTK arrays
-grad_vtk = inp.PointData.GetArray("VelocityGradient")
-n = grad_vtk.GetNumberOfTuples()
-G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
-
-# Initialize output array
-swirl = np.zeros(n, dtype=np.float64)
-
-# Find valid cells (no NaN/Inf in gradient)
-valid_mask = np.all(np.isfinite(G), axis=(1, 2))
-valid_indices = np.where(valid_mask)[0]
-
-if len(valid_indices) > 0:
-    G_valid = G[valid_indices]
-    
-    # Compute swirling strength: max imaginary eigenvalue of grad(u) (vectorized)
-    try:
-        eigvals = np.linalg.eigvals(G_valid)
-        swirl[valid_indices] = np.max(np.abs(eigvals.imag), axis=1)
-    except np.linalg.LinAlgError:
-        # Fall back to per-cell computation
-        for i, idx in enumerate(valid_indices):
-            try:
-                eig = np.linalg.eigvals(G_valid[i])
-                swirl[idx] = np.max(np.abs(eig.imag))
-            except:
-                swirl[idx] = 0.0
-
-swirl = np.ascontiguousarray(swirl)
-arr = numpy_to_vtk(swirl)
-arr.SetName("SwirlingStrength")
-out.GetPointData().AddArray(arr)
-'''
-                simple.UpdatePipeline(proxy=programmable)
-                
-                prog_data = programmable.GetClientSideObject().GetOutput()
-                field_vtk = prog_data.GetPointData().GetArray("SwirlingStrength")
-                field_array = vtk_to_numpy(field_vtk)
-                contour_input = programmable
-                
-            else:  # q_criterion
-                field_vtk = grad_data.GetPointData().GetArray(field_name)
-                if field_vtk is None:
-                    simple.Delete(gradient)
-                    simple.Delete(merge)
-                    return {"error": f"Could not compute {field_name}"}
-                field_array = vtk_to_numpy(field_vtk)
-                contour_input = gradient
-            
-            field_min, field_max = float(field_array.min()), float(field_array.max())
-            
-            # Get characteristic velocity and length for normalization
-            vel_array = grad_data.GetPointData().GetArray("Velocity")
-            if vel_array is not None:
-                vel = vtk_to_numpy(vel_array)
-                U_ref = float(np.max(np.linalg.norm(vel, axis=1)))
-            else:
-                U_ref = 1.0
-                normalize = False
-            
-            # Get characteristic length from bounding box
-            bounds = grad_data.GetBounds()  # (xmin, xmax, ymin, ymax, zmin, zmax)
-            L_ref = float(np.sqrt((bounds[1]-bounds[0])**2 + 
-                                  (bounds[3]-bounds[2])**2 + 
-                                  (bounds[5]-bounds[4])**2))  # diagonal
-            if L_ref < 1e-10:
-                L_ref = 1.0
-            
-            # Compute threshold if not provided
-            auto_threshold = threshold is None
-            if auto_threshold:
-                if method == "lambda2":
-                    # Lambda2: use 1% of min (small negative, captures vortex boundary)
-                    threshold = 0.01 * field_min
-                elif method == "helicity":
-                    # Normalized helicity: |Hn| > 0.7 means strongly aligned
-                    threshold = 0.7
-                elif positive_is_vortex:
-                    # Q-criterion, vorticity, swirling strength: use percentile
-                    positive_vals = field_array[field_array > 0]
-                    if len(positive_vals) > 0:
-                        threshold = float(np.percentile(positive_vals, percentile))
-                    else:
-                        threshold = max(0.0, field_max * 0.01)
-                else:
-                    # Fallback for negative-indicates-vortex
-                    negative_vals = field_array[field_array < 0]
-                    if len(negative_vals) > 0:
-                        threshold = float(np.percentile(negative_vals, 100 - percentile))
-                    else:
-                        threshold = min(0.0, field_min * 0.01)
-            
-            # Create isosurface
-            contour = simple.Contour(Input=contour_input)
-            contour.ContourBy = ['POINTS', field_name]
-            contour.Isosurfaces = [threshold]
-            simple.UpdatePipeline(proxy=contour)
-            
-            # Show and color - ensure we have a RenderView
-            view = simple.GetActiveView()
-            if view is None or not hasattr(view, 'ResetCamera'):
-                for v in simple.GetViews():
-                    if hasattr(v, 'ResetCamera'):
-                        view = v
-                        break
-                else:
-                    view = simple.CreateRenderView()
-                simple.SetActiveView(view)
-            
-            # Hide intermediate filters
-            simple.Hide(merge, view)
-            simple.Hide(gradient, view)
-            if contour_input != gradient:
-                simple.Hide(contour_input, view)
-            
-            display = simple.Show(contour, view)
-            display.SetRepresentationType('Surface')
-            
-            # Color by field
-            resolved_field = self._resolve_field_name(color_field, contour)
-            try:
-                simple.ColorBy(display, ('POINTS', resolved_field))
-                display.SetScalarBarVisibility(view, True)
-            except:
-                pass
-            
-            # Get contour name
-            contour_name = None
-            for name, p in simple.GetSources().items():
-                if p == contour:
-                    contour_name = name[0]
-                    break
-            
-            # Focus camera on the isosurface
-            if contour_name:
-                self.base_mcp.focus_on(contour_name)
-            
-            simple.Render(view)
-            
-            return {
-                "status": "created",
-                "name": contour_name,
-                "method": method,
-                "field_name": field_name,
-                "field_range": [field_min, field_max],
-                "threshold": float(threshold),
-                "U_ref": U_ref,
-                "L_ref": L_ref,
-                "auto_threshold": auto_threshold
-            }
         except Exception as e:
             return {"error": str(e)}
     
@@ -2566,11 +2453,14 @@ out.GetPointData().AddArray(arr)
             
         Usage for streamline seeding:
             wake = detect_wake_region()
-            create_streamlines(center=wake["wake_centroid"], ...)
+            seed = compute_streamline_seed()
+            create("StreamTracer", ...)  # Use seed parameters
         """
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
+        
+        original_source = simple.GetActiveSource()  # Save for restore
         
         try:
             # Get velocity statistics to determine freestream
@@ -2650,11 +2540,16 @@ out.GetPointData().AddArray(arr)
                 centroid_result = self.find_by_threshold("Velocity", v_threshold, below=True, proxy_name=proxy_name)
             
             if "error" in centroid_result:
+                if original_source:
+                    simple.SetActiveSource(original_source)
                 return {
                     "error": f"No wake region found with velocity < {velocity_deficit*100:.0f}% of freestream",
                     "freestream_velocity": v_freestream,
                     "threshold": v_threshold
                 }
+            
+            if original_source:
+                simple.SetActiveSource(original_source)
             
             return {
                 "wake_centroid": centroid_result.get("location", centroid_result.get("centroid")),
@@ -2670,66 +2565,34 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
 
-    def create_streamlines(
+    def compute_streamline_seed(
         self,
-        center: list = None,
-        radius: float = None,
-        num_points: int = 100,
-        direction: str = "both",
-        max_length: float = None,
-        color_field: str = "Velocity",
         proxy_name: str = None
     ) -> dict:
         """
-        Create streamlines to visualize flow patterns like wakes and jets.
+        Compute optimal streamline seed location and radius (ANALYSIS ONLY).
         
-        Seeds streamlines from a spherical point cloud and integrates along
-        the velocity field. Great for visualizing wake flow, recirculation,
-        and overall flow structure.
+        Uses wake detection to find the best seed placement for visualizing
+        wake flow structures. Falls back to body geometry if no wake detected.
         
-        Auto-sizing: When radius is not specified, the seed cloud is sized from
-        the wake's cross-stream extent (via detect_wake_region). This ensures
-        seeds cover the velocity deficit region rather than the full domain.
-        Falls back to body geometry bounds if no wake is detected.
-        
-        Args:
-            center: Seed center [x, y, z]. If None, uses wake centroid or body center.
-            radius: Seed sphere radius. If None, auto-computed from wake cross-section
-                   (half the max cross-stream extent of the velocity deficit region).
-            num_points: Number of seed points (default 100)
-            direction: Integration direction - "forward", "backward", or "both" (default)
-            max_length: Maximum streamline length. If None, uses 10x domain diagonal.
-            color_field: Field to color streamlines by (default "Velocity")
-            proxy_name: Source data
-            
         Returns:
-            Dict with streamline info: name, num_seeds, direction, length
+            {center, radius, num_points, max_length} - use with create("StreamTracer")
             
-        Examples:
-            # Auto-detect wake and seed streamlines there
-            create_streamlines()
-            
-            # Custom seed location
-            create_streamlines(center=[5, 0.5, 0], radius=0.2)
-            
-            # Forward only (for wake visualization)
-            create_streamlines(direction="forward")
-            
-        Workflow for wake visualization:
-            1. wake = detect_wake_region()
-            2. create_streamlines(center=wake["wake_centroid"])
+        Example workflow:
+            seed = compute_streamline_seed(proxy_name="MyData")
+            create("StreamTracer", input_proxy="MyData")
+            update_string_property("SeedType", "Point Cloud")  # IMPORTANT: set seed type first!
+            update_sub_property("SeedType", "Center", seed["center"])
+            update_sub_property("SeedType", "Radius", seed["radius"])
+            update_sub_property("SeedType", "NumberOfPoints", seed["num_points"])
+            update_float_property("MaximumStreamlineLength", seed["max_length"])
         """
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
         
         try:
-            # Ensure velocity exists
-            velocity_result = self.ensure_velocity_vector(proxy_name=proxy_name)
-            if "error" in velocity_result and "already" not in velocity_result.get("error", ""):
-                return velocity_result
-            
-            # Get data bounds for auto-parameters
+            # Get data bounds
             simple.UpdatePipeline(proxy=proxy)
             di = proxy.GetDataInformation()
             bounds = di.GetBounds()
@@ -2740,620 +2603,163 @@ out.GetPointData().AddArray(arr)
                 (bounds[5] - bounds[4])**2
             )
             
-            # Get body bounds (farfield clipped) for fallback sizing
+            # Get body bounds for fallback
             body_bounds, body_diag = self._get_body_bounds(proxy)
             
-            # Auto-compute center and radius from wake detection
-            wake_result = None
-            if center is None or radius is None:
-                wake_result = self.detect_wake_region(proxy_name=proxy_name)
+            # Try wake detection
+            wake_result = self.detect_wake_region(proxy_name=proxy_name)
             
-            if center is None:
-                if wake_result and "wake_centroid" in wake_result:
-                    center = wake_result["wake_centroid"]
-                else:
-                    # Fall back to body center (not domain center)
-                    center = [
-                        (body_bounds[0] + body_bounds[1]) / 2,
-                        (body_bounds[2] + body_bounds[3]) / 2,
-                        (body_bounds[4] + body_bounds[5]) / 2
-                    ]
-            
-            # Auto-compute radius from wake cross-stream extent
-            if radius is None:
-                if wake_result and "wake_bounds" in wake_result and wake_result["wake_bounds"]:
+            if wake_result and "wake_centroid" in wake_result:
+                center = wake_result["wake_centroid"]
+                
+                # Compute radius from wake cross-stream extent
+                if "wake_bounds" in wake_result and wake_result["wake_bounds"]:
                     wb = wake_result["wake_bounds"]
-                    # Identify streamwise axis and use the cross-stream extents
                     streamwise = wake_result.get("streamwise", "x")
                     wake_extents = [wb[1] - wb[0], wb[3] - wb[2], wb[5] - wb[4]]
-                    axis_map = {"x": 0, "+x": 0, "-x": 0,
-                                "y": 1, "+y": 1, "-y": 1,
-                                "z": 2, "+z": 2, "-z": 2}
+                    axis_map = {"x": 0, "+x": 0, "-x": 0, "y": 1, "+y": 1, "-y": 1, "z": 2, "+z": 2, "-z": 2}
                     stream_idx = axis_map.get(streamwise.lower(), 0)
                     
-                    # Cross-stream extents (the two non-streamwise dimensions)
                     cross_extents = [e for i, e in enumerate(wake_extents) if i != stream_idx and e > 1e-10]
-                    if cross_extents:
-                        # Radius covers the wake cross-section
-                        radius = max(cross_extents) * 0.5
-                    else:
-                        radius = body_diag * 0.1
+                    radius = max(cross_extents) * 0.5 if cross_extents else body_diag * 0.1
                 else:
-                    # No wake detected — use smallest body dimension
-                    body_extents = [
-                        body_bounds[1] - body_bounds[0],
-                        body_bounds[3] - body_bounds[2],
-                        body_bounds[5] - body_bounds[4],
-                    ]
-                    min_extent = min(e for e in body_extents if e > 1e-10)
-                    radius = min_extent * 0.3
-            
-            # Auto-compute max length relative to domain (streamlines can travel far)
-            if max_length is None:
-                max_length = domain_diag * 10
-            
-            # Create StreamTracer
-            stream = simple.StreamTracer(Input=proxy)
-            stream.Vectors = ['POINTS', 'Velocity']
-            
-            # Configure seed type as Point Cloud
-            stream.SeedType = 'Point Cloud'
-            stream.SeedType.Center = center
-            stream.SeedType.Radius = radius
-            stream.SeedType.NumberOfPoints = num_points
-            
-            # Set integration direction
-            direction_map = {
-                "forward": "FORWARD",
-                "backward": "BACKWARD",
-                "both": "BOTH"
-            }
-            stream.IntegrationDirection = direction_map.get(direction.lower(), "BOTH")
-            
-            # Set maximum streamline length
-            stream.MaximumStreamlineLength = max_length
-            
-            # Update
-            simple.UpdatePipeline(proxy=stream)
-            
-            # Show and color - ensure we have a RenderView
-            view = simple.GetActiveView()
-            if view is None or not hasattr(view, 'ResetCamera'):
-                for v in simple.GetViews():
-                    if hasattr(v, 'ResetCamera'):
-                        view = v
-                        break
+                    radius = body_diag * 0.1
+            else:
+                # Fall back to seeding downstream of body
+                # Get streamwise direction to know where "downstream" is
+                streamwise_result = self.detect_streamwise_direction(proxy_name=proxy_name)
+                streamwise = streamwise_result.get("streamwise", "+x")
+                
+                axis_map = {"x": 0, "+x": 0, "-x": 0, "y": 1, "+y": 1, "-y": 1, "z": 2, "+z": 2, "-z": 2}
+                stream_idx = axis_map.get(streamwise.lower(), 0)
+                is_positive = not streamwise.startswith("-")
+                
+                # Body center as starting point
+                center = [
+                    (body_bounds[0] + body_bounds[1]) / 2,
+                    (body_bounds[2] + body_bounds[3]) / 2,
+                    (body_bounds[4] + body_bounds[5]) / 2
+                ]
+                
+                # Shift center downstream by 1.5x body extent in streamwise direction
+                body_extent_streamwise = body_bounds[stream_idx * 2 + 1] - body_bounds[stream_idx * 2]
+                if is_positive:
+                    center[stream_idx] = body_bounds[stream_idx * 2 + 1] + body_extent_streamwise * 0.5
                 else:
-                    view = simple.CreateRenderView()
-                simple.SetActiveView(view)
-            
-            display = simple.Show(stream, view)
-            
-            # Color by field
-            color_array = self._resolve_field_type(color_field, stream)
-            if color_array:
-                simple.ColorBy(display, ('POINTS', color_array))
-                display.RescaleTransferFunctionToDataRange(True, False)
-                display.SetScalarBarVisibility(view, True)
-            
-            # Apply tube filter for better visibility
-            tube = simple.Tube(Input=stream)
-            tube.Radius = radius * 0.02  # 2% of seed radius — scales with local feature
-            simple.UpdatePipeline(proxy=tube)
-            
-            tube_display = simple.Show(tube, view)
-            if color_array:
-                simple.ColorBy(tube_display, ('POINTS', color_array))
-                tube_display.RescaleTransferFunctionToDataRange(True, False)
-            
-            # Hide raw streamlines, show tubes
-            simple.Hide(stream, view)
-            
-            simple.Render()
-            
-            # Get streamline name
-            stream_name = None
-            for name, p in simple.GetSources().items():
-                if p == stream:
-                    stream_name = name[0]
-                    break
-            
-            tube_name = None
-            for name, p in simple.GetSources().items():
-                if p == tube:
-                    tube_name = name[0]
-                    break
+                    center[stream_idx] = body_bounds[stream_idx * 2] - body_extent_streamwise * 0.5
+                
+                # Radius based on cross-stream body extents
+                body_extents = [
+                    body_bounds[1] - body_bounds[0],
+                    body_bounds[3] - body_bounds[2],
+                    body_bounds[5] - body_bounds[4],
+                ]
+                cross_extents = [e for i, e in enumerate(body_extents) if i != stream_idx and e > 1e-10]
+                radius = max(cross_extents) * 0.5 if cross_extents else body_diag * 0.1
             
             return {
-                "status": "created",
-                "streamlines_name": stream_name,
-                "tube_name": tube_name,
-                "seed_center": center,
-                "seed_radius": radius,
-                "seed_sized_from": "wake_cross_section" if (wake_result and "wake_bounds" in wake_result) else "body_bounds",
-                "num_seeds": num_points,
-                "direction": direction,
-                "max_length": max_length,
-                "color_field": color_array or color_field,
-                "domain_diagonal": float(domain_diag),
-                "body_diagonal": float(body_diag),
+                "center": center,
+                "radius": float(radius),
+                "num_points": 100,
+                "max_length": float(domain_diag * 10),
             }
             
         except Exception as e:
             return {"error": str(e)}
 
-    def create_point_marker(
+    # NOTE: create_streamlines removed - use compute_streamline_seed then base create()
+
+    def compute_body_center(
         self,
-        location: list[float],
-        radius: float = None,
-        color: list[float] = None,
-        label: str = None,
         proxy_name: str = None
     ) -> dict:
         """
-        Create a visible sphere marker at a specific point location.
+        Compute body geometry center (ANALYSIS ONLY).
         
-        Useful for highlighting found locations like stagnation points,
-        maximum/minimum values, or query results.
+        Estimates the center of the body by clipping away farfield boundaries.
+        Useful for placing slices through the body.
         
-        Args:
-            location: [x, y, z] coordinates for the marker
-            radius: Sphere radius. If None, auto-sized to ~2% of data diagonal.
-            color: [r, g, b] color (0-1). Default is red [1, 0, 0].
-            label: Optional label for the marker (stored in result).
-            proxy_name: Reference proxy for auto-sizing radius.
-            
         Returns:
-            Dict with marker name, location, and visual properties.
+            {center, bounds, diagonal} - use center for slice origin
         """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
         try:
-            # Auto-size radius based on data extent
-            if radius is None:
-                proxy = self._get_proxy(proxy_name)
-                if proxy:
-                    simple.UpdatePipeline(proxy=proxy)
-                    di = proxy.GetDataInformation()
-                    bounds = di.GetBounds()
-                    diag = ((bounds[1]-bounds[0])**2 + (bounds[3]-bounds[2])**2 + (bounds[5]-bounds[4])**2)**0.5
-                    radius = diag * 0.02
-                else:
-                    radius = 0.05  # fallback
+            body_bounds, body_diag = self._get_body_bounds(proxy)
             
-            # Create sphere at location
-            sphere = simple.Sphere()
-            sphere.Center = location
-            sphere.Radius = radius
-            sphere.ThetaResolution = 16
-            sphere.PhiResolution = 16
-            simple.UpdatePipeline(proxy=sphere)
-            
-            # Show with solid color
-            view = simple.GetActiveView()
-            display = simple.Show(sphere, view)
-            
-            if color is None:
-                color = [1.0, 0.0, 0.0]  # Red
-            
-            display.DiffuseColor = color
-            display.AmbientColor = color
-            simple.ColorBy(display, None)  # Solid color
-            
-            simple.Render(view)
-            
-            # Get marker name
-            marker_name = None
-            for name, p in simple.GetSources().items():
-                if p == sphere:
-                    marker_name = name[0]
-                    break
+            center = [
+                (body_bounds[0] + body_bounds[1]) / 2,
+                (body_bounds[2] + body_bounds[3]) / 2,
+                (body_bounds[4] + body_bounds[5]) / 2
+            ]
             
             return {
-                "status": "created",
-                "marker_name": marker_name,
-                "location": location,
-                "radius": radius,
-                "color": color,
-                "label": label
+                "center": center,
+                "bounds": list(body_bounds),
+                "diagonal": float(body_diag),
             }
             
         except Exception as e:
             return {"error": str(e)}
 
-    def get_slice_parameters(
+    def compute_slice_params(
         self,
-        normal: list[float] = None,
-        position: str = "center",
+        normal: str = "z",
+        offset: float = 0.0,
         proxy_name: str = None
     ) -> dict:
         """
-        Get recommended parameters for creating a slice through the data.
-        
-        This is a QUERY tool - it computes slice positioning parameters
-        but does NOT create any filters. Use the returned values with
-        base.create("Slice") to actually create the slice.
+        Compute slice plane parameters based on body geometry (ANALYSIS ONLY).
         
         Args:
-            normal: Slice normal [nx, ny, nz]. Default [0, 1, 0] (XZ plane/side view).
-                Common choices:
-                - [1, 0, 0]: YZ plane (front view, perpendicular to flow)
-                - [0, 1, 0]: XZ plane (side view, spanwise cut)
-                - [0, 0, 1]: XY plane (top view)
-            position: Where to position the slice:
-                - "center": Center of bounding box (default)
-                - "quarter": 1/4 into domain along normal direction
-                - "body": Positioned to intersect body (uses clipped bounds)
-            proxy_name: Data source name.
+            normal: Slice normal direction ("x", "y", "z")
+            offset: Offset from body center as fraction of body extent (-1 to 1)
             
         Returns:
-            Dict with:
-            - origin: [x, y, z] recommended slice origin
-            - normal: [nx, ny, nz] slice normal (normalized)
-            - bounds: [xmin, xmax, ymin, ymax, zmin, zmax] data bounds
+            {origin, normal_vector} - use with create("Slice")
             
         Example workflow:
-            params = get_slice_parameters(normal=[1,0,0], position="center")
-            base.create("Slice", Input=reader_name)
-            base.update_sub_property("Slice1", "SliceType", "Origin", params["origin"])
-            base.update_sub_property("Slice1", "SliceType", "Normal", params["normal"])
+            params = compute_slice_params(normal="z", offset=0)
+            create("Slice")
+            update_sub_property("SliceType", "Origin", params["origin"])
+            update_sub_property("SliceType", "Normal", params["normal_vector"])
         """
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
         
         try:
-            simple.UpdatePipeline(proxy=proxy)
-            di = proxy.GetDataInformation()
-            bounds = list(di.GetBounds())
+            body_bounds, _ = self._get_body_bounds(proxy)
             
-            if normal is None:
-                normal = [0, 1, 0]  # XZ plane (side view)
-            
-            # Normalize
-            import math
-            mag = math.sqrt(sum(n*n for n in normal))
-            if mag > 0:
-                normal = [n/mag for n in normal]
-            
-            # Compute center
             center = [
-                (bounds[0] + bounds[1]) / 2,
-                (bounds[2] + bounds[3]) / 2,
-                (bounds[4] + bounds[5]) / 2
+                (body_bounds[0] + body_bounds[1]) / 2,
+                (body_bounds[2] + body_bounds[3]) / 2,
+                (body_bounds[4] + body_bounds[5]) / 2
             ]
             
-            # Compute origin based on position strategy
-            origin = center.copy()
+            axis_map = {"x": 0, "y": 1, "z": 2}
+            axis_idx = axis_map.get(normal.lower(), 2)
             
-            if position == "quarter":
-                # Position at 1/4 along normal direction
-                extents = [bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4]]
-                for i in range(3):
-                    if abs(normal[i]) > 0.5:
-                        origin[i] = bounds[2*i] + extents[i] * 0.25
-                        
-            elif position == "body":
-                # Position to intersect body - use stagnation point as reference
-                # The stagnation point is where velocity is minimum, usually on body surface
-                try:
-                    stag_result = self.find_minimum("Velocity", proxy_name=proxy_name)
-                    if stag_result.get("location"):
-                        body_center = stag_result["location"]
-                        origin = body_center.copy()
-                        # Offset slightly downstream for better visualization
-                        # Assume streamwise is roughly X direction
-                        origin[0] += 0.1 * (bounds[1] - bounds[0]) * 0.1  # 1% of X extent downstream
-                    else:
-                        # Fallback: use shrunk bounds
-                        margin = 0.4  # More aggressive shrink for CFD domains
-                        origin = [
-                            bounds[0] + (bounds[1]-bounds[0]) * margin,
-                            (bounds[2] + bounds[3]) / 2,
-                            (bounds[4] + bounds[5]) / 2
-                        ]
-                except:
-                    # Fallback to simple center
-                    origin = center.copy()
+            # Compute offset position
+            extent = body_bounds[axis_idx * 2 + 1] - body_bounds[axis_idx * 2]
+            origin = list(center)
+            origin[axis_idx] = center[axis_idx] + offset * extent * 0.5
             
-            # For Z-normal slices (top view), default to z=0
-            if position == "center" and abs(normal[2]) > 0.5:
-                origin[2] = 0.0
+            normal_vector = [0.0, 0.0, 0.0]
+            normal_vector[axis_idx] = 1.0
             
             return {
                 "origin": origin,
-                "normal": normal,
-                "bounds": bounds,
-                "position_strategy": position,
+                "normal_vector": normal_vector,
+                "normal_axis": normal,
+                "body_center": center,
+                "body_bounds": list(body_bounds),
             }
             
         except Exception as e:
             return {"error": str(e)}
-
-    def create_clipped_slice(
-        self,
-        normal: list[float] = None,
-        origin: list[float] = None,
-        color_field: str = "pressure",
-        clip_to_body: bool = False,
-        clip_margin: float = 0.2,
-        proxy_name: str = None
-    ) -> dict:
-        """
-        Create a slice colored by a field.
-        
-        Args:
-            normal: Slice normal [nx, ny, nz]. Default is [0, 1, 0] (XZ plane).
-            origin: Slice origin [x, y, z]. Default is positioned to intersect body.
-            color_field: Field to color by. Default "pressure".
-            clip_to_body: If True, clip farfield (may cause issues with thin slices).
-            clip_margin: Fraction of domain to clip from each edge if clipping.
-            proxy_name: Data source name.
-            
-        Returns:
-            Dict with slice info.
-        """
-        proxy = self._get_proxy(proxy_name)
-        if proxy is None:
-            return {"error": "No proxy found"}
-        
-        try:
-            simple.UpdatePipeline(proxy=proxy)
-            di = proxy.GetDataInformation()
-            bounds = list(di.GetBounds())
-            
-            if normal is None:
-                normal = [0, 1, 0]  # XZ plane (side view)
-            
-            # Position slice intelligently based on normal direction
-            if origin is None:
-                origin = [
-                    (bounds[0] + bounds[1]) / 2,
-                    (bounds[2] + bounds[3]) / 2,
-                    (bounds[4] + bounds[5]) / 2
-                ]
-                # For Y-normal slices, position at 1/4 height to catch wing flow
-                if abs(normal[1]) > 0.5:
-                    origin[1] = bounds[2] + (bounds[3] - bounds[2]) * 0.25
-                # For Z-normal slices (top view), keep at center (Z=0)
-                elif abs(normal[2]) > 0.5:
-                    origin[2] = 0.0
-            
-            # Create slice
-            slice_filter = simple.Slice(Input=proxy)
-            slice_filter.SliceType = 'Plane'
-            slice_filter.SliceType.Origin = origin
-            slice_filter.SliceType.Normal = normal
-            simple.UpdatePipeline(proxy=slice_filter)
-            
-            final_filter = slice_filter
-            clip = None
-            
-            # Optional clipping (disabled by default - can cause empty results)
-            if clip_to_body:
-                dx = (bounds[1] - bounds[0]) * clip_margin
-                dy = (bounds[3] - bounds[2]) * clip_margin
-                dz = (bounds[5] - bounds[4]) * clip_margin
-                
-                clip_bounds = [
-                    bounds[0] + dx, bounds[1] - dx,
-                    bounds[2] + dy, bounds[3] - dy,
-                    bounds[4] + dz, bounds[5] - dz
-                ]
-                
-                clip = simple.Clip(Input=slice_filter)
-                clip.ClipType = 'Box'
-                clip.ClipType.Bounds = clip_bounds
-                clip.Invert = 1  # Keep inside
-                simple.UpdatePipeline(proxy=clip)
-                
-                # Hide intermediate slice
-                view = simple.GetActiveView()
-                simple.Hide(slice_filter, view)
-                final_filter = clip
-            
-            # Show final filter
-            view = simple.GetActiveView()
-            display = simple.Show(final_filter, view)
-            
-            # Color by field
-            field_name = self._resolve_field_type(color_field, proxy)
-            simple.ColorBy(display, ('POINTS', field_name))
-            display.RescaleTransferFunctionToDataRange(True)
-            display.SetScalarBarVisibility(view, True)
-            
-            simple.Render(view)
-            
-            # Get names
-            slice_name = None
-            clip_name = None
-            for name, p in simple.GetSources().items():
-                if p == slice_filter:
-                    slice_name = name[0]
-                if clip and p == clip:
-                    clip_name = name[0]
-            
-            return {
-                "status": "created",
-                "slice_name": slice_name,
-                "clip_name": clip_name,
-                "origin": origin,
-                "normal": normal,
-                "color_field": field_name,
-            }
-            
-        except Exception as e:
-            return {"error": str(e)}
-
-    def create_body_slice(
-        self,
-        normal: list[float] = None,
-        color_field: str = "pressure",
-        margin: float = 0.3,
-        proxy_name: str = None
-    ) -> dict:
-        """
-        Create a slice cropped to show only the body region.
-        
-        Uses stagnation point and pressure distribution to automatically
-        determine body bounds, then clips the slice to focus on the
-        aerodynamic body rather than showing the full farfield domain.
-        
-        Args:
-            normal: Slice normal [nx, ny, nz]. Default [0, 0, 1] (XY plane, top view).
-            color_field: Field to color by. Default "pressure".
-            margin: Extra margin around body as fraction of body extent. Default 0.3.
-            proxy_name: Data source name.
-            
-        Returns:
-            Dict with slice info and body bounds.
-        """
-        proxy = self._get_proxy(proxy_name)
-        if proxy is None:
-            return {"error": "No proxy found"}
-        
-        try:
-            simple.UpdatePipeline(proxy=proxy)
-            
-            if normal is None:
-                normal = [0, 0, 1]  # XY plane (top view)
-            
-            # Find body region using stagnation point and high pressure
-            stag_result = self.find_minimum("Velocity", proxy_name=proxy_name)
-            stag_loc = stag_result.get("location", [0, 0, 0])
-            
-            # Get high pressure region bounds (body surface)
-            di = proxy.GetDataInformation()
-            full_bounds = list(di.GetBounds())
-            
-            # Create slice at z=0 (or appropriate plane based on normal)
-            origin = [
-                (full_bounds[0] + full_bounds[1]) / 2,
-                (full_bounds[2] + full_bounds[3]) / 2,
-                (full_bounds[4] + full_bounds[5]) / 2
-            ]
-            # For Z-normal, slice at z=0
-            if abs(normal[2]) > 0.5:
-                origin[2] = 0.0
-            
-            slice_filter = simple.Slice(Input=proxy)
-            slice_filter.SliceType = 'Plane'
-            slice_filter.SliceType.Origin = origin
-            slice_filter.SliceType.Normal = normal
-            simple.UpdatePipeline(proxy=slice_filter)
-            
-            # Find body bounds from high pressure region on slice
-            thresh = simple.Threshold(Input=slice_filter)
-            thresh.Scalars = ['POINTS', 'p']
-            thresh.LowerThreshold = 0.85  # High pressure = near body
-            thresh.UpperThreshold = 2.0
-            simple.UpdatePipeline(proxy=thresh)
-            
-            thresh_di = thresh.GetDataInformation()
-            if thresh_di.GetNumberOfPoints() > 0:
-                body_bounds = list(thresh_di.GetBounds())
-            else:
-                # Fallback: use stagnation point with fixed extent
-                body_bounds = [
-                    stag_loc[0] - 0.5, stag_loc[0] + 1.0,
-                    stag_loc[1] - 0.2, stag_loc[1] + 1.2,
-                    -0.1, 0.1
-                ]
-            
-            simple.Delete(thresh)
-            
-            # Add margin
-            extents = [body_bounds[1]-body_bounds[0], body_bounds[3]-body_bounds[2], body_bounds[5]-body_bounds[4]]
-            clip_bounds = [
-                body_bounds[0] - extents[0] * margin,
-                body_bounds[1] + extents[0] * margin,
-                body_bounds[2] - extents[1] * margin,
-                body_bounds[3] + extents[1] * margin,
-                body_bounds[4] - extents[2] * margin,
-                body_bounds[5] + extents[2] * margin,
-            ]
-            
-            # Clip slice to body region using plane clips
-            current = slice_filter
-            clips = []
-            
-            # Clip X max
-            clip = simple.Clip(Input=current)
-            clip.ClipType = 'Plane'
-            clip.ClipType.Origin = [clip_bounds[1], 0, 0]
-            clip.ClipType.Normal = [1, 0, 0]
-            clip.Invert = 1
-            simple.UpdatePipeline(proxy=clip)
-            clips.append(clip)
-            current = clip
-            
-            # Clip X min
-            clip = simple.Clip(Input=current)
-            clip.ClipType = 'Plane'
-            clip.ClipType.Origin = [clip_bounds[0], 0, 0]
-            clip.ClipType.Normal = [-1, 0, 0]
-            clip.Invert = 1
-            simple.UpdatePipeline(proxy=clip)
-            clips.append(clip)
-            current = clip
-            
-            # Clip Y max
-            clip = simple.Clip(Input=current)
-            clip.ClipType = 'Plane'
-            clip.ClipType.Origin = [0, clip_bounds[3], 0]
-            clip.ClipType.Normal = [0, 1, 0]
-            clip.Invert = 1
-            simple.UpdatePipeline(proxy=clip)
-            clips.append(clip)
-            current = clip
-            
-            # Get view
-            view = simple.GetActiveView()
-            if view is None:
-                view = simple.CreateRenderView()
-                simple.SetActiveView(view)
-            
-            # Hide intermediate filters
-            simple.Hide(slice_filter, view)
-            for c in clips[:-1]:
-                simple.Hide(c, view)
-            
-            # Show final clipped slice
-            display = simple.Show(current, view)
-            
-            # Color by field
-            field_name = self._resolve_field_type(color_field, proxy)
-            simple.ColorBy(display, ('POINTS', field_name))
-            display.RescaleTransferFunctionToDataRange(True)
-            display.SetScalarBarVisibility(view, True)
-            
-            simple.ResetCamera()
-            simple.Render(view)
-            
-            # Get name of final filter
-            final_name = None
-            for name, p in simple.GetSources().items():
-                if p == current:
-                    final_name = name[0]
-                    break
-            
-            return {
-                "status": "created",
-                "name": final_name,
-                "origin": origin,
-                "normal": normal,
-                "body_bounds": body_bounds,
-                "clip_bounds": clip_bounds,
-                "color_field": field_name,
-            }
-            
-        except Exception as e:
-            return {"error": str(e)}
-
-    # NOTE: No create_slice wrapper - use base tools with positioning from:
-    #   - get_geometry_info() for center/bounds
-    #   - find_by_query() for feature-based positioning (stagnation, wake)
-    #   - detect_wake_region() for wake centroid
-    # Then: base__create("Slice") + base__update_sub_property for origin/normal
-    # The ontology encodes slice positioning strategies for LLM reasoning.
 
     def set_streamwise_view(self, proxy_name: str = None) -> dict:
         """
@@ -3555,111 +2961,41 @@ out.GetPointData().AddArray(arr)
         
         simple.Render(view)
         return {"status": "hidden_all", "count": count, "deleted": deleted}
-    
-    def extract_body_surface(
+
+    def save_screenshot(
         self,
-        proxy_name: str = None,
-        feature_angle: float = 30.0,
-        color: list[float] = None,
-        line_width: float = 2.0
+        filename: str,
+        width: int = 1024,
+        height: int = 768
     ) -> dict:
         """
-        Extract and display body surface as feature edges for context.
+        Save screenshot of the current view to a file.
         
-        For CFD data, this extracts the external surface and shows only the
-        sharp feature edges (silhouette). This provides body shape context
-        without blocking visibility of internal flow features like slices,
-        streamlines, and isosurfaces.
+        Saves the active view (RenderView or ChartView) to the specified file.
+        Supports PNG, JPG, PDF, and other formats based on file extension.
         
         Args:
-            proxy_name: Data source. If None, uses first data reader.
-            feature_angle: Angle (degrees) to detect feature edges. Default 30.
-            color: RGB color [r,g,b] each 0-1. Default dark gray [0.3, 0.3, 0.3].
-            line_width: Width of feature edge lines. Default 2.0.
+            filename: Output filename (e.g., "output/result.png")
+            width: Image width in pixels (default: 1024)
+            height: Image height in pixels (default: 768)
             
         Returns:
-            Dict with feature edges proxy name and settings.
-            
-        Example:
-            # Show body outline before visualizing flow
-            hide_all()
-            extract_body_surface()
-            create_streamlines(...)
+            Dict with filename and status
         """
-        proxy = self._get_proxy(proxy_name)
-        if proxy is None:
-            # Auto-find data reader
-            for name, p in simple.GetSources().items():
-                if any(x in name[0] for x in ['Reader', 'OpenFOAM', 'EnSight', 'CGNS', 'XMLMultiBlock']):
-                    proxy = p
-                    proxy_name = name[0]
-                    break
-        
-        if proxy is None:
-            return {"error": "No data source found"}
+        view = simple.GetActiveView()
+        if view is None:
+            return {"error": "No active view"}
         
         try:
-            # Get/create render view
-            view = simple.GetActiveView()
-            if view is None or not hasattr(view, 'ResetCamera'):
-                for v in simple.GetViews():
-                    if hasattr(v, 'ResetCamera'):
-                        view = v
-                        break
-                else:
-                    view = simple.CreateRenderView()
-                simple.SetActiveView(view)
-            
-            # Extract external surface first (don't show it)
-            surface = simple.ExtractSurface(Input=proxy)
-            simple.UpdatePipeline(proxy=surface)
-            simple.Hide(surface, view)  # Ensure hidden
-            
-            # Apply Feature Edges filter
-            edges = simple.FeatureEdges(Input=surface)
-            edges.FeatureEdges = 1
-            edges.BoundaryEdges = 1
-            edges.NonManifoldEdges = 0
-            edges.ManifoldEdges = 0
-            edges.FeatureAngle = feature_angle
-            simple.UpdatePipeline(proxy=edges)
-            
-            # Show feature edges
-            display = simple.Show(edges, view)
-            
-            # Ensure surface is hidden (in case Show triggered anything)
-            simple.Hide(surface, view)
-            
-            # Style as thin lines
-            if color is None:
-                color = [0.3, 0.3, 0.3]  # Dark gray
-            try:
-                display.AmbientColor = color
-                display.DiffuseColor = color
-                display.LineWidth = line_width
-            except AttributeError:
-                pass
-            simple.ColorBy(display, None)  # Solid color
+            # Ensure directory exists
+            import os
+            dirname = os.path.dirname(filename)
+            if dirname:
+                os.makedirs(dirname, exist_ok=True)
             
             simple.Render(view)
-            
-            # Get names
-            edges_name = None
-            surface_name = None
-            for name, p in simple.GetSources().items():
-                if p == edges:
-                    edges_name = name[0]
-                elif p == surface:
-                    surface_name = name[0]
-            
-            return {
-                "status": "extracted",
-                "feature_edges_name": edges_name,
-                "surface_name": surface_name,
-                "feature_angle": feature_angle,
-                "color": color
-            }
-            
+            simple.SaveScreenshot(filename, view, ImageResolution=[width, height])
+            return {"status": "saved", "filename": filename, "width": width, "height": height}
         except Exception as e:
             return {"error": str(e)}
     
@@ -3688,7 +3024,8 @@ out.GetPointData().AddArray(arr)
         Workflow:
             hide_all()                    # Clear view
             show_data_context()           # Body surface as gray context
-            create_vortex_isosurface()    # Flow feature on top
+            vortex = compute_vortex_field(...)  # Compute field
+            create("Contour", ...)        # Flow feature on top
             focus_on("Contour1")          # Frame the result
         
         Args:
@@ -3901,6 +3238,7 @@ out.GetPointData().AddArray(arr)
         simple.UpdatePipeline(proxy=proxy)
         data = proxy.GetClientSideObject().GetOutput()
         
+        merge = None
         # Handle multiblock
         if data.IsA("vtkMultiBlockDataSet"):
             merge = simple.MergeBlocks(Input=proxy)
@@ -3912,6 +3250,14 @@ out.GetPointData().AddArray(arr)
             arr = data.GetCellData().GetArray(field_name)
         
         if arr is None:
+            if merge:
+                simple.Delete(merge)
             return None, None
         
-        return vtk_to_numpy(arr), data
+        # Copy the array before deleting merge
+        result = vtk_to_numpy(arr).copy()
+        
+        if merge:
+            simple.Delete(merge)
+        
+        return result, data

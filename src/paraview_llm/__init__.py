@@ -1,57 +1,26 @@
 """
 ParaView LLM - CFD Analysis Tools for LLM Assistants
 
-RECOMMENDED: CFDAnalysisMCP - Pure analysis tools
-   
-Analysis tools compute fields and find values.
-Base ParaView tools handle visualization.
-
-    from paraview_llm import ExtendedParaViewMCP, CFDAnalysisMCP
+Usage (workflow mode - recommended):
+    from paraview_llm import WorkflowMCP
+    from trame_llm.paraview import ParaViewMCP
     
-    extended_mcp = ExtendedParaViewMCP(paraview_mcp)
-    analysis_mcp = CFDAnalysisMCP(app, extended_mcp)
-    llm_client.register_mcp(paraview_mcp)   # Base: Contour, StreamTracer, etc.
-    llm_client.register_mcp(analysis_mcp)   # Analysis: compute_vortex_field, etc.
+    base_mcp = ParaViewMCP(app)
+    workflow_mcp = WorkflowMCP(base_mcp)
+    llm_client.register_mcp(workflow_mcp)
 
-Example workflow:
-    "Show vortices"
-    → compute_vortex_field("q_criterion")  # Analysis: adds Q array
-    → suggest_threshold("Q")               # Analysis: returns threshold
-    → [ParaView Contour]                   # Base: visualization
-
-LEGACY: CFDToolsMCP, CFDAssistant - still available
+Usage (fine-grained mode):
+    from paraview_llm import ExtendedParaViewMCP
+    from trame_llm.paraview import ParaViewMCP
+    
+    base_mcp = ParaViewMCP(app)
+    extended_mcp = ExtendedParaViewMCP(base_mcp)
+    llm_client.register_mcp(extended_mcp)
 """
 
 from .extended_mcp import ExtendedParaViewMCP
-from .cfd_analysis import CFDAnalysisMCP
+from .workflow_mcp import WorkflowMCP
+from .workflows import CFDWorkflows
 
-# Legacy - composable tools with some visualization
-from .cfd_tools import CFDToolsMCP
-
-# Legacy - hardcoded workflows
-from .cfd_assistant import (
-    CFDAssistant,
-    WorkflowExecutor,
-    Intent,
-    IntentType,
-    WORKFLOWS,
-)
-
-from .mock_llm import MockLLMExecutor
-
-__all__ = [
-    # Recommended
-    "ExtendedParaViewMCP",
-    "CFDAnalysisMCP",
-    
-    # Legacy
-    "CFDToolsMCP",
-    "CFDAssistant",
-    "WorkflowExecutor",
-    "Intent", 
-    "IntentType",
-    "WORKFLOWS",
-    "MockLLMExecutor",
-]
-
-__version__ = "0.4.0"
+__all__ = ["ExtendedParaViewMCP", "WorkflowMCP", "CFDWorkflows"]
+__version__ = "0.6.0"
