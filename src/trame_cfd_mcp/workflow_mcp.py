@@ -2,9 +2,9 @@
 """
 Workflow-based MCP for CFD visualization.
 
-Exposes only high-level workflow tools - LLM does intent matching,
-workflows execute deterministically. Ontology provides domain knowledge
-for explanations.
+Exposes high-level workflow tools plus refinement tools for tweaking results.
+LLM does intent matching, workflows execute deterministically.
+Ontology provides domain knowledge for explanations.
 """
 
 import json
@@ -21,7 +21,7 @@ with open(_ONTOLOGY_PATH) as f:
 
 
 class WorkflowMCP:
-    """MCP with high-level workflow tools only."""
+    """MCP with workflow tools and refinement capabilities."""
     
     def __init__(self, base_mcp):
         """
@@ -42,14 +42,19 @@ class WorkflowMCP:
     
     def list_data(self) -> dict:
         """
-        List all loaded data sources.
+        List all loaded data sources and filters in the pipeline.
         
-        Call this first to see what data is available.
+        Call this FIRST to see what data is available before analysis.
         
         Returns:
-            Dict with 'readers' (data sources) and 'filters' lists
+            Dict with:
+            - readers: List of data sources (files loaded)
+            - filters: List of filters created
+            - active_source: Currently active proxy
         """
-        return self._extended.list_data()
+        result = self._extended.list_data()
+        result["tip"] = "Use proxy names from this list with refinement tools like update_representation()"
+        return result
     
     def save_screenshot(
         self,
@@ -68,7 +73,10 @@ class WorkflowMCP:
         Returns:
             Dict with filename and status
         """
-        return self._extended.save_screenshot(filename, width, height)
+        result = self._extended.save_screenshot(filename, width, height)
+        if "error" not in result:
+            result["tip"] = "Screenshot saved. Use set_view() to change camera angle before saving another."
+        return result
     
     def set_view(self, direction: str = "+x") -> dict:
         """
@@ -79,8 +87,96 @@ class WorkflowMCP:
             
         Returns:
             Dict with view info
+            
+        Tip:
+            Use before save_screenshot() to capture different angles.
         """
-        return self._extended.set_view(direction)
+        result = self._extended.set_view(direction)
+        if "error" not in result:
+            result["tip"] = "Camera set. Call save_screenshot() to capture this view."
+        return result
+    
+    def update_display_property(
+        self,
+        property_name: str,
+        value: float,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Set display/representation property like opacity, line width, or point size.
+        
+        These are visual properties on how the data is displayed, NOT filter properties.
+        Use list_properties() for filter properties, this is for display properties.
+        
+        Args:
+            property_name: One of:
+                - "Opacity": 0.0 (transparent) to 1.0 (opaque)
+                - "LineWidth": line thickness (default 1.0)
+                - "PointSize": point size for Points representation (default 2.0)
+            value: The value to set
+            proxy_name: Proxy to modify, or active source if None
+            
+        Returns:
+            Dict with proxy name, property, and value set
+        """
+        # Map common names to ParaView property names
+        property_map = {
+            "opacity": "Opacity",
+            "linewidth": "LineWidth",
+            "line_width": "LineWidth",
+            "pointsize": "PointSize",
+            "point_size": "PointSize",
+        }
+        
+        # Normalize property name
+        prop_key = property_name.lower().replace(" ", "")
+        actual_prop = property_map.get(prop_key, property_name)
+        
+        # Get proxy
+        if proxy_name:
+            proxy = simple.FindSource(proxy_name)
+        else:
+            proxy = simple.GetActiveSource()
+        
+        if proxy is None:
+            return {"error": f"Could not find proxy '{proxy_name}'" if proxy_name else "No active source"}
+        
+        # Get representation
+        view = simple.GetActiveView()
+        rep = simple.GetRepresentation(proxy, view)
+        
+        if rep is None:
+            return {"error": f"No representation found for '{proxy_name or 'active source'}'"}
+        
+        # Check if property exists on representation
+        if not hasattr(rep, actual_prop):
+            available = [p for p in dir(rep) if not p.startswith('_') and p[0].isupper()]
+            return {
+                "error": f"Property '{actual_prop}' not found on representation",
+                "hint": "Common display properties: Opacity, LineWidth, PointSize",
+                "tip": "Use update_representation() to change type (Wireframe, Surface, etc.)"
+            }
+        
+        try:
+            setattr(rep, actual_prop, value)
+            simple.Render(view)
+            
+            # Get proxy name for return
+            name = proxy_name
+            if not name:
+                for n, p in simple.GetSources().items():
+                    if p == proxy:
+                        name = n[0]
+                        break
+            
+            return {
+                "name": name,
+                "property": actual_prop,
+                "value": value,
+                "tip": f"Display property set. Opacity=0 is invisible, Opacity=1 is fully opaque."
+            }
+        except Exception as e:
+            return {"error": str(e)}
     
     def save_state(self, filename: str) -> dict:
         """
@@ -116,7 +212,7 @@ class WorkflowMCP:
         return self._ontology
     
     def get_mcp(self) -> dict:
-        """Return MCP declaration with workflow tools only."""
+        """Return MCP declaration with workflow and refinement tools."""
         
         # Format ontology for instructions
         flow_features = self._ontology.get("flow_features", {})
@@ -127,56 +223,98 @@ class WorkflowMCP:
         
         return {
             "name": "cfd_visualization",
-            "instructions": f"""
+            "instructions": """
 You are a CFD visualization and analysis assistant. You create visualizations AND explain what they mean.
 
 ALWAYS call list_data() first to see what data is loaded.
 
-WORKFLOW:
-1. Create visualization with show_* tools
-2. Use get_ontology() to get domain knowledge for explanation
-3. Explain what the visualization shows using the ontology
+== WORKFLOW PATTERN ==
+
+1. Create visualization with show_* tools (they return proxy_name and parameters)
+2. If user wants refinement, use the proxy_name with refinement tools
+3. Use get_ontology() to get domain knowledge for explanations
 4. Save with save_screenshot()
 
-TOOLS:
+== VISUALIZATION TOOLS (use these first) ==
 
-Discovery:
-- list_data() - See loaded data sources
-- get_fields() - List available fields with ranges  
-- analyze_data() - Get dataset info and recommendations
-
-Visualization:
 - show_vortices(method="q_criterion") - Show vortex structures
-- show_streamlines() - Show flow streamlines in wake region
-- show_slice(location="wake", normal="x") - Show slice through data
+- show_streamlines() - Show flow streamlines in wake region  
+- show_slice(location="wake") - Show slice through data
 - show_histogram(field="p") - Show field distribution chart
 - show_forces() - Show force distribution chart
-- show_boundary_layer(x_location=0.5) - Show boundary layer velocity profile
+- show_boundary_layer(x_location=0.5) - Show boundary layer profile
+- show_flow_topology() - Show vortex core lines
 
-Knowledge:
-- get_ontology() - Get CFD domain knowledge for explanations
+== REFINEMENT TOOLS (use after show_* to tweak) ==
 
-Utilities:
-- save_screenshot(filename="output/result.png") - Save current view
-- save_state(filename="output/state.pvsm") - Save pipeline for reproducibility
-- set_view(direction="+x") - Set camera angle
+After a workflow runs, it returns proxy_name and parameters. Use these to refine:
 
-EXPLANATION GUIDANCE:
+- update_representation(representation_type, proxy_name) 
+  → Change to "Wireframe", "Surface", "Points", "Surface With Edges"
+  
+- update_color(proxy_name, field_name) 
+  → Change coloring to different field (e.g., "pressure", "Velocity")
+  
+- update_list_property(property_name, property_value, proxy_name)
+  → Adjust thresholds: update_list_property("Isosurfaces", [new_values], proxy_name)
+  → Lower threshold = more structures, higher = fewer
+  
+- update_display_property(property_name, value, proxy_name)
+  → Set Opacity (0.0=transparent, 1.0=opaque), LineWidth, PointSize
+  → These are DISPLAY properties, not filter properties
+  
+- show_or_hide(action, proxy_name)
+  → action="hide" or "show" to toggle visibility
+  
+- list_properties(proxy_name)
+  → See all adjustable properties on a filter
+
+== REFINEMENT EXAMPLES ==
+
+User: "Show vortices" → call show_vortices() → returns {proxy_name: "Contour1", threshold: 28.0, ...}
+User: "Make them wireframe" → call update_representation("Wireframe", "Contour1")
+User: "Show more structures" → call update_list_property("Isosurfaces", [14.0], "Contour1")
+User: "Color by pressure" → call update_color("Contour1", "p")
+User: "Make them semi-transparent" → call update_display_property("Opacity", 0.5, "Contour1")
+
+== DISCOVERY TOOLS ==
+
+- list_data() - See loaded data sources and filters with proxy names
+- get_fields() - List available fields with ranges
+- analyze_data() - Get dataset info and recommendations
+- list_properties(proxy_name) - See adjustable properties
+
+== EXPLANATION GUIDANCE ==
+
 When explaining visualizations, use the ontology to provide:
 - What the visualization method means (e.g., Q > 0 indicates vortex cores)
 - What the specific results show (threshold value, location, etc.)
 - Design relevance (what this means for aerodynamic performance)
 """,
             "tools": [
+                # Discovery
                 self.list_data,
                 self._workflows.get_fields,
+                self._workflows.analyze_data,
+                
+                # Visualization workflows
                 self._workflows.show_vortices,
                 self._workflows.show_streamlines,
                 self._workflows.show_slice,
                 self._workflows.show_histogram,
                 self._workflows.show_forces,
                 self._workflows.show_boundary_layer,
-                self._workflows.analyze_data,
+                self._workflows.show_flow_topology,
+                
+                # Refinement tools (from base MCP)
+                self._base_mcp.update_representation,
+                self._base_mcp.update_color,
+                self._base_mcp.update_list_property,
+                self._base_mcp.show_or_hide,
+                self._base_mcp.list_properties,
+                self.update_display_property,
+                
+                # Knowledge and utilities
                 self.get_ontology,
                 self.save_screenshot,
                 self.save_state,

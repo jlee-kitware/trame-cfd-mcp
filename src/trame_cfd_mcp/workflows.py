@@ -105,7 +105,8 @@ class CFDWorkflows:
         return {
             "proxy_name": self._get_proxy_name(proxy),
             "point_fields": point_fields,
-            "cell_fields": cell_fields
+            "cell_fields": cell_fields,
+            "tip": "Use field names with update_color(proxy_name, field_name) to change visualization coloring."
         }
 
     def show_vortices(
@@ -187,7 +188,7 @@ class CFDWorkflows:
                 "field_range": vortex.get("field_range"),
                 "claim": f"{method.replace('_', ' ').title()} > 0 indicates vortex cores where rotation dominates strain"
             },
-            "tip": f"Threshold {vortex['threshold']:.2f} is auto-computed. Adjust for more/fewer structures."
+            "tip": f"Threshold {vortex['threshold']:.2f} is auto-computed. To show MORE structures: update_list_property('Isosurfaces', [{vortex['threshold']/2:.2f}], '{contour_name}'). To show FEWER: update_list_property('Isosurfaces', [{vortex['threshold']*2:.2f}], '{contour_name}'). To change style: update_representation('Wireframe', '{contour_name}')."
         }
 
     def show_streamlines(
@@ -268,7 +269,7 @@ class CFDWorkflows:
                 "seed_location": seed.get("source", "wake"),
                 "claim": "Streamlines show flow path lines. In wake region, they reveal recirculation and separation."
             },
-            "tip": "Seed placed in wake region. Adjust num_points for density."
+            "tip": f"To refine: update_color('{stream_name}', field_name='pressure') to recolor, or update_representation('Wireframe', '{stream_name}') to change style."
         }
 
     def show_slice(
@@ -429,7 +430,8 @@ class CFDWorkflows:
                 "claim": f"Slice shows {color_array or color_by} distribution. " +
                          ("Spanwise slice shows airfoil section flow pattern." if location.startswith("span") else
                           "Wake slice reveals velocity deficit and pressure recovery.")
-            }
+            },
+            "tip": f"To refine: update_color('{slice_name}', field_name='pressure') to recolor, or update_representation('Surface With Edges', '{slice_name}') to show mesh."
         }
 
     def show_histogram(
@@ -474,6 +476,7 @@ class CFDWorkflows:
             result["interpretation"] = {
                 "claim": f"Histogram shows distribution of {result.get('field', field)}. Asymmetric distributions may indicate flow features."
             }
+            result["tip"] = f"Histogram is a chart view. Use save_screenshot() to capture it."
         
         return result
 
@@ -607,7 +610,8 @@ class CFDWorkflows:
                          ("H ≈ 1.3-1.4 suggests turbulent BL." if 1.2 < bl_data['shape_factor'] < 1.6 else
                           "H ≈ 2.6 suggests laminar BL." if 2.4 < bl_data['shape_factor'] < 2.8 else
                           "Shape factor indicates transitional or separated flow.")
-            }
+            },
+            "tip": f"Boundary layer chart created. Call show_boundary_layer(x_location={x_over_chord + 0.1:.2f}) to probe at a different location. Use save_screenshot() to capture."
         }
         
         return result
@@ -659,6 +663,7 @@ class CFDWorkflows:
         result = {
             "status": "created",
             "type": "flow_topology",
+            "proxy_name": "VortexCores",
             "vortex_cores": n_cores,
             "vortex_points": n_points,
             "bounds": bounds,
@@ -673,7 +678,8 @@ class CFDWorkflows:
                 "claim": f"Found {n_cores} vortex core line segments with {n_points} points. " +
                          (f"Cores extend from x=[{bounds['x'][0]:.2f}, {bounds['x'][1]:.2f}]. " if bounds else "") +
                          "Vortex cores indicate regions of concentrated rotation in the flow."
-            }
+            },
+            "tip": "To refine: update_representation('Points', 'VortexCores') to show as points, or update_color('VortexCores', field_name='Velocity') to color by velocity."
         }
         
         return result
@@ -709,6 +715,7 @@ class CFDWorkflows:
             result["interpretation"] = {
                 "claim": "Force distribution shows where drag/lift accumulates along the body. Peaks indicate high-drag regions."
             }
+            result["tip"] = "Force chart is a chart view. Use save_screenshot() to capture it."
         
         return result
 
@@ -730,4 +737,7 @@ class CFDWorkflows:
                 proxy_name = name[0]
                 break
         
-        return self._mcp.characterize_dataset(proxy_name=proxy_name)
+        result = self._mcp.characterize_dataset(proxy_name=proxy_name)
+        if "error" not in result:
+            result["tip"] = "Use the 'applicable_tools' list to see which show_* workflows will work with this dataset."
+        return result

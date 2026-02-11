@@ -11,11 +11,16 @@ class ResultCollector:
     
     def __init__(self, truncate_console: int = 400):
         self.results = []
+        self.tool_calls = []  # Track tool names called
         self.truncate_console = truncate_console
     
     def progress_callback(self, ptype, msg):
         """Progress callback that collects results and prints to console."""
         if ptype == ProgressType.MCP_SELECTION:
+            # Extract tool name from "Calling: tool_name"
+            if msg.startswith("Calling: "):
+                tool_name = msg.replace("Calling: ", "").strip()
+                self.tool_calls.append(tool_name)
             print(f"[call] {msg}")
         elif ptype == ProgressType.MCP:
             # Save full result
@@ -38,16 +43,24 @@ class ResultCollector:
         elif ptype == ProgressType.ERROR:
             print(f"[ERROR] {msg}")
     
+    def get_tool_names(self) -> list:
+        """Return list of tool names that were called."""
+        return self.tool_calls
+    
     def save_json(self, filename: str):
         """Save collected results to JSON file."""
         os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(self.results, f, indent=2, ensure_ascii=False)
+            json.dump({
+                "tool_calls": self.tool_calls,
+                "results": self.results
+            }, f, indent=2, ensure_ascii=False)
         print(f"\nSaved {len(self.results)} tool results to {filename}")
     
     def clear(self):
-        """Clear collected results."""
+        """Clear collected results and tool calls."""
         self.results = []
+        self.tool_calls = []
 
 
 class MinimalApp:
