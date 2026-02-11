@@ -67,7 +67,7 @@ class ExtendedParaViewMCP:
         patterns = FIELD_TYPE_PATTERNS[field_type]
         
         # Get available fields from proxy
-        data = proxy.GetClientSideObject().GetOutput()
+        data = proxy.GetClientSideObject().GetOutputDataObject(0)
         
         # Handle multiblock
         if data.IsA("vtkMultiBlockDataSet"):
@@ -136,7 +136,7 @@ class ExtendedParaViewMCP:
         Returns:
             Dict mapping semantic type to actual field name, plus all field names
         """
-        data = proxy.GetClientSideObject().GetOutput()
+        data = proxy.GetClientSideObject().GetOutputDataObject(0)
         
         # Handle multiblock - get first leaf
         data = self._get_leaf_data(data)
@@ -344,7 +344,7 @@ class ExtendedParaViewMCP:
             simple.UpdatePipeline(proxy=proxy)
             
             # Get data object - handle multiblock
-            raw_data = proxy.GetClientSideObject().GetOutput()
+            raw_data = proxy.GetClientSideObject().GetOutputDataObject(0)
             data = self._get_leaf_data(raw_data)
             
             if data is None:
@@ -562,7 +562,7 @@ class ExtendedParaViewMCP:
             if "velocity" in fields["resolved"]:
                 vel_name = fields["resolved"]["velocity"]
                 # Verify it's 3-component
-                raw_data = proxy.GetClientSideObject().GetOutput()
+                raw_data = proxy.GetClientSideObject().GetOutputDataObject(0)
                 data = self._get_leaf_data(raw_data)
                 
                 if data is None:
@@ -791,7 +791,7 @@ class ExtendedParaViewMCP:
         try:
             # Handle multiblock - merge first for consistent processing
             simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutput()
+            data = proxy.GetClientSideObject().GetOutputDataObject(0)
             
             if data is None:
                 return {"error": "No data available from proxy"}
@@ -800,7 +800,7 @@ class ExtendedParaViewMCP:
             if data.IsA("vtkMultiBlockDataSet"):
                 merge_input = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge_input)
-                data = merge_input.GetClientSideObject().GetOutput()
+                data = merge_input.GetClientSideObject().GetOutputDataObject(0)
                 cleanup_input_merge = merge_input
             else:
                 cleanup_input_merge = None
@@ -850,13 +850,13 @@ class ExtendedParaViewMCP:
             simple.UpdatePipeline(proxy=thresh)
             
             # Get result
-            result_data = thresh.GetClientSideObject().GetOutput()
+            result_data = thresh.GetClientSideObject().GetOutputDataObject(0)
             
             # Handle multiblock
             if result_data.IsA("vtkMultiBlockDataSet"):
                 merge = simple.MergeBlocks(Input=thresh)
                 simple.UpdatePipeline(proxy=merge)
-                result_data = merge.GetClientSideObject().GetOutput()
+                result_data = merge.GetClientSideObject().GetOutputDataObject(0)
                 cleanup_merge = merge
             else:
                 cleanup_merge = None
@@ -947,13 +947,13 @@ class ExtendedParaViewMCP:
             extracted = simple.ExtractSelection(Input=proxy, Selection=selection)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutput()
+            data = extracted.GetClientSideObject().GetOutputDataObject(0)
             
             # Handle multiblock
             if data.IsA("vtkMultiBlockDataSet"):
                 merge = simple.MergeBlocks(Input=extracted)
                 simple.UpdatePipeline(proxy=merge)
-                merged_data = merge.GetClientSideObject().GetOutput()
+                merged_data = merge.GetClientSideObject().GetOutputDataObject(0)
                 num_selected = merged_data.GetNumberOfPoints() if field_type == "POINT" else merged_data.GetNumberOfCells()
                 simple.Delete(merge)
             else:
@@ -991,13 +991,13 @@ class ExtendedParaViewMCP:
             extracted = simple.ExtractSelection(Input=proxy)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutput()
+            data = extracted.GetClientSideObject().GetOutputDataObject(0)
             
             # Handle multiblock
             if data.IsA("vtkMultiBlockDataSet"):
                 merge = simple.MergeBlocks(Input=extracted)
                 simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutput()
+                data = merge.GetClientSideObject().GetOutputDataObject(0)
                 cleanup_merge = merge
             else:
                 cleanup_merge = None
@@ -1068,13 +1068,13 @@ class ExtendedParaViewMCP:
             extracted = simple.ExtractSelection(Input=proxy, Selection=selection)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutput()
+            data = extracted.GetClientSideObject().GetOutputDataObject(0)
             
             # Handle multiblock
             if data.IsA("vtkMultiBlockDataSet"):
                 merge = simple.MergeBlocks(Input=extracted)
                 simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutput()
+                data = merge.GetClientSideObject().GetOutputDataObject(0)
                 cleanup_merge = merge
             else:
                 cleanup_merge = None
@@ -1252,7 +1252,7 @@ class ExtendedParaViewMCP:
         try:
             # Check if multiblock by trying to get the output type
             simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutput()
+            data = proxy.GetClientSideObject().GetOutputDataObject(0)
             
             if data.IsA("vtkMultiBlockDataSet"):
                 merge = simple.MergeBlocks(Input=proxy)
@@ -1513,7 +1513,7 @@ out.GetPointData().AddArray(arr)
                 output_proxy = gradient
             
             # Get field array for threshold calculation
-            output_data = output_proxy.GetClientSideObject().GetOutput()
+            output_data = output_proxy.GetClientSideObject().GetOutputDataObject(0)
             field_vtk = output_data.GetPointData().GetArray(field_name)
             if field_vtk is None:
                 return {"error": f"Could not compute {field_name}"}
@@ -1601,7 +1601,7 @@ out.GetPointData().AddArray(arr)
             simple.UpdatePipeline(proxy=proxy)
             
             # Merge blocks if multiblock
-            data = proxy.GetClientSideObject().GetOutput()
+            data = proxy.GetClientSideObject().GetOutputDataObject(0)
             if data.IsA("vtkMultiBlockDataSet"):
                 merge_input = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge_input)
@@ -1617,13 +1617,13 @@ out.GetPointData().AddArray(arr)
             normals.ComputeCellNormals = 1
             simple.UpdatePipeline(proxy=normals)
             
-            surf_data = normals.GetClientSideObject().GetOutput()
+            surf_data = normals.GetClientSideObject().GetOutputDataObject(0)
             
             # Handle multiblock by merging
             if surf_data.IsA("vtkMultiBlockDataSet"):
                 merge = simple.MergeBlocks(Input=normals)
                 simple.UpdatePipeline(proxy=merge)
-                surf_data = merge.GetClientSideObject().GetOutput()
+                surf_data = merge.GetClientSideObject().GetOutputDataObject(0)
             else:
                 merge = None
             
@@ -1714,7 +1714,7 @@ out.GetPointData().AddArray(arr)
                 vel_array = surf_data.GetPointData().GetArray("Velocity")
                 if vel_array is None:
                     # Try from original proxy
-                    orig_data = proxy.GetClientSideObject().GetOutput()
+                    orig_data = proxy.GetClientSideObject().GetOutputDataObject(0)
                     if orig_data.IsA("vtkMultiBlockDataSet"):
                         orig_data = orig_data.GetBlock(0)
                     vel_array = orig_data.GetPointData().GetArray("Velocity")
@@ -1726,14 +1726,26 @@ out.GetPointData().AddArray(arr)
                     freestream_velocity = 1.0
             
             if reference_area is None:
-                # Use frontal area from body bounds (not domain bounds)
-                body_bounds, _ = self._get_body_bounds(proxy)
-                if drag_idx == 0:  # streamwise = x
-                    reference_area = (body_bounds[3] - body_bounds[2]) * (body_bounds[5] - body_bounds[4])
-                elif drag_idx == 1:  # streamwise = y
-                    reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[5] - body_bounds[4])
-                else:  # streamwise = z
-                    reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[3] - body_bounds[2])
+                # Compute actual projected frontal area via rasterization
+                # This is more accurate than bounding box approximation
+                flow_dir = [0, 0, 0]
+                flow_dir[drag_idx] = 1.0
+                area_result = self.compute_projected_area(
+                    flow_direction=flow_dir,
+                    resolution=1024,  # Lower res for speed, still accurate
+                    proxy_name=proxy_name
+                )
+                if "error" not in area_result:
+                    reference_area = area_result["area"]
+                else:
+                    # Fallback to bounding box estimate
+                    body_bounds, _ = self._get_body_bounds(proxy)
+                    if drag_idx == 0:  # streamwise = x
+                        reference_area = (body_bounds[3] - body_bounds[2]) * (body_bounds[5] - body_bounds[4])
+                    elif drag_idx == 1:  # streamwise = y
+                        reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[5] - body_bounds[4])
+                    else:  # streamwise = z
+                        reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[3] - body_bounds[2])
             
             # Compute coefficients: C = F / (0.5 * ρ * V² * A)
             dynamic_pressure = 0.5 * density * freestream_velocity ** 2
@@ -1847,7 +1859,7 @@ out.GetPointData().AddArray(arr)
                 distribution_axis = span_axis
             
             # Merge if multiblock
-            data = proxy.GetClientSideObject().GetOutput()
+            data = proxy.GetClientSideObject().GetOutputDataObject(0)
             if data.IsA("vtkMultiBlockDataSet"):
                 merge_input = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge_input)
@@ -1862,7 +1874,7 @@ out.GetPointData().AddArray(arr)
             normals_filter.ComputeCellNormals = 1
             simple.UpdatePipeline(proxy=normals_filter)
             
-            surf_data = normals_filter.GetClientSideObject().GetOutput()
+            surf_data = normals_filter.GetClientSideObject().GetOutputDataObject(0)
             num_cells = surf_data.GetNumberOfCells()
             
             # Get pressure
@@ -1953,6 +1965,239 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
     
+    def compute_projected_area(
+        self,
+        flow_direction: list = None,
+        resolution: int = 2048,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Compute projected frontal area via rasterization and pixel counting.
+        
+        Renders the body surface with orthographic projection aligned with the
+        flow direction, then counts non-background pixels to compute area.
+        This handles complex geometries, hidden surfaces, and concavities correctly.
+        
+        Args:
+            flow_direction: Flow direction vector [x, y, z] (default: [1, 0, 0])
+            resolution: Render resolution (default: 2048, higher = more accurate)
+            proxy_name: Source proxy name
+            
+        Returns:
+            Dict with:
+            - area: Projected frontal area in model units squared
+            - pixel_count: Number of covered pixels
+            - pixel_size: Size of each pixel in model units
+            - flow_direction: Normalized flow direction used
+        """
+        import numpy as np
+        from vtk import vtkWindowToImageFilter
+        from vtk.util.numpy_support import vtk_to_numpy
+        
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        # Default flow direction
+        if flow_direction is None:
+            flow_direction = [1.0, 0.0, 0.0]
+        flow = np.array(flow_direction, dtype=float)
+        flow = flow / np.linalg.norm(flow)
+        
+        try:
+            # Get body bounds
+            body_bounds, _ = self._get_body_bounds(proxy)
+            
+            # Extract surface first, then clip to body region
+            # (Clipping volume mesh doesn't isolate body surface correctly)
+            merge = simple.MergeBlocks(Input=proxy)
+            simple.UpdatePipeline(proxy=merge)
+            
+            surf = simple.ExtractSurface(Input=merge)
+            simple.UpdatePipeline(proxy=surf)
+            
+            # Clip surface to body region
+            clip = simple.Clip(Input=surf)
+            clip.ClipType = 'Box'
+            clip.ClipType.Bounds = [
+                body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+                body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+                body_bounds[4] - 0.01, body_bounds[5] + 0.01
+            ]
+            clip.Invert = 1  # Keep inside
+            simple.UpdatePipeline(proxy=clip)
+            
+            # Create offscreen render view
+            view = simple.CreateView('RenderView')
+            view.ViewSize = [resolution, resolution]
+            view.Background = [0, 0, 0]
+            view.UseColorPaletteForBackground = 0  # Use explicit black background
+            view.OrientationAxesVisibility = 0     # Hide orientation widget
+            
+            # Display with flat white color (no lighting effects)
+            display = simple.Show(clip, view)
+            display.Representation = 'Surface'
+            display.DiffuseColor = [1, 1, 1]
+            display.AmbientColor = [1, 1, 1]
+            display.Specular = 0
+            display.Ambient = 1.0
+            display.Diffuse = 0.0
+            
+            # Orthographic projection
+            view.CameraParallelProjection = 1
+            
+            # Camera alignment - look along flow direction
+            cx = 0.5 * (body_bounds[0] + body_bounds[1])
+            cy = 0.5 * (body_bounds[2] + body_bounds[3])
+            cz = 0.5 * (body_bounds[4] + body_bounds[5])
+            center = np.array([cx, cy, cz])
+            
+            # Place camera far upstream
+            distance = 10.0
+            camera_pos = center - flow * distance
+            
+            view.CameraPosition = camera_pos.tolist()
+            view.CameraFocalPoint = center.tolist()
+            
+            # Choose view-up automatically (perpendicular to flow)
+            up_guess = np.array([0, 0, 1])
+            if abs(np.dot(up_guess, flow)) > 0.9:
+                up_guess = np.array([0, 1, 0])
+            
+            right = np.cross(flow, up_guess)
+            up = np.cross(right, flow)
+            up = up / np.linalg.norm(up)
+            
+            view.CameraViewUp = up.tolist()
+            
+            # Set parallel scale to fit body with margin
+            # Parallel scale = half the height of visible region
+            span_y = body_bounds[3] - body_bounds[2]
+            span_z = body_bounds[5] - body_bounds[4]
+            parallel_scale = max(span_y, span_z) * 0.6
+            view.CameraParallelScale = parallel_scale
+            height = view.ViewSize[1]
+            
+            simple.SetActiveView(view)
+            simple.Render(view)
+            
+            # Capture image
+            w2i = vtkWindowToImageFilter()
+            w2i.SetInput(view.GetRenderWindow())
+            w2i.Update()
+            
+            image = w2i.GetOutput()
+            dims = image.GetDimensions()
+            vtk_array = image.GetPointData().GetScalars()
+            np_img = vtk_to_numpy(vtk_array)
+            
+            # Reshape image (may be RGB or RGBA)
+            n_components = vtk_array.GetNumberOfComponents()
+            np_img = np_img.reshape(dims[1], dims[0], n_components)
+            
+            # Count non-background pixels (threshold > 10 to avoid noise)
+            mask = np_img[:, :, 0] > 10
+            covered_pixels = int(np.count_nonzero(mask))
+            
+            # Convert to area
+            pixel_size = 2.0 * parallel_scale / height
+            area = covered_pixels * pixel_size * pixel_size
+            
+            # Cleanup
+            simple.Delete(view)
+            simple.Delete(surf)
+            simple.Delete(clip)
+            simple.Delete(merge)
+            
+            return {
+                "area": float(area),
+                "pixel_count": covered_pixels,
+                "pixel_size": float(pixel_size),
+                "resolution": resolution,
+                "flow_direction": flow.tolist(),
+                "body_bounds": body_bounds
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def compute_flow_topology(
+        self,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Compute flow topology using vortex core detection.
+        
+        Uses VTK's VortexCores filter to extract vortex core lines from the
+        velocity field. This is more appropriate for external aerodynamics
+        than VectorFieldTopology, which finds spurious critical points on
+        no-slip walls.
+        
+        Args:
+            proxy_name: Source proxy name
+            
+        Returns:
+            Dict with:
+            - vortex_cores: vtkPolyData of vortex core lines
+            - n_cores: Number of vortex core line segments
+            - n_points: Number of points on core lines
+            - bounds: Spatial extent of vortex cores
+        """
+        import numpy as np
+        from vtk.util.numpy_support import vtk_to_numpy
+        
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            # Merge blocks first
+            merge = simple.MergeBlocks(Input=proxy)
+            simple.UpdatePipeline(proxy=merge)
+            
+            # Check for velocity field
+            data = merge.GetClientSideObject().GetOutput()
+            vel = data.GetPointData().GetArray('Velocity')
+            if vel is None:
+                simple.Delete(merge)
+                return {"error": "No Velocity field found"}
+            
+            # Run VortexCores filter
+            vortex = simple.VortexCores(Input=merge)
+            vortex.VectorField = ['POINTS', 'Velocity']
+            simple.UpdatePipeline(proxy=vortex)
+            
+            # Get output
+            cores = vortex.GetClientSideObject().GetOutput()
+            
+            n_points = cores.GetNumberOfPoints()
+            n_cores = cores.GetNumberOfCells()
+            
+            # Get bounds if we have points
+            bounds = None
+            if n_points > 0:
+                pts = vtk_to_numpy(cores.GetPoints().GetData())
+                bounds = {
+                    "x": [float(pts[:,0].min()), float(pts[:,0].max())],
+                    "y": [float(pts[:,1].min()), float(pts[:,1].max())],
+                    "z": [float(pts[:,2].min()), float(pts[:,2].max())]
+                }
+            
+            # Keep filter alive for visualization (don't delete yet)
+            # The workflow will handle cleanup
+            simple.Delete(merge)
+            
+            return {
+                "vortex_cores": cores,
+                "vortex_filter": vortex,  # Keep reference for visualization
+                "n_cores": n_cores,
+                "n_points": n_points,
+                "bounds": bounds
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
     def create_histogram_chart(
         self,
         field: str,
@@ -1992,7 +2237,7 @@ out.GetPointData().AddArray(arr)
             
             # Merge if multiblock
             simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutput()
+            data = proxy.GetClientSideObject().GetOutputDataObject(0)
             if data.IsA("vtkMultiBlockDataSet"):
                 merge = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge)
@@ -2254,7 +2499,7 @@ out.GetPointData().AddArray(arr)
             if data.IsA("vtkMultiBlockDataSet"):
                 merge = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutput()
+                data = merge.GetClientSideObject().GetOutputDataObject(0)
             else:
                 merge = None
             
@@ -2316,6 +2561,124 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
     
+    def detect_span_direction(self, proxy_name: str = None) -> dict:
+        """
+        Detect the spanwise direction based on body geometry and flow direction.
+        
+        Span is defined as the axis perpendicular to streamwise with the largest
+        body extent. For a wing, this would typically be the axis along the wingspan.
+        
+        Returns:
+            Dict with span_axis, streamwise_axis, vertical_axis, and body extents
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            # Get streamwise direction
+            streamwise_result = self.detect_streamwise_direction(proxy_name=proxy_name)
+            if "error" in streamwise_result:
+                return streamwise_result
+            
+            streamwise = streamwise_result["streamwise"]
+            streamwise_axis = streamwise[1]  # Extract axis letter from "+x", "-y", etc.
+            
+            # Get body bounds
+            body_bounds, _ = self._get_body_bounds(proxy)
+            
+            extents = {
+                "x": body_bounds[1] - body_bounds[0],
+                "y": body_bounds[3] - body_bounds[2],
+                "z": body_bounds[5] - body_bounds[4]
+            }
+            
+            # Span is perpendicular axis with largest extent
+            perp_axes = [a for a in ["x", "y", "z"] if a != streamwise_axis]
+            span_axis = max(perp_axes, key=lambda a: extents[a])
+            
+            # Vertical is the remaining axis
+            vertical_axis = [a for a in perp_axes if a != span_axis][0]
+            
+            # Body center
+            body_center = [
+                (body_bounds[0] + body_bounds[1]) / 2,
+                (body_bounds[2] + body_bounds[3]) / 2,
+                (body_bounds[4] + body_bounds[5]) / 2
+            ]
+            
+            return {
+                "span_axis": span_axis,
+                "streamwise_axis": streamwise_axis,
+                "vertical_axis": vertical_axis,
+                "extents": extents,
+                "body_bounds": list(body_bounds),
+                "body_center": body_center,
+                "span_extent": extents[span_axis],
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def compute_spanwise_slice_params(
+        self,
+        offset: float = 0.0,
+        proxy_name: str = None
+    ) -> dict:
+        """
+        Compute slice parameters for a spanwise cut through the body.
+        
+        Creates a slice perpendicular to the span axis at the specified offset
+        from body center. Useful for viewing airfoil sections at different span
+        stations.
+        
+        Args:
+            offset: Position along span as fraction of span extent (-1 to 1).
+                    0.0 = center, 0.5 = halfway to tip, -0.5 = halfway to other tip
+            proxy_name: Source proxy name
+            
+        Returns:
+            Dict with origin, normal_vector, span_axis, and slice position info
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        try:
+            # Get span direction info
+            span_info = self.detect_span_direction(proxy_name=proxy_name)
+            if "error" in span_info:
+                return span_info
+            
+            span_axis = span_info["span_axis"]
+            body_center = span_info["body_center"]
+            span_extent = span_info["span_extent"]
+            
+            # Compute origin at offset position
+            axis_idx = {"x": 0, "y": 1, "z": 2}[span_axis]
+            origin = list(body_center)
+            origin[axis_idx] = body_center[axis_idx] + offset * span_extent * 0.5
+            
+            # Normal vector along span axis
+            normal_vector = [0.0, 0.0, 0.0]
+            normal_vector[axis_idx] = 1.0
+            
+            return {
+                "origin": origin,
+                "normal_vector": normal_vector,
+                "normal_axis": span_axis,
+                "offset": offset,
+                "span_position": origin[axis_idx],
+                "span_extent": span_extent,
+                "body_center": body_center,
+                "body_bounds": span_info["body_bounds"],
+                "streamwise_axis": span_info["streamwise_axis"],
+                "vertical_axis": span_info["vertical_axis"],
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
     def detect_wake_region(
         self, 
         velocity_deficit: float = 0.5,
@@ -3135,14 +3498,14 @@ out.GetPointData().AddArray(arr)
         from vtk.util.numpy_support import vtk_to_numpy
         
         simple.UpdatePipeline(proxy=proxy)
-        data = proxy.GetClientSideObject().GetOutput()
+        data = proxy.GetClientSideObject().GetOutputDataObject(0)
         
         merge = None
         # Handle multiblock
         if data.IsA("vtkMultiBlockDataSet"):
             merge = simple.MergeBlocks(Input=proxy)
             simple.UpdatePipeline(proxy=merge)
-            data = merge.GetClientSideObject().GetOutput()
+            data = merge.GetClientSideObject().GetOutputDataObject(0)
         
         arr = data.GetPointData().GetArray(field_name)
         if arr is None:
@@ -3160,3 +3523,256 @@ out.GetPointData().AddArray(arr)
             simple.Delete(merge)
         
         return result, data
+
+
+    def compute_boundary_layer_profile(self, proxy=None, x_location: float = 0.5, 
+                                        probe_length: float = None, proxy_name: str = None) -> dict:
+        """
+        Compute boundary layer profile data at a given streamwise location.
+        
+        Probes normal to the body surface and computes BL quantities using
+        multiple edge detection criteria (99% velocity, Haase diagnostic).
+        
+        Args:
+            proxy: Data proxy (default: active source)
+            x_location: Streamwise location - absolute or fraction (0-1) of chord
+            probe_length: Probe distance (default: 30% of chord)
+            proxy_name: Proxy name for span detection
+            
+        Returns:
+            Dict with profile data (y, u, u_normalized) and BL quantities
+            (delta, delta_star, theta, shape_factor, etc.)
+        """
+        from vtk.util.numpy_support import vtk_to_numpy
+        
+        if proxy is None:
+            proxy = simple.GetActiveSource()
+        if proxy is None:
+            return {"error": "No data source found"}
+        
+        if proxy_name is None:
+            proxy_name = proxy.GetGlobalIDAsString()
+        
+        # Merge blocks
+        merge = simple.MergeBlocks(Input=proxy)
+        simple.UpdatePipeline(proxy=merge)
+        
+        # Get body bounds
+        body_bounds, _ = self._get_body_bounds(proxy)
+        
+        # Extract and clip surface to body region
+        surface = simple.ExtractSurface(Input=merge)
+        simple.UpdatePipeline(proxy=surface)
+        
+        clip = simple.Clip(Input=surface)
+        clip.ClipType = 'Box'
+        clip.ClipType.Bounds = [
+            body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+            body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+            body_bounds[4] - 0.01, body_bounds[5] + 0.01
+        ]
+        clip.Invert = 1
+        simple.UpdatePipeline(proxy=clip)
+        
+        body_surface = simple.ExtractSurface(Input=clip)
+        simple.UpdatePipeline(proxy=body_surface)
+        
+        normals_filter = simple.SurfaceNormals(Input=body_surface)
+        simple.UpdatePipeline(proxy=normals_filter)
+        
+        data = normals_filter.GetClientSideObject().GetOutputDataObject(0)
+        points = vtk_to_numpy(data.GetPoints().GetData())
+        normal_arr = vtk_to_numpy(data.GetPointData().GetArray('Normals'))
+        
+        def cleanup():
+            simple.Delete(normals_filter)
+            simple.Delete(body_surface)
+            simple.Delete(clip)
+            simple.Delete(surface)
+            simple.Delete(merge)
+        
+        if len(points) == 0:
+            cleanup()
+            return {"error": "No body surface points found"}
+        
+        # Detect geometry orientation
+        span_info = self.detect_span_direction(proxy_name=proxy_name)
+        span_axis = span_info.get("span_axis", "y")
+        vertical_axis = span_info.get("vertical_axis", "z")
+        streamwise_axis = span_info.get("streamwise_axis", "x")
+        body_center = np.array(span_info["body_center"])
+        
+        axis_map = {"x": 0, "y": 1, "z": 2}
+        span_idx = axis_map[span_axis]
+        vert_idx = axis_map[vertical_axis]
+        stream_idx = axis_map[streamwise_axis]
+        
+        # Geometry extents
+        stream_min = body_bounds[stream_idx * 2]
+        stream_max = body_bounds[stream_idx * 2 + 1]
+        chord = stream_max - stream_min
+        
+        span_min = body_bounds[span_idx * 2]
+        span_max = body_bounds[span_idx * 2 + 1]
+        span_extent = span_max - span_min
+        
+        vert_min = body_bounds[vert_idx * 2]
+        vert_max = body_bounds[vert_idx * 2 + 1]
+        thickness = vert_max - vert_min
+        vert_center = body_center[vert_idx]
+        
+        # Default probe_length
+        if probe_length is None:
+            probe_length = 0.3 * chord
+        
+        # Convert x_location to absolute
+        if 0 <= x_location <= 1 and chord > 1:
+            x_abs = stream_min + x_location * chord
+        else:
+            x_abs = x_location
+        
+        # Tolerances
+        x_tolerance = 0.1 * chord
+        span_tolerance = 0.2 * span_extent
+        symmetry_offset = 0.05 * span_extent
+        
+        # Find surface point on upper surface
+        mask = (
+            (np.abs(points[:,stream_idx] - x_abs) < x_tolerance) &
+            (np.abs(points[:,span_idx] - span_min) < span_tolerance) &
+            (points[:,vert_idx] > vert_center)
+        )
+        candidates = np.where(mask)[0]
+        
+        if len(candidates) == 0:
+            mask = np.abs(points[:,stream_idx] - x_abs) < 0.2 * chord
+            candidates = np.where(mask)[0]
+        
+        if len(candidates) == 0:
+            cleanup()
+            return {"error": f"No surface point found near x={x_location}"}
+        
+        # Pick closest point
+        x_diffs = np.abs(points[candidates, stream_idx] - x_abs)
+        best_idx = candidates[np.argmin(x_diffs)]
+        
+        surface_point = points[best_idx].copy()
+        surface_normal = normal_arr[best_idx].copy()
+        
+        # Ensure normal points outward
+        from_body_center = surface_point - body_center
+        if np.dot(surface_normal, from_body_center) < 0:
+            surface_normal = -surface_normal
+        
+        # Offset from symmetry plane
+        if surface_point[span_idx] < span_min + symmetry_offset:
+            surface_point[span_idx] = span_min + symmetry_offset
+        
+        # Create line probe
+        end_point = surface_point + probe_length * surface_normal
+        
+        line = simple.PlotOverLine(Input=merge)
+        line.Point1 = surface_point.tolist()
+        line.Point2 = end_point.tolist()
+        line.Resolution = 200
+        simple.UpdatePipeline(proxy=line)
+        
+        line_data = line.GetClientSideObject().GetOutputDataObject(0)
+        if line_data.GetNumberOfPoints() == 0:
+            simple.Delete(line)
+            cleanup()
+            return {"error": "Line probe returned no points"}
+        
+        y = vtk_to_numpy(line_data.GetPointData().GetArray('arc_length'))
+        velocity = vtk_to_numpy(line_data.GetPointData().GetArray('Velocity'))
+        u = np.linalg.norm(velocity, axis=1)
+        
+        simple.Delete(line)
+        cleanup()
+        
+        # Handle NaN at wall (no-slip)
+        n_nan = np.sum(np.isnan(u))
+        if n_nan > 0:
+            first_valid = np.where(~np.isnan(u))[0]
+            if len(first_valid) > 0 and first_valid[0] < len(u) // 4:
+                u[np.isnan(u)] = 0.0
+            else:
+                return {"error": f"Probe has {n_nan} NaN values away from wall"}
+        
+        if len(y) < 5:
+            return {"error": "Insufficient data points"}
+        
+        # Edge velocity (local max, not freestream)
+        u_edge = np.max(u)
+        u_edge_idx = np.argmax(u)
+        u_normalized = u / u_edge if u_edge > 0 else u
+        
+        # Edge detection: 99% criterion
+        delta_99_idx = np.where(u_normalized[:u_edge_idx+1] >= 0.99)[0]
+        delta_99 = y[delta_99_idx[0]] if len(delta_99_idx) > 0 else y[u_edge_idx]
+        
+        # Edge detection: Haase diagnostic
+        if len(y) > 2:
+            du_dy = np.abs(np.gradient(u, y))
+            diagnostic = y * du_dy
+            search_start = max(3, len(diagnostic) // 10)
+            search_end = min(u_edge_idx + 1, len(diagnostic))
+            if search_start < search_end:
+                max_idx = search_start + np.argmax(diagnostic[search_start:search_end])
+                delta_haase = 1.936 * y[max_idx]
+            else:
+                delta_haase = delta_99
+        else:
+            delta_haase = delta_99
+        
+        # Combined delta
+        if abs(delta_99 - delta_haase) / max(delta_99, delta_haase, 1e-10) < 0.5:
+            delta = (delta_99 + delta_haase) / 2
+            edge_method = "average(99%, Haase)"
+        else:
+            delta = min(delta_99, delta_haase)
+            edge_method = f"min(99%={delta_99:.4f}, Haase={delta_haase:.4f})"
+        
+        # Integral quantities within BL
+        bl_mask = y <= delta
+        y_bl = y[bl_mask]
+        u_bl = u_normalized[bl_mask]
+        
+        delta_star = np.trapz(1 - u_bl, y_bl) if len(y_bl) > 1 else 0.0
+        theta = np.trapz(u_bl * (1 - u_bl), y_bl) if len(y_bl) > 1 else 0.0
+        shape_factor = delta_star / theta if theta > 1e-10 else float('nan')
+        
+        # Span location
+        span_location = surface_point[span_idx]
+        span_fraction = (span_location - span_min) / span_extent if span_extent > 0 else 0
+        
+        return {
+            "y": y.tolist(),
+            "u": u.tolist(),
+            "u_normalized": u_normalized.tolist(),
+            "u_edge": float(u_edge),
+            "u_edge_idx": int(u_edge_idx),
+            "delta": float(delta),
+            "delta_99": float(delta_99),
+            "delta_haase": float(delta_haase),
+            "edge_method": edge_method,
+            "delta_star": float(delta_star),
+            "theta": float(theta),
+            "shape_factor": float(shape_factor),
+            "surface_point": surface_point.tolist(),
+            "surface_normal": surface_normal.tolist(),
+            "x_location": x_location,
+            "x_absolute": float(x_abs),
+            "x_over_chord": float(x_abs / chord) if chord > 0 else float(x_abs),
+            "span_location": float(span_location),
+            "span_fraction": float(span_fraction),
+            "geometry": {
+                "chord": float(chord),
+                "span_extent": float(span_extent),
+                "thickness": float(thickness),
+                "streamwise_axis": streamwise_axis,
+                "span_axis": span_axis,
+                "vertical_axis": vertical_axis
+            },
+            "probe_length": float(probe_length)
+        }

@@ -183,8 +183,9 @@ User Query: "Analyze the wake and explain drag"
 | `show_streamlines()` | Flow streamlines in wake region |
 | `show_slice(location, normal)` | Slice through wake or domain center |
 | `show_histogram(field)` | Field distribution chart |
-| `show_forces()` | Force distribution along body |
-| `show_boundary_layer(x_location)` | Boundary layer velocity profile |
+| `show_forces()` | Force distribution along body (uses projected frontal area for Cd) |
+| `show_boundary_layer(x_location)` | Boundary layer profile with δ, δ*, θ, H (Antares methodology) |
+| `show_flow_topology()` | Vortex core lines via VTK VortexCores filter |
 | `get_ontology()` | CFD domain knowledge for explanations |
 | `save_screenshot(filename)` | Save current view (3D or chart) |
 | `save_state(filename)` | Save full ParaView state for reproducibility |
@@ -243,6 +244,32 @@ The ontology provides CFD domain knowledge that helps the LLM explain results:
 ```
 
 The LLM retrieves this via `get_ontology()` when explaining visualizations. The ontology is for **explanation only** - it doesn't control workflow execution.
+
+## Key Analysis Features
+
+### Boundary Layer Analysis
+
+`show_boundary_layer(x_location)` provides comprehensive boundary layer characterization:
+
+- **Surface-normal probing**: Automatically detects body surface and probes perpendicular to it
+- **Multiple edge detection criteria** (following Antares/CERFACS methodology):
+  - 99% of local edge velocity
+  - Haase diagnostic function: y × |du/dy| maximum
+- **Integral quantities**: δ (thickness), δ* (displacement), θ (momentum), H (shape factor)
+- **Flow state indication**: H ≈ 1.3-1.4 turbulent, H ≈ 2.6 laminar
+
+### Projected Frontal Area
+
+`compute_projected_area()` uses rasterization for accurate reference area:
+
+- Renders body surface with orthographic projection aligned with flow
+- Counts non-background pixels to compute area
+- Handles complex geometries, hidden surfaces, and concavities
+- Used automatically by `compute_forces()` for accurate Cd/Cl
+
+### Flow Topology
+
+`show_flow_topology()` extracts vortex core lines using VTK's VortexCores filter, which is more appropriate for external aerodynamics than critical point analysis (which finds spurious points on no-slip walls).
 
 ## Cost Tracking
 

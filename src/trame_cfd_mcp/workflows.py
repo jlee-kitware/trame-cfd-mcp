@@ -274,16 +274,25 @@ class CFDWorkflows:
     def show_slice(
         self,
         location: str = "wake",
-        normal: str = "x",
-        color_by: str = "Velocity"
+        normal: str = "auto",
+        offset: float = 0.0,
+        color_by: str = "Velocity",
+        representation: str = "Surface"
     ) -> dict:
         """
         Show a slice through the data.
         
         Args:
-            location: "wake" (at wake centroid) or "center" (domain center)
-            normal: Slice normal - "x", "y", or "z" (default: "x" for wake slices)
+            location: Where to place the slice:
+                - "wake": At wake centroid, normal to streamwise direction
+                - "center": At body center
+                - "span" or "spanwise": Perpendicular to span direction (for airfoil sections)
+            normal: Slice normal direction:
+                - "auto": Determined by location (streamwise for wake, span for spanwise)
+                - "x", "y", "z": Explicit axis
+            offset: For "span" location, offset from center as fraction of span (-1 to 1)
             color_by: Field to color by (default: "Velocity")
+            representation: "Surface" or "Surface LIC" for flow patterns
             
         Returns:
             Dict with visualization info including proxy_name
@@ -295,35 +304,64 @@ class CFDWorkflows:
         # Hide all first
         self._mcp.hide_all()
         
-        # Determine slice origin
-        if location == "wake":
-            wake = self._mcp.detect_wake_region(proxy_name=proxy_name)
-            if "error" in wake:
-                # Fallback: use streamline seed location (has better fallback logic)
-                seed = self._mcp.compute_streamline_seed(proxy_name=proxy_name)
-                if "error" not in seed:
-                    origin = seed["center"]
-                    location = "downstream (wake detection failed)"
-                else:
-                    # Last resort: domain center
-                    params = self._mcp.compute_slice_params(normal=normal, proxy_name=proxy_name)
-                    if "error" in params:
-                        return params
-                    origin = params["origin"]
-                    location = "center (wake detection failed)"
-            else:
-                origin = wake["wake_centroid"]
-        elif location == "center":
-            params = self._mcp.compute_slice_params(normal=normal, proxy_name=proxy_name)
-            if "error" in params:
-                return params
-            origin = params["origin"]
+        # Determine slice parameters based on location
+        if location in ("span", "spanwise"):
+            # Use spanwise slice params from extended_mcp
+            slice_params = self._mcp.compute_spanwise_slice_params(
+                offset=offset, 
+                proxy_name=proxy_name
+            )
+            if "error" in slice_params:
+                return slice_params
+            
+            origin = slice_params["origin"]
+            slice_normal = slice_params["normal_axis"] if normal == "auto" else normal
+            span_axis = slice_params["normal_axis"]
+            streamwise_axis = slice_params["streamwise_axis"]
+            body_bounds = slice_params["body_bounds"]
+            location = f"span (offset={offset:.2f})"
+            
         else:
-            return {"error": f"Unknown location: {location}. Use 'wake' or 'center'"}
+            # Get span info for metadata
+            span_info = self._mcp.detect_span_direction(proxy_name=proxy_name)
+            span_axis = span_info.get("span_axis", "z")
+            streamwise_axis = span_info.get("streamwise_axis", "x")
+            body_bounds = span_info.get("body_bounds")
+            
+            if location == "wake":
+                wake = self._mcp.detect_wake_region(proxy_name=proxy_name)
+                if "error" in wake:
+                    seed = self._mcp.compute_streamline_seed(proxy_name=proxy_name)
+                    if "error" not in seed:
+                        origin = seed["center"]
+                        location = "downstream (wake detection failed)"
+                    else:
+                        params = self._mcp.compute_slice_params(normal=normal if normal != "auto" else "x", proxy_name=proxy_name)
+                        if "error" in params:
+                            return params
+                        origin = params["origin"]
+                        location = "center (wake detection failed)"
+                else:
+                    origin = wake["wake_centroid"]
+                slice_normal = streamwise_axis if normal == "auto" else normal
+                
+            elif location == "center":
+                params = self._mcp.compute_slice_params(normal=normal if normal != "auto" else "x", proxy_name=proxy_name)
+                if "error" in params:
+                    return params
+                origin = params["origin"]
+                slice_normal = normal if normal != "auto" else "x"
+                
+            else:
+                return {"error": f"Unknown location: {location}. Use 'wake', 'center', or 'span'"}
         
         # Normal vector
         normal_map = {"x": [1,0,0], "y": [0,1,0], "z": [0,0,1]}
-        normal_vec = normal_map.get(normal.lower(), [1,0,0])
+        normal_vec = normal_map.get(slice_normal.lower(), [1,0,0])
+        
+        # For span slices, show body context first
+        if location.startswith("span"):
+            self._mcp.show_data_context(proxy_name=proxy_name, opacity=0.3)
         
         # Create slice
         slice_filter = simple.Slice(Input=proxy)
@@ -332,20 +370,32 @@ class CFDWorkflows:
         slice_filter.SliceType.Normal = normal_vec
         simple.UpdatePipeline(proxy=slice_filter)
         
-        # Show and color
+        # Show with representation
         display = simple.Show(slice_filter, view)
-        color_array = self._mcp._resolve_field_type(color_by, slice_filter)
-        if color_array:
-            simple.ColorBy(display, ('POINTS', color_array))
-            display.RescaleTransferFunctionToDataRange(True, False)
-            display.SetScalarBarVisibility(view, True)
+        
+        if representation == "Surface LIC" and "Surface LIC" in display.Representation.Available:
+            display.Representation = "Surface LIC"
+            display.SelectInputVectors = ['POINTS', 'Velocity']
+            color_array = "Velocity (LIC)"
+        else:
+            display.Representation = "Surface"
+            color_array = self._mcp._resolve_field_type(color_by, slice_filter)
+            if color_array:
+                simple.ColorBy(display, ('POINTS', color_array))
+                display.RescaleTransferFunctionToDataRange(True, False)
+                display.SetScalarBarVisibility(view, True)
         
         # Set view perpendicular to slice
-        self._mcp.set_view(direction=f"-{normal}")
+        self._mcp.set_view(direction=f"-{slice_normal}")
         
-        # Focus
-        bounds = slice_filter.GetDataInformation().GetBounds()
-        view.ResetCamera(*bounds, False, 0.9)
+        # Focus on slice (zoom to body region for span slices)
+        if location.startswith("span") and body_bounds:
+            view.ResetCamera(body_bounds[0], body_bounds[1], 
+                           body_bounds[2], body_bounds[3], 
+                           body_bounds[4], body_bounds[5], False, 0.9)
+        else:
+            bounds = slice_filter.GetDataInformation().GetBounds()
+            view.ResetCamera(*bounds, False, 0.9)
         simple.Render(view)
         
         # Get name
@@ -359,22 +409,27 @@ class CFDWorkflows:
             "status": "created",
             "type": "slice",
             "proxy_name": slice_name,
+            "span_axis": span_axis,
+            "streamwise_axis": streamwise_axis,
             "provenance": {
                 "dataset": self._get_dataset_filename(proxy),
                 "filter_chain": ["Slice"],
                 "arrays_used": [color_array or color_by],
                 "parameters": {
                     "origin": list(origin),
-                    "normal": normal,
+                    "normal": slice_normal,
                     "location": location,
-                    "color_by": color_array or color_by
+                    "offset": offset,
+                    "color_by": color_by,
+                    "representation": representation
                 }
             },
             "interpretation": {
                 "location_type": location,
-                "claim": f"Slice shows {color_array or color_by} distribution on a plane. Wake slices reveal base pressure deficit."
-            },
-            "tip": f"Slice at {normal}-normal through {location}. Use location='center' for domain center."
+                "claim": f"Slice shows {color_array or color_by} distribution. " +
+                         ("Spanwise slice shows airfoil section flow pattern." if location.startswith("span") else
+                          "Wake slice reveals velocity deficit and pressure recovery.")
+            }
         }
 
     def show_histogram(
@@ -422,23 +477,25 @@ class CFDWorkflows:
         
         return result
 
-    def show_boundary_layer(self, x_location: float = 0.5, probe_length: float = 0.3) -> dict:
+    def show_boundary_layer(self, x_location: float = 0.5, probe_length: float = None) -> dict:
         """
         Show boundary layer velocity profile at a given x-location.
         
         Creates a line probe normal to the body surface and plots velocity vs distance from wall.
+        Uses surface-normal probing with multiple edge detection criteria following
+        Antares/CERFACS methodology.
         
         Args:
-            x_location: X-coordinate where to probe (default: 0.5)
-            probe_length: How far to probe into the flow (default: 0.3)
+            x_location: Streamwise location - either absolute coordinate or fraction (0-1) of chord
+            probe_length: How far to probe into the flow (default: 30% of chord)
             
         Returns:
-            Dict with boundary layer profile data
+            Dict with boundary layer profile data including delta, delta*, theta, H
         """
         import numpy as np
-        from vtk.util.numpy_support import vtk_to_numpy
+        import tempfile
+        import os
         
-        view = simple.GetActiveView()
         proxy = self._get_data_reader()
         if proxy is None:
             return {"error": "No data reader found"}
@@ -448,179 +505,174 @@ class CFDWorkflows:
         # Hide all first
         self._mcp.hide_all()
         
-        # Merge blocks
-        merge = simple.MergeBlocks(Input=proxy)
-        simple.UpdatePipeline(proxy=merge)
+        # Compute boundary layer profile using extended_mcp
+        bl_data = self._mcp.compute_boundary_layer_profile(
+            proxy=proxy, 
+            x_location=x_location, 
+            probe_length=probe_length,
+            proxy_name=proxy_name
+        )
         
-        # Get domain center for normal orientation
-        di = merge.GetDataInformation()
-        bounds = di.GetBounds()
-        domain_center = np.array([(bounds[0]+bounds[1])/2, (bounds[2]+bounds[3])/2, (bounds[4]+bounds[5])/2])
+        if "error" in bl_data:
+            return bl_data
         
-        # Extract surface and compute normals
-        surface = simple.ExtractSurface(Input=merge)
-        simple.UpdatePipeline(proxy=surface)
+        # Extract data for plotting
+        y = np.array(bl_data["y"])
+        u_normalized = np.array(bl_data["u_normalized"])
+        u = np.array(bl_data["u"])
+        delta = bl_data["delta"]
+        u_edge_idx = bl_data["u_edge_idx"]
         
-        normals = simple.SurfaceNormals(Input=surface)
-        simple.UpdatePipeline(proxy=normals)
+        # Truncate plot at 3x delta or edge velocity location
+        plot_limit = min(3 * delta, y[u_edge_idx]) if delta > 0 else y[u_edge_idx]
+        plot_mask = y <= plot_limit
         
-        data = normals.GetClientSideObject().GetOutput()
-        points = vtk_to_numpy(data.GetPoints().GetData())
-        normal_arr = vtk_to_numpy(data.GetPointData().GetArray('Normals'))
-        
-        # Find surface point near x_location on centerline (z~0)
-        mask = (np.abs(points[:,0] - x_location) < 0.1) & (np.abs(points[:,2]) < 0.2) & (points[:,1] > 0.01) & (points[:,1] < 1.0)
-        candidates = np.where(mask)[0]
-        
-        if len(candidates) == 0:
-            # Try wider search
-            mask = np.abs(points[:,0] - x_location) < 0.3
-            candidates = np.where(mask)[0]
-        
-        if len(candidates) == 0:
-            simple.Delete(normals)
-            simple.Delete(surface)
-            simple.Delete(merge)
-            return {"error": f"No surface point found near x={x_location}"}
-        
-        # Pick point with smallest y (closest to body surface, but above symmetry plane)
-        y_vals = points[candidates, 1]
-        best_idx = candidates[np.argmin(y_vals)]
-        
-        surface_point = points[best_idx]
-        surface_normal = normal_arr[best_idx]
-        
-        # Flip normal if pointing away from domain center (we want it pointing into fluid)
-        to_center = domain_center - surface_point
-        if np.dot(surface_normal, to_center) < 0:
-            surface_normal = -surface_normal
-        
-        # Create line probe
-        end_point = surface_point + probe_length * surface_normal
-        
-        line = simple.PlotOverLine(Input=merge)
-        line.Point1 = surface_point.tolist()
-        line.Point2 = end_point.tolist()
-        line.Resolution = 50
-        simple.UpdatePipeline(proxy=line)
-        
-        # Extract profile data
-        line_data = line.GetClientSideObject().GetOutput()
-        if line_data.GetNumberOfPoints() == 0:
-            simple.Delete(line)
-            simple.Delete(normals)
-            simple.Delete(surface)
-            simple.Delete(merge)
-            return {"error": "Line probe returned no points"}
-        
-        arc_length = vtk_to_numpy(line_data.GetPointData().GetArray('arc_length'))
-        velocity = vtk_to_numpy(line_data.GetPointData().GetArray('Velocity'))
-        u_mag = np.linalg.norm(velocity, axis=1)
-        
-        # Filter NaN
-        valid = ~np.isnan(u_mag)
-        arc_length = arc_length[valid]
-        u_mag = u_mag[valid]
-        
-        if len(arc_length) == 0:
-            simple.Delete(line)
-            simple.Delete(normals)
-            simple.Delete(surface)
-            simple.Delete(merge)
-            return {"error": "No valid velocity data in probe"}
-        
-        # Compute boundary layer properties
-        u_inf = u_mag[-1] if len(u_mag) > 1 else u_mag[0]
-        u_normalized = u_mag / u_inf if u_inf > 0 else u_mag
-        
-        # Find delta (BL thickness) - where u/U_inf reaches 0.99
-        delta_idx = np.where(u_normalized >= 0.99)[0]
-        delta = arc_length[delta_idx[0]] if len(delta_idx) > 0 else arc_length[-1]
-        
-        # Integrate only within the boundary layer (up to delta) for proper BL integrals
-        bl_mask = arc_length <= delta
-        y_bl = arc_length[bl_mask]
-        u_bl = u_normalized[bl_mask]
-        
-        # Compute displacement thickness: δ* = ∫(1 - u/U∞) dy
-        delta_star = np.trapz(1 - u_bl, y_bl) if len(y_bl) > 1 else 0.0
-        
-        # Compute momentum thickness: θ = ∫(u/U∞)(1 - u/U∞) dy
-        theta = np.trapz(u_bl * (1 - u_bl), y_bl) if len(y_bl) > 1 else 0.0
-        
-        # Shape factor H = δ*/θ (H ≈ 2.6 laminar, H ≈ 1.3-1.4 turbulent)
-        shape_factor = delta_star / theta if theta > 1e-10 else float('nan')
-        
-        # Create XY chart
-        import tempfile
-        import os
-        
+        # Write CSV for chart
         csv_path = os.path.join(tempfile.gettempdir(), 'boundary_layer.csv')
         with open(csv_path, 'w') as f:
-            f.write('Distance,Velocity,u_over_Uinf\n')
-            for i in range(len(arc_length)):
-                f.write(f'{arc_length[i]:.6f},{u_mag[i]:.6f},{u_normalized[i]:.6f}\n')
+            f.write('y,u,u_over_Ue\n')
+            for i in np.where(plot_mask)[0]:
+                f.write(f'{y[i]:.6f},{u[i]:.6f},{u_normalized[i]:.6f}\n')
         
         original_view = simple.GetActiveView()
         
         table = simple.CSVReader(FileName=[csv_path])
         simple.UpdatePipeline(proxy=table)
         
+        # Chart title with location info
+        geom = bl_data["geometry"]
+        span_axis = geom["span_axis"]
+        x_over_chord = bl_data["x_over_chord"]
+        span_location = bl_data["span_location"]
+        span_fraction = bl_data["span_fraction"]
+        
         chart_view = simple.CreateXYPlotView()
-        chart_view.ViewSize = [800, 400]
-        chart_view.ChartTitle = f'Boundary Layer Profile at x={x_location:.2f}'
-        chart_view.BottomAxisTitle = 'Distance from wall'
-        chart_view.LeftAxisTitle = 'u / U∞'
+        chart_view.ViewSize = [600, 500]
+        chart_view.ChartTitle = f'Boundary Layer Profile at x/c={x_over_chord:.2f}, {span_axis}={span_location:.3f} ({span_fraction*100:.0f}% span)'
+        chart_view.BottomAxisTitle = 'u / Ue'
+        chart_view.LeftAxisTitle = 'y (distance from wall)'
+        chart_view.ShowLegend = 0
         
         display = simple.Show(table, chart_view)
-        display.XArrayName = 'Distance'
+        display.XArrayName = 'u_over_Ue'
         display.UseIndexForXAxis = 0
-        display.SeriesVisibility = ['u_over_Uinf']
-        display.SeriesColor = ['u_over_Uinf', '0', '0', '0.8']
-        display.SeriesLineThickness = ['u_over_Uinf', '2']
+        display.SeriesVisibility = ['y']
+        display.SeriesColor = ['y', '0', '0', '0.8']
+        display.SeriesLineThickness = ['y', '2']
         
         simple.Render(chart_view)
         self._mcp._chart_view_queue.append(chart_view)
         
-        # Restore view
         if original_view:
             simple.SetActiveView(original_view)
         
-        # Cleanup temporary filters
-        simple.Delete(normals)
-        simple.Delete(surface)
-        
+        # Build result with provenance
         result = {
             "status": "created",
             "type": "boundary_layer_profile",
-            "x_location": x_location,
-            "surface_point": surface_point.tolist(),
-            "surface_normal": surface_normal.tolist(),
-            "num_points": len(arc_length),
-            "u_infinity": float(u_inf),
-            "delta": float(delta),
-            "delta_star": float(delta_star),
-            "theta": float(theta),
-            "shape_factor": float(shape_factor),
+            "x_location": bl_data["x_location"],
+            "x_absolute": bl_data["x_absolute"],
+            "x_over_chord": bl_data["x_over_chord"],
+            "span_location": bl_data["span_location"],
+            "span_fraction": bl_data["span_fraction"],
+            "surface_point": bl_data["surface_point"],
+            "surface_normal": bl_data["surface_normal"],
+            "num_points": len(y),
+            "u_edge": bl_data["u_edge"],
+            "delta": bl_data["delta"],
+            "delta_99": bl_data["delta_99"],
+            "delta_haase": bl_data["delta_haase"],
+            "edge_method": bl_data["edge_method"],
+            "delta_star": bl_data["delta_star"],
+            "theta": bl_data["theta"],
+            "shape_factor": bl_data["shape_factor"],
+            "geometry": bl_data["geometry"],
             "provenance": {
                 "dataset": self._get_dataset_filename(proxy),
                 "filter_chain": ["MergeBlocks", "ExtractSurface", "SurfaceNormals", "PlotOverLine"],
                 "arrays_used": ["Velocity", "Normals"],
                 "parameters": {
                     "x_location": x_location,
-                    "probe_length": probe_length
+                    "x_absolute": bl_data["x_absolute"],
+                    "probe_length": bl_data["probe_length"]
                 }
             },
             "interpretation": {
-                "delta": float(delta),
-                "delta_star": float(delta_star),
-                "theta": float(theta),
-                "shape_factor": float(shape_factor),
-                "u_infinity": float(u_inf),
-                "claim": f"Boundary layer at x={x_location:.2f}: δ={delta:.4f}, δ*={delta_star:.4f}, θ={theta:.4f}, H={shape_factor:.2f}. " +
-                         ("H ≈ 1.3-1.4 suggests turbulent BL." if 1.2 < shape_factor < 1.6 else
-                          "H ≈ 2.6 suggests laminar BL." if 2.4 < shape_factor < 2.8 else
+                "delta": bl_data["delta"],
+                "delta_star": bl_data["delta_star"],
+                "theta": bl_data["theta"],
+                "shape_factor": bl_data["shape_factor"],
+                "u_edge": bl_data["u_edge"],
+                "claim": f"Boundary layer at x/c={x_over_chord:.2f}: δ={bl_data['delta']:.4f}, δ*={bl_data['delta_star']:.4f}, θ={bl_data['theta']:.4f}, H={bl_data['shape_factor']:.2f}. " +
+                         ("H ≈ 1.3-1.4 suggests turbulent BL." if 1.2 < bl_data['shape_factor'] < 1.6 else
+                          "H ≈ 2.6 suggests laminar BL." if 2.4 < bl_data['shape_factor'] < 2.8 else
                           "Shape factor indicates transitional or separated flow.")
+            }
+        }
+        
+        return result
+
+    def show_flow_topology(self) -> dict:
+        """
+        Show flow topology using vortex core detection.
+        
+        Uses VTK's VortexCores filter to identify vortex core lines in the flow.
+        This is more appropriate for external aerodynamics than critical point
+        analysis, which finds spurious points on no-slip walls.
+        
+        Returns:
+            Dict with vortex core information
+        """
+        view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        if proxy is None:
+            return {"error": "No data reader found"}
+        
+        # Hide all first
+        self._mcp.hide_all()
+        
+        # Get vortex cores from compute function
+        topo_data = self._mcp.compute_flow_topology(
+            proxy_name=self._get_proxy_name(proxy)
+        )
+        
+        if "error" in topo_data:
+            return topo_data
+        
+        n_cores = topo_data["n_cores"]
+        n_points = topo_data["n_points"]
+        bounds = topo_data["bounds"]
+        vortex_filter = topo_data["vortex_filter"]
+        
+        # Visualize vortex cores
+        if n_cores > 0:
+            display = simple.Show(vortex_filter, view)
+            display.Representation = 'Surface'
+            display.LineWidth = 3.0
+            display.AmbientColor = [1.0, 0.2, 0.2]  # Red
+            display.DiffuseColor = [1.0, 0.2, 0.2]
+            simple.RenameSource('VortexCores', vortex_filter)
+        
+        simple.ResetCamera(view)
+        simple.Render(view)
+        
+        result = {
+            "status": "created",
+            "type": "flow_topology",
+            "vortex_cores": n_cores,
+            "vortex_points": n_points,
+            "bounds": bounds,
+            "provenance": {
+                "dataset": self._get_dataset_filename(proxy),
+                "filter_chain": ["MergeBlocks", "VortexCores"],
+                "arrays_used": ["Velocity"],
+                "parameters": {}
+            },
+            "interpretation": {
+                "vortex_cores": n_cores,
+                "claim": f"Found {n_cores} vortex core line segments with {n_points} points. " +
+                         (f"Cores extend from x=[{bounds['x'][0]:.2f}, {bounds['x'][1]:.2f}]. " if bounds else "") +
+                         "Vortex cores indicate regions of concentrated rotation in the flow."
             }
         }
         

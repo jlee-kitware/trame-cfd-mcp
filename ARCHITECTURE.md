@@ -134,15 +134,20 @@ Implementation of workflow tools. Each method:
 
 40+ CFD analysis tools. Two categories:
 
-**Analysis tools** (return data, no visualization):
-- `compute_vortex_field` → threshold, field_range
-- `detect_wake_region` → centroid, bounds
-- `compute_forces` → Cd, Cl, distribution
+**Compute tools** (return data, no visualization):
+- `compute_vortex_field` → Q-criterion, vorticity, or lambda2 field
+- `compute_forces` → Cd, Cl using projected frontal area
+- `compute_projected_area` → Rasterized frontal area for accurate Cd
+- `compute_boundary_layer_profile` → δ, δ*, θ, H via surface-normal probing
+- `compute_flow_topology` → Vortex core lines via VTK VortexCores
+- `detect_wake_region` → Wake centroid and bounds
 
 **Visualization tools** (create ParaView objects):
 - `create` → generic filter creation
 - `update_property` → set filter properties
 - `focus_on` → camera setup
+
+The separation between compute and visualization tools allows workflows to get data first, then create appropriate visualizations. Compute-heavy operations are centralized in ExtendedParaViewMCP while workflows in CFDWorkflows handle visualization and user-facing output.
 
 ### Ontology (ontology.json)
 

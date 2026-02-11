@@ -69,6 +69,18 @@
         "shape_factor": "H = δ*/θ, indicates flow state: H ≈ 2.6 (laminar), H ≈ 1.3-1.4 (turbulent), H > 3 suggests separation"
       },
       "design_relevance": "Thin BL = less drag, thick BL = more momentum loss. High H suggests separation risk. θ growth rate indicates skin friction drag."
+    },
+    
+    "flow_topology": {
+      "description": "Critical points and separatrices extracted from velocity field",
+      "critical_point_types": {
+        "source": "Repelling node/focus - flow emanates outward, typically indicates attachment point",
+        "sink": "Attracting node/focus - flow converges inward, typically indicates separation point",
+        "saddle": "Flow approaches along one axis and departs along another, marks separation/attachment lines"
+      },
+      "separatrices": "Lines connecting saddle points that divide flow into distinct regions. Separation lines lead to sinks, attachment lines lead from sources.",
+      "interpretation": "Saddle points on a body surface indicate where flow separates or attaches. Number and location of critical points characterizes overall flow pattern.",
+      "design_relevance": "Moving separation points downstream reduces wake size and drag. Saddle-sink pairs on the surface indicate separation zones."
     }
   },
   
@@ -104,6 +116,11 @@
     "boundary_layer_analysis": {
       "primary": "show_boundary_layer",
       "supporting": ["show_slice"],
+      "metrics": ["analyze_data"]
+    },
+    "separation_analysis": {
+      "primary": "show_flow_topology",
+      "supporting": ["show_streamlines", "show_boundary_layer"],
       "metrics": ["analyze_data"]
     }
   }
