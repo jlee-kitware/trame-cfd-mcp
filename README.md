@@ -149,7 +149,7 @@ User Query: "Analyze the wake and explain drag"
                     │
                     ▼
         ┌───────────────────────┐
-        │   ExtendedParaViewMCP │  CFD analysis tools      ─┐
+        │   CFDAnalysis         │  CFD analysis tools      ─┐
         │  - compute_vortex_field()                         │ trame-cfd-mcp
         │  - detect_wake_region()                           │
         │  - compute_forces()   │                          ─┘
@@ -313,15 +313,16 @@ All tests save:
 ```
 src/trame_cfd_mcp/
 ├── __init__.py          # Package exports
-├── workflow_mcp.py      # High-level workflow tools (12 tools)
+├── workflow_mcp.py      # High-level workflow tools (20 tools)
 ├── workflows.py         # Workflow implementations
-├── extended_mcp.py      # CFD analysis tools (40+ tools)
+├── cfd_analysis.py      # CFD analysis tools (40+ tools)
 ├── ontology.json        # CFD domain knowledge
 └── cost_tracker.py      # Token/cost tracking
 
 examples/cfd_assistant/
 ├── test_utils.py        # Shared test utilities
 ├── test_workflows.py    # Test individual workflows
+├── test_refinement.py   # Test workflow + refinement pattern
 ├── test_ontology.py     # Test explanation capability
 ├── test_analysis.py     # Test multi-step reasoning
 └── test.vtm             # Sample CFD dataset

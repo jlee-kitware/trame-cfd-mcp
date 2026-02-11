@@ -18,10 +18,10 @@ Usage:
     llm.print_report()  # Token usage and cost
 """
 
-from .extended_mcp import ExtendedParaViewMCP
+from .cfd_analysis import CFDAnalysis
 from .workflow_mcp import WorkflowMCP
 from .workflows import CFDWorkflows
 from .cost_tracker import TrackedLLMClient, UsageStats
 
-__all__ = ["ExtendedParaViewMCP", "WorkflowMCP", "CFDWorkflows", "TrackedLLMClient", "UsageStats"]
+__all__ = ["CFDAnalysis", "WorkflowMCP", "CFDWorkflows", "TrackedLLMClient", "UsageStats"]
 __version__ = "0.1.0"

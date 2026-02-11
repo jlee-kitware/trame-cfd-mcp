@@ -126,11 +126,11 @@ High-level interface exposed to LLM. 11 tools:
 
 Implementation of workflow tools. Each method:
 1. Gets data reader explicitly (not active source)
-2. Calls ExtendedParaViewMCP analysis methods
+2. Calls CFDAnalysis analysis methods
 3. Creates ParaView filters/sources
 4. Returns rich result dict
 
-### ExtendedParaViewMCP
+### CFDAnalysis
 
 40+ CFD analysis tools. Two categories:
 
@@ -147,7 +147,7 @@ Implementation of workflow tools. Each method:
 - `update_property` → set filter properties
 - `focus_on` → camera setup
 
-The separation between compute and visualization tools allows workflows to get data first, then create appropriate visualizations. Compute-heavy operations are centralized in ExtendedParaViewMCP while workflows in CFDWorkflows handle visualization and user-facing output.
+The separation between compute and visualization tools allows workflows to get data first, then create appropriate visualizations. Compute-heavy operations are centralized in CFDAnalysis while workflows in CFDWorkflows handle visualization and user-facing output.
 
 ### Ontology (ontology.json)
 

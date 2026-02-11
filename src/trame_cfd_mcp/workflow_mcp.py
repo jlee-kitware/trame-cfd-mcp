@@ -10,7 +10,7 @@ Ontology provides domain knowledge for explanations.
 import json
 import os
 from paraview import simple
-from .extended_mcp import ExtendedParaViewMCP
+from .cfd_analysis import CFDAnalysis
 from .workflows import CFDWorkflows
 
 
@@ -31,8 +31,8 @@ class WorkflowMCP:
             base_mcp: ParaViewMCP instance from trame-llm
         """
         self._base_mcp = base_mcp
-        self._extended = ExtendedParaViewMCP(base_mcp)
-        self._workflows = CFDWorkflows(self._extended)
+        self._analysis = CFDAnalysis(base_mcp)
+        self._workflows = CFDWorkflows(self._analysis)
         self._ontology = CFD_ONTOLOGY
     
     @property
@@ -52,7 +52,7 @@ class WorkflowMCP:
             - filters: List of filters created
             - active_source: Currently active proxy
         """
-        result = self._extended.list_data()
+        result = self._analysis.list_data()
         result["tip"] = "Use proxy names from this list with refinement tools like update_representation()"
         return result
     
@@ -73,7 +73,7 @@ class WorkflowMCP:
         Returns:
             Dict with filename and status
         """
-        result = self._extended.save_screenshot(filename, width, height)
+        result = self._analysis.save_screenshot(filename, width, height)
         if "error" not in result:
             result["tip"] = "Screenshot saved. Use set_view() to change camera angle before saving another."
         return result
@@ -91,7 +91,7 @@ class WorkflowMCP:
         Tip:
             Use before save_screenshot() to capture different angles.
         """
-        result = self._extended.set_view(direction)
+        result = self._analysis.set_view(direction)
         if "error" not in result:
             result["tip"] = "Camera set. Call save_screenshot() to capture this view."
         return result

@@ -1,5 +1,5 @@
 """
-ExtendedParaViewMCP - CFD Analysis Implementation
+CFD Analysis - Domain-specific analysis functions for CFD visualization.
 
 Provides CFD analysis methods used by WorkflowMCP workflows.
 Not intended for direct LLM use - use WorkflowMCP instead.
@@ -29,7 +29,7 @@ FIELD_TYPE_PATTERNS = {
 }
 
 
-class ExtendedParaViewMCP:
+class CFDAnalysis:
     """
     CFD analysis methods for ParaView.
     
@@ -38,7 +38,7 @@ class ExtendedParaViewMCP:
     
     Usage:
         # Don't use directly - use WorkflowMCP instead:
-        from paraview_llm import WorkflowMCP
+        from trame_cfd_mcp import WorkflowMCP
         workflow_mcp = WorkflowMCP(base_mcp)
         llm_client.register_mcp(workflow_mcp)
     """
@@ -171,7 +171,7 @@ class ExtendedParaViewMCP:
         that execute deterministically.
         """
         raise NotImplementedError(
-            "ExtendedParaViewMCP.mcp is deprecated. Use WorkflowMCP instead:\n"
+            "CFDAnalysis.mcp is deprecated. Use WorkflowMCP instead:\n"
             "  workflow_mcp = WorkflowMCP(base_mcp)\n"
             "  llm.register_mcp(workflow_mcp)"
         )

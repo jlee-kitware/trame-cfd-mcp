@@ -12,14 +12,14 @@ from paraview import simple
 class CFDWorkflows:
     """High-level workflow tools for CFD visualization."""
     
-    def __init__(self, extended_mcp):
+    def __init__(self, cfd_analysis):
         """
-        Initialize with reference to ExtendedParaViewMCP for internal tool access.
+        Initialize with reference to CFDAnalysis for internal tool access.
         
         Args:
-            extended_mcp: ExtendedParaViewMCP instance
+            cfd_analysis: CFDAnalysis instance
         """
-        self._mcp = extended_mcp
+        self._mcp = cfd_analysis  # Keep as _mcp for minimal code changes
     
     def _get_data_reader(self):
         """Get the original data reader (not CSV/temporary readers)."""
@@ -307,7 +307,7 @@ class CFDWorkflows:
         
         # Determine slice parameters based on location
         if location in ("span", "spanwise"):
-            # Use spanwise slice params from extended_mcp
+            # Use spanwise slice params from cfd_analysis
             slice_params = self._mcp.compute_spanwise_slice_params(
                 offset=offset, 
                 proxy_name=proxy_name
@@ -508,7 +508,7 @@ class CFDWorkflows:
         # Hide all first
         self._mcp.hide_all()
         
-        # Compute boundary layer profile using extended_mcp
+        # Compute boundary layer profile using cfd_analysis
         bl_data = self._mcp.compute_boundary_layer_profile(
             proxy=proxy, 
             x_location=x_location, 
