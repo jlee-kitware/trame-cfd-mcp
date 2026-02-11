@@ -39,7 +39,7 @@ This separation is critical:
 │  Decides: show_streamlines, show_slice, show_forces,        │
 │           get_ontology, save_screenshot                     │
 │                                                             │
-│  Multiple tool calls in one response (parallel execution)   │
+│  Multiple tool calls in one response (batched execution)    │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
