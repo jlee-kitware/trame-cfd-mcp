@@ -46,7 +46,7 @@ class ExtendedParaViewMCP:
     def __init__(self, paraview_mcp):
         self._base = paraview_mcp
         self.base_mcp = paraview_mcp  # Also expose as base_mcp for convenience
-        self._last_chart_view = None
+        self._chart_view_queue = []
         self._body_bounds_cache = {}
     
     def _resolve_field_type(self, field_type: str, proxy) -> str:
@@ -2020,7 +2020,7 @@ out.GetPointData().AddArray(arr)
             display = simple.Show(hist, chart_view)
             simple.Render(chart_view)
             
-            self._last_chart_view = chart_view
+            self._chart_view_queue.append(chart_view)
             
             if merge:
                 simple.Delete(merge)
@@ -2111,7 +2111,7 @@ out.GetPointData().AddArray(arr)
             display.SeriesLineThickness = ['Accumulated_Force', '2', 'Sectional_Force', '2']
             
             simple.Render(chart_view)
-            self._last_chart_view = chart_view
+            self._chart_view_queue.append(chart_view)
             
             # Restore active source and view
             if original_source:
@@ -2875,13 +2875,12 @@ out.GetPointData().AddArray(arr)
         Returns:
             Dict with filename and status
         """
-        # Check if a chart was just created - if so, save that instead
-        view = getattr(self, '_last_chart_view', None)
-        if view is None:
-            view = simple.GetActiveView()
+        # Check if chart views were created - use them in order (FIFO)
+        chart_views = getattr(self, '_chart_view_queue', [])
+        if chart_views:
+            view = chart_views.pop(0)  # Take first (oldest)
         else:
-            # Clear after use so next screenshot uses active view
-            self._last_chart_view = None
+            view = simple.GetActiveView()
         
         if view is None:
             return {"error": "No active view"}

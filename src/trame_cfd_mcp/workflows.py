@@ -422,6 +422,210 @@ class CFDWorkflows:
         
         return result
 
+    def show_boundary_layer(self, x_location: float = 0.5, probe_length: float = 0.3) -> dict:
+        """
+        Show boundary layer velocity profile at a given x-location.
+        
+        Creates a line probe normal to the body surface and plots velocity vs distance from wall.
+        
+        Args:
+            x_location: X-coordinate where to probe (default: 0.5)
+            probe_length: How far to probe into the flow (default: 0.3)
+            
+        Returns:
+            Dict with boundary layer profile data
+        """
+        import numpy as np
+        from vtk.util.numpy_support import vtk_to_numpy
+        
+        view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        if proxy is None:
+            return {"error": "No data reader found"}
+        
+        proxy_name = self._get_proxy_name(proxy)
+        
+        # Hide all first
+        self._mcp.hide_all()
+        
+        # Merge blocks
+        merge = simple.MergeBlocks(Input=proxy)
+        simple.UpdatePipeline(proxy=merge)
+        
+        # Get domain center for normal orientation
+        di = merge.GetDataInformation()
+        bounds = di.GetBounds()
+        domain_center = np.array([(bounds[0]+bounds[1])/2, (bounds[2]+bounds[3])/2, (bounds[4]+bounds[5])/2])
+        
+        # Extract surface and compute normals
+        surface = simple.ExtractSurface(Input=merge)
+        simple.UpdatePipeline(proxy=surface)
+        
+        normals = simple.SurfaceNormals(Input=surface)
+        simple.UpdatePipeline(proxy=normals)
+        
+        data = normals.GetClientSideObject().GetOutput()
+        points = vtk_to_numpy(data.GetPoints().GetData())
+        normal_arr = vtk_to_numpy(data.GetPointData().GetArray('Normals'))
+        
+        # Find surface point near x_location on centerline (z~0)
+        mask = (np.abs(points[:,0] - x_location) < 0.1) & (np.abs(points[:,2]) < 0.2) & (points[:,1] > 0.01) & (points[:,1] < 1.0)
+        candidates = np.where(mask)[0]
+        
+        if len(candidates) == 0:
+            # Try wider search
+            mask = np.abs(points[:,0] - x_location) < 0.3
+            candidates = np.where(mask)[0]
+        
+        if len(candidates) == 0:
+            simple.Delete(normals)
+            simple.Delete(surface)
+            simple.Delete(merge)
+            return {"error": f"No surface point found near x={x_location}"}
+        
+        # Pick point with smallest y (closest to body surface, but above symmetry plane)
+        y_vals = points[candidates, 1]
+        best_idx = candidates[np.argmin(y_vals)]
+        
+        surface_point = points[best_idx]
+        surface_normal = normal_arr[best_idx]
+        
+        # Flip normal if pointing away from domain center (we want it pointing into fluid)
+        to_center = domain_center - surface_point
+        if np.dot(surface_normal, to_center) < 0:
+            surface_normal = -surface_normal
+        
+        # Create line probe
+        end_point = surface_point + probe_length * surface_normal
+        
+        line = simple.PlotOverLine(Input=merge)
+        line.Point1 = surface_point.tolist()
+        line.Point2 = end_point.tolist()
+        line.Resolution = 50
+        simple.UpdatePipeline(proxy=line)
+        
+        # Extract profile data
+        line_data = line.GetClientSideObject().GetOutput()
+        if line_data.GetNumberOfPoints() == 0:
+            simple.Delete(line)
+            simple.Delete(normals)
+            simple.Delete(surface)
+            simple.Delete(merge)
+            return {"error": "Line probe returned no points"}
+        
+        arc_length = vtk_to_numpy(line_data.GetPointData().GetArray('arc_length'))
+        velocity = vtk_to_numpy(line_data.GetPointData().GetArray('Velocity'))
+        u_mag = np.linalg.norm(velocity, axis=1)
+        
+        # Filter NaN
+        valid = ~np.isnan(u_mag)
+        arc_length = arc_length[valid]
+        u_mag = u_mag[valid]
+        
+        if len(arc_length) == 0:
+            simple.Delete(line)
+            simple.Delete(normals)
+            simple.Delete(surface)
+            simple.Delete(merge)
+            return {"error": "No valid velocity data in probe"}
+        
+        # Compute boundary layer properties
+        u_inf = u_mag[-1] if len(u_mag) > 1 else u_mag[0]
+        u_normalized = u_mag / u_inf if u_inf > 0 else u_mag
+        
+        # Find delta (BL thickness) - where u/U_inf reaches 0.99
+        delta_idx = np.where(u_normalized >= 0.99)[0]
+        delta = arc_length[delta_idx[0]] if len(delta_idx) > 0 else arc_length[-1]
+        
+        # Integrate only within the boundary layer (up to delta) for proper BL integrals
+        bl_mask = arc_length <= delta
+        y_bl = arc_length[bl_mask]
+        u_bl = u_normalized[bl_mask]
+        
+        # Compute displacement thickness: δ* = ∫(1 - u/U∞) dy
+        delta_star = np.trapz(1 - u_bl, y_bl) if len(y_bl) > 1 else 0.0
+        
+        # Compute momentum thickness: θ = ∫(u/U∞)(1 - u/U∞) dy
+        theta = np.trapz(u_bl * (1 - u_bl), y_bl) if len(y_bl) > 1 else 0.0
+        
+        # Shape factor H = δ*/θ (H ≈ 2.6 laminar, H ≈ 1.3-1.4 turbulent)
+        shape_factor = delta_star / theta if theta > 1e-10 else float('nan')
+        
+        # Create XY chart
+        import tempfile
+        import os
+        
+        csv_path = os.path.join(tempfile.gettempdir(), 'boundary_layer.csv')
+        with open(csv_path, 'w') as f:
+            f.write('Distance,Velocity,u_over_Uinf\n')
+            for i in range(len(arc_length)):
+                f.write(f'{arc_length[i]:.6f},{u_mag[i]:.6f},{u_normalized[i]:.6f}\n')
+        
+        original_view = simple.GetActiveView()
+        
+        table = simple.CSVReader(FileName=[csv_path])
+        simple.UpdatePipeline(proxy=table)
+        
+        chart_view = simple.CreateXYPlotView()
+        chart_view.ViewSize = [800, 400]
+        chart_view.ChartTitle = f'Boundary Layer Profile at x={x_location:.2f}'
+        chart_view.BottomAxisTitle = 'Distance from wall'
+        chart_view.LeftAxisTitle = 'u / U∞'
+        
+        display = simple.Show(table, chart_view)
+        display.XArrayName = 'Distance'
+        display.UseIndexForXAxis = 0
+        display.SeriesVisibility = ['u_over_Uinf']
+        display.SeriesColor = ['u_over_Uinf', '0', '0', '0.8']
+        display.SeriesLineThickness = ['u_over_Uinf', '2']
+        
+        simple.Render(chart_view)
+        self._mcp._chart_view_queue.append(chart_view)
+        
+        # Restore view
+        if original_view:
+            simple.SetActiveView(original_view)
+        
+        # Cleanup temporary filters
+        simple.Delete(normals)
+        simple.Delete(surface)
+        
+        result = {
+            "status": "created",
+            "type": "boundary_layer_profile",
+            "x_location": x_location,
+            "surface_point": surface_point.tolist(),
+            "surface_normal": surface_normal.tolist(),
+            "num_points": len(arc_length),
+            "u_infinity": float(u_inf),
+            "delta": float(delta),
+            "delta_star": float(delta_star),
+            "theta": float(theta),
+            "shape_factor": float(shape_factor),
+            "provenance": {
+                "dataset": self._get_dataset_filename(proxy),
+                "filter_chain": ["MergeBlocks", "ExtractSurface", "SurfaceNormals", "PlotOverLine"],
+                "arrays_used": ["Velocity", "Normals"],
+                "parameters": {
+                    "x_location": x_location,
+                    "probe_length": probe_length
+                }
+            },
+            "interpretation": {
+                "delta": float(delta),
+                "delta_star": float(delta_star),
+                "theta": float(theta),
+                "shape_factor": float(shape_factor),
+                "u_infinity": float(u_inf),
+                "claim": f"Boundary layer at x={x_location:.2f}: δ={delta:.4f}, δ*={delta_star:.4f}, θ={theta:.4f}, H={shape_factor:.2f}. " +
+                         ("H ≈ 1.3-1.4 suggests turbulent BL." if 1.2 < shape_factor < 1.6 else
+                          "H ≈ 2.6 suggests laminar BL." if 2.4 < shape_factor < 2.8 else
+                          "Shape factor indicates transitional or separated flow.")
+            }
+        }
+        
+        return result
+
     def show_forces(self) -> dict:
         """
         Show force distribution along the body.

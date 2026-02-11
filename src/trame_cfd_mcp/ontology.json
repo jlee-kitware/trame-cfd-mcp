@@ -57,6 +57,18 @@
       "description": "Sectional and accumulated force along body axis",
       "interpretation": "Shows where forces are generated. Sectional force peaks indicate high-load regions. Accumulated force shows running total.",
       "design_relevance": "Identifies which body sections contribute most to drag/lift. Useful for targeting geometry changes."
+    },
+    
+    "boundary_layer": {
+      "description": "Velocity profile normal to body surface",
+      "interpretation": "Shows velocity development from zero at wall to freestream. Profile shape indicates laminar vs turbulent flow.",
+      "metrics": {
+        "delta": "Boundary layer thickness - distance where u/U∞ = 0.99",
+        "delta_star": "Displacement thickness δ* = ∫(1 - u/U∞)dy - represents mass flow deficit due to BL",
+        "theta": "Momentum thickness θ = ∫(u/U∞)(1 - u/U∞)dy - represents momentum deficit, directly related to drag",
+        "shape_factor": "H = δ*/θ, indicates flow state: H ≈ 2.6 (laminar), H ≈ 1.3-1.4 (turbulent), H > 3 suggests separation"
+      },
+      "design_relevance": "Thin BL = less drag, thick BL = more momentum loss. High H suggests separation risk. θ growth rate indicates skin friction drag."
     }
   },
   
@@ -87,6 +99,11 @@
     "force_analysis": {
       "primary": "show_forces",
       "supporting": ["show_histogram"],
+      "metrics": ["analyze_data"]
+    },
+    "boundary_layer_analysis": {
+      "primary": "show_boundary_layer",
+      "supporting": ["show_slice"],
       "metrics": ["analyze_data"]
     }
   }

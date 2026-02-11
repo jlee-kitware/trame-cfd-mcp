@@ -140,7 +140,7 @@ User Query: "Analyze the wake and explain drag"
                     │
                     ▼
         ┌───────────────────────┐
-        │    WorkflowMCP        │  12 high-level tools     ─┐
+        │    WorkflowMCP        │  13 high-level tools    ─┐
         │  - show_vortices()    │  Deterministic execution  │
         │  - show_streamlines() │  Full provenance tracking │
         │  - show_slice()       │                           │ trame-cfd-mcp
@@ -184,6 +184,7 @@ User Query: "Analyze the wake and explain drag"
 | `show_slice(location, normal)` | Slice through wake or domain center |
 | `show_histogram(field)` | Field distribution chart |
 | `show_forces()` | Force distribution along body |
+| `show_boundary_layer(x_location)` | Boundary layer velocity profile |
 | `get_ontology()` | CFD domain knowledge for explanations |
 | `save_screenshot(filename)` | Save current view (3D or chart) |
 | `save_state(filename)` | Save full ParaView state for reproducibility |

@@ -151,6 +151,7 @@ Visualization:
 - show_slice(location="wake", normal="x") - Show slice through data
 - show_histogram(field="p") - Show field distribution chart
 - show_forces() - Show force distribution chart
+- show_boundary_layer(x_location=0.5) - Show boundary layer velocity profile
 
 Knowledge:
 - get_ontology() - Get CFD domain knowledge for explanations
@@ -174,6 +175,7 @@ When explaining visualizations, use the ontology to provide:
                 self._workflows.show_slice,
                 self._workflows.show_histogram,
                 self._workflows.show_forces,
+                self._workflows.show_boundary_layer,
                 self._workflows.analyze_data,
                 self.get_ontology,
                 self.save_screenshot,
