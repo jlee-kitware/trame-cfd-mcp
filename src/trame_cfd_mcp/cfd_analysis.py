@@ -3810,36 +3810,47 @@ out.GetPointData().AddArray(arr)
         
         cut_points = vtk_to_numpy(cut_data.GetPoints().GetData())
         
-        # Step 3: Find point on upper surface at requested x/c
-        # Upper surface = points above the vertical center
-        upper_mask = cut_points[:, vert_idx] > vert_center
-        upper_points = cut_points[upper_mask]
+        # Step 3: Compute actual section chord from LE to TE
+        le_idx = np.argmin(cut_points[:, stream_idx])
+        te_idx = np.argmax(cut_points[:, stream_idx])
+        le_point = cut_points[le_idx]
+        te_point = cut_points[te_idx]
+        section_chord = np.linalg.norm(te_point - le_point)
+        section_le = le_point[stream_idx]
+        section_te = te_point[stream_idx]
         
-        if len(upper_points) == 0:
+        # Use section chord for x/c calculation
+        x_abs = section_le + x_over_chord * section_chord
+        
+        # Step 4: Select suction side (upper surface for typical wing orientation)
+        suction_mask = cut_points[:, vert_idx] > vert_center
+        suction_points = cut_points[suction_mask]
+        
+        if len(suction_points) == 0:
             cleanup()
-            return {"error": "No upper surface points found in cut section"}
+            return {"error": "No suction side points found in cut section"}
         
         # Find point closest to requested x/c
-        x_distances = np.abs(upper_points[:, stream_idx] - x_abs)
+        x_distances = np.abs(suction_points[:, stream_idx] - x_abs)
         best_local_idx = np.argmin(x_distances)
         
-        surface_point = upper_points[best_local_idx].copy()
+        surface_point = suction_points[best_local_idx].copy()
         
-        # Actual x/c at the probed point
-        actual_x_over_chord = (surface_point[stream_idx] - stream_min) / chord
+        # Actual x/c at the probed point (using section chord)
+        actual_x_over_chord = (surface_point[stream_idx] - section_le) / section_chord
         
-        # Step 4: Compute surface normal from the 2D section
-        # Sort upper surface points by streamwise coordinate
-        sort_idx = np.argsort(upper_points[:, stream_idx])
-        sorted_upper = upper_points[sort_idx]
+        # Step 5: Compute surface normal from the 2D section
+        # Sort suction side points by streamwise coordinate
+        sort_idx = np.argsort(suction_points[:, stream_idx])
+        sorted_suction = suction_points[sort_idx]
         
         # Find index in sorted array
-        sorted_local_idx = np.searchsorted(sorted_upper[:, stream_idx], surface_point[stream_idx])
-        sorted_local_idx = np.clip(sorted_local_idx, 1, len(sorted_upper) - 2)
+        sorted_local_idx = np.searchsorted(sorted_suction[:, stream_idx], surface_point[stream_idx])
+        sorted_local_idx = np.clip(sorted_local_idx, 1, len(sorted_suction) - 2)
         
         # Compute tangent from neighboring points
-        pt_before = sorted_upper[sorted_local_idx - 1]
-        pt_after = sorted_upper[min(sorted_local_idx + 1, len(sorted_upper) - 1)]
+        pt_before = sorted_suction[sorted_local_idx - 1]
+        pt_after = sorted_suction[min(sorted_local_idx + 1, len(sorted_suction) - 1)]
         
         tangent = pt_after - pt_before
         tangent = tangent / (np.linalg.norm(tangent) + 1e-10)
@@ -3946,6 +3957,7 @@ out.GetPointData().AddArray(arr)
             "delta_star": float(delta_star),
             "theta": float(theta),
             "shape_factor": float(shape_factor),
+            "surface": "suction",
             "surface_point": surface_point.tolist(),
             "surface_normal": surface_normal.tolist(),
             "x_over_chord": float(actual_x_over_chord),
@@ -3953,8 +3965,13 @@ out.GetPointData().AddArray(arr)
             "x_absolute": float(surface_point[stream_idx]),
             "span_fraction": float(span_fraction),
             "span_absolute": float(span_abs),
+            "section": {
+                "chord": float(section_chord),
+                "le": le_point.tolist(),
+                "te": te_point.tolist()
+            },
             "geometry": {
-                "chord": float(chord),
+                "body_chord": float(chord),
                 "span_extent": float(span_extent),
                 "thickness": float(thickness),
                 "streamwise_axis": streamwise_axis,

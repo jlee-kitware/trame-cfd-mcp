@@ -563,10 +563,12 @@ class CFDWorkflows:
         result = {
             "status": "created",
             "type": "boundary_layer_profile",
+            "surface": bl_data["surface"],
             "x_over_chord": bl_data["x_over_chord"],
             "x_absolute": bl_data["x_absolute"],
             "span_fraction": bl_data["span_fraction"],
             "span_absolute": bl_data["span_absolute"],
+            "section_chord": bl_data["section"]["chord"],
             "surface_point": bl_data["surface_point"],
             "surface_normal": bl_data["surface_normal"],
             "num_points": len(y),
@@ -578,11 +580,12 @@ class CFDWorkflows:
             "delta_star": bl_data["delta_star"],
             "theta": bl_data["theta"],
             "shape_factor": bl_data["shape_factor"],
+            "section": bl_data["section"],
             "geometry": bl_data["geometry"],
             "provenance": {
                 "dataset": self._get_dataset_filename(proxy),
-                "filter_chain": ["MergeBlocks", "ExtractSurface", "SurfaceNormals", "PlotOverLine"],
-                "arrays_used": ["Velocity", "Normals"],
+                "filter_chain": ["MergeBlocks", "ExtractSurface", "Clip", "Slice", "PlotOverLine"],
+                "arrays_used": ["Velocity"],
                 "parameters": {
                     "x_over_chord": x_over_chord,
                     "span_fraction": span_fraction,
