@@ -3698,7 +3698,8 @@ out.GetPointData().AddArray(arr)
 
     def compute_boundary_layer_profile(self, proxy=None, x_over_chord: float = 0.5, 
                                         span_fraction: float = 0.5,
-                                        probe_length: float = None, proxy_name: str = None) -> dict:
+                                        probe_length: float = None, proxy_name: str = None,
+                                        sampler=None) -> dict:
         """
         Compute boundary layer profile data at a given chordwise and spanwise location.
         
@@ -3712,6 +3713,7 @@ out.GetPointData().AddArray(arr)
             span_fraction: Spanwise location as fraction of span (0=root/min, 1=tip/max, 0.5=mid-span)
             probe_length: Probe distance (default: 30% of chord)
             proxy_name: Proxy name for span detection
+            sampler: LineSampler instance for custom sampling distribution (default: BoundaryLayerSampler)
             
         Returns:
             Dict with profile data (y, u, u_normalized) and BL quantities
@@ -3886,27 +3888,28 @@ out.GetPointData().AddArray(arr)
         # Normalize
         surface_normal = surface_normal / (np.linalg.norm(surface_normal) + 1e-10)
         
-        # Step 5: Create line probe normal to surface
-        end_point = surface_point + probe_length * surface_normal
+        # Step 6: Sample velocity along probe line using configurable sampler
+        from trame_cfd_mcp.line_samplers import DEFAULT_BL_SAMPLER
         
-        line = simple.PlotOverLine(Input=merge)
-        line.Point1 = surface_point.tolist()
-        line.Point2 = end_point.tolist()
-        line.Resolution = 200
-        simple.UpdatePipeline(proxy=line)
+        if sampler is None:
+            sampler = DEFAULT_BL_SAMPLER
         
-        line_data = line.GetClientSideObject().GetOutputDataObject(0)
-        if line_data.GetNumberOfPoints() == 0:
-            simple.Delete(line)
-            cleanup()
-            return {"error": "Line probe returned no points"}
+        sample_result = sampler.sample_line(
+            data_proxy=merge,
+            start_point=surface_point,
+            direction=surface_normal,
+            probe_length=probe_length,
+            field_name="Velocity"
+        )
         
-        y = vtk_to_numpy(line_data.GetPointData().GetArray('arc_length'))
-        velocity = vtk_to_numpy(line_data.GetPointData().GetArray('Velocity'))
-        u = np.linalg.norm(velocity, axis=1)
-        
-        simple.Delete(line)
         cleanup()
+        
+        if "error" in sample_result:
+            return sample_result
+        
+        y = sample_result["y"]
+        velocity = sample_result["values"]
+        u = np.linalg.norm(velocity, axis=1)
         
         # Handle NaN at wall (no-slip)
         n_nan = np.sum(np.isnan(u))
