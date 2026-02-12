@@ -3724,6 +3724,9 @@ out.GetPointData().AddArray(arr)
         if proxy is None:
             return {"error": "No data source found"}
         
+        # Save the original active source to restore later
+        original_active_source = simple.GetActiveSource()
+        
         if proxy_name is None:
             proxy_name = proxy.GetGlobalIDAsString()
         
@@ -3734,8 +3737,12 @@ out.GetPointData().AddArray(arr)
         # Get body bounds (excludes farfield)
         body_bounds, _ = self._get_body_bounds(proxy)
         
-        # Detect geometry orientation
-        span_info = self.detect_span_direction(proxy_name=proxy_name)
+        # Detect geometry orientation - set active source first since detect_span_direction uses it
+        simple.SetActiveSource(proxy)
+        span_info = self.detect_span_direction(proxy_name=None)
+        if "error" in span_info:
+            simple.SetActiveSource(original_active_source)
+            return {"error": f"Could not detect span direction: {span_info['error']}"}
         span_axis = span_info.get("span_axis", "y")
         vertical_axis = span_info.get("vertical_axis", "z")
         streamwise_axis = span_info.get("streamwise_axis", "x")
@@ -3803,6 +3810,7 @@ out.GetPointData().AddArray(arr)
             simple.Delete(clip)
             simple.Delete(surface)
             simple.Delete(merge)
+            simple.SetActiveSource(original_active_source)
         
         if cut_data.GetNumberOfPoints() == 0:
             cleanup()

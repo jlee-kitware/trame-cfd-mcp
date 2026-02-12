@@ -607,6 +607,148 @@ class CFDWorkflows:
         
         return result
 
+    def create_section_debug_chart(self, bl_results: list, title: str = None) -> dict:
+        """
+        Create a debug chart showing airfoil section with probe locations.
+        
+        Args:
+            bl_results: List of boundary layer result dicts from show_boundary_layer
+            title: Optional chart title
+            
+        Returns:
+            Dict with chart info
+        """
+        import tempfile
+        import os
+        
+        if not bl_results:
+            return {"error": "No boundary layer results provided"}
+        
+        # Get section data from first valid result
+        section_data = None
+        for r in bl_results:
+            if 'section' in r and 'suction_contour' in r['section']:
+                section_data = r['section']
+                break
+        
+        if section_data is None:
+            return {"error": "No valid section data in results"}
+        
+        stream_idx = section_data['stream_idx']
+        vert_idx = section_data['vert_idx']
+        le_x = section_data['le'][stream_idx]
+        chord = section_data['chord']
+        
+        # Write section contour CSV
+        suction = section_data['suction_contour']
+        pressure = section_data['pressure_contour']
+        
+        section_csv = os.path.join(tempfile.gettempdir(), 'debug_section.csv')
+        with open(section_csv, 'w') as f:
+            f.write('x_over_c,z_over_c\n')
+            for pt in suction:
+                xc = (pt[0] - le_x) / chord
+                zc = pt[1] / chord
+                f.write(f'{xc:.6f},{zc:.6f}\n')
+            for pt in pressure:
+                xc = (pt[0] - le_x) / chord
+                zc = pt[1] / chord
+                f.write(f'{xc:.6f},{zc:.6f}\n')
+        
+        # Write probe lines and markers
+        probe_lines = []
+        markers = []
+        
+        for r in bl_results:
+            if 'error' in r:
+                continue
+            pt = r['surface_point']
+            norm = r['surface_normal']
+            probe_len = r.get('probe_length', 0.1)
+            
+            xc = (pt[stream_idx] - le_x) / chord
+            zc = pt[vert_idx] / chord
+            
+            end_x = pt[stream_idx] + probe_len * norm[stream_idx]
+            end_z = pt[vert_idx] + probe_len * norm[vert_idx]
+            xc_end = (end_x - le_x) / chord
+            zc_end = end_z / chord
+            
+            probe_lines.append({'xc': xc, 'zc': zc, 'xc_end': xc_end, 'zc_end': zc_end})
+            markers.append({'xc': xc, 'zc': zc})
+        
+        # Write probe lines (each as separate file for different colors)
+        for i, p in enumerate(probe_lines):
+            probe_file = os.path.join(tempfile.gettempdir(), f'probe_line_{i}.csv')
+            with open(probe_file, 'w') as f:
+                f.write('x_over_c,z_over_c\n')
+                f.write(f'{p["xc"]:.6f},{p["zc"]:.6f}\n')
+                f.write(f'{p["xc_end"]:.6f},{p["zc_end"]:.6f}\n')
+        
+        # Write all markers to single file
+        markers_csv = os.path.join(tempfile.gettempdir(), 'probe_markers.csv')
+        with open(markers_csv, 'w') as f:
+            f.write('x_over_c,z_over_c\n')
+            for m in markers:
+                f.write(f'{m["xc"]:.6f},{m["zc"]:.6f}\n')
+        
+        # Create chart
+        section_table = simple.CSVReader(FileName=[section_csv])
+        simple.UpdatePipeline(proxy=section_table)
+        
+        markers_table = simple.CSVReader(FileName=[markers_csv])
+        simple.UpdatePipeline(proxy=markers_table)
+        
+        chart = simple.CreateXYPlotView()
+        chart.ViewSize = [800, 500]
+        chart.ChartTitle = title or 'Airfoil Section with Probe Locations'
+        chart.BottomAxisTitle = 'x/c'
+        chart.LeftAxisTitle = 'z/c'
+        chart.ShowLegend = 0
+        
+        # Section contour (black)
+        section_display = simple.Show(section_table, chart)
+        section_display.XArrayName = 'x_over_c'
+        section_display.UseIndexForXAxis = 0
+        section_display.SeriesVisibility = ['z_over_c']
+        section_display.SeriesColor = ['z_over_c', '0', '0', '0']
+        section_display.SeriesLineThickness = ['z_over_c', '2']
+        
+        # Probe lines (colored)
+        colors = ['0.8,0,0', '0,0.6,0', '0,0,0.8', '0.8,0.4,0', '0.5,0,0.8', '0,0.6,0.6', '0.6,0,0.6']
+        for i in range(len(probe_lines)):
+            probe_file = os.path.join(tempfile.gettempdir(), f'probe_line_{i}.csv')
+            probe_table = simple.CSVReader(FileName=[probe_file])
+            simple.UpdatePipeline(proxy=probe_table)
+            
+            probe_display = simple.Show(probe_table, chart)
+            probe_display.XArrayName = 'x_over_c'
+            probe_display.UseIndexForXAxis = 0
+            probe_display.SeriesVisibility = ['z_over_c']
+            c = colors[i % len(colors)].split(',')
+            probe_display.SeriesColor = ['z_over_c', c[0], c[1], c[2]]
+            probe_display.SeriesLineThickness = ['z_over_c', '2']
+        
+        # Markers (red circles)
+        markers_display = simple.Show(markers_table, chart)
+        markers_display.XArrayName = 'x_over_c'
+        markers_display.UseIndexForXAxis = 0
+        markers_display.SeriesVisibility = ['z_over_c']
+        markers_display.SeriesColor = ['z_over_c', '1', '0', '0']
+        markers_display.SeriesLineStyle = ['z_over_c', '0']  # No line
+        markers_display.SeriesMarkerStyle = ['z_over_c', '2']  # Circle
+        markers_display.SeriesMarkerSize = ['z_over_c', '12']
+        
+        simple.Render(chart)
+        self._mcp._chart_view_queue.append(chart)
+        
+        return {
+            "status": "created",
+            "type": "section_debug_chart",
+            "num_probes": len(probe_lines),
+            "section_chord": chord
+        }
+
     def show_flow_topology(self) -> dict:
         """
         Show flow topology using vortex core detection.
