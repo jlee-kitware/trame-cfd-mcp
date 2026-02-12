@@ -172,6 +172,54 @@ User Query: "Analyze the wake and explain drag"
 3. **Full provenance** - Every workflow returns dataset, filter chain, parameters, and claims
 4. **Cost tracking built-in** - Monitor token usage and costs
 
+### Refinement Workflow
+
+Workflows return `proxy_name` and parameters, enabling iterative refinement:
+
+```
+User: "Show vortices"
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  show_vortices()                                            │
+│                                                             │
+│  Returns:                                                   │
+│    proxy_name: "Contour1"                                   │
+│    threshold: 28.06                                         │
+│    tip: "Lower threshold = more structures"                 │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+User: "Show more structures"
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  update_list_property("Isosurfaces", [14.0], "Contour1")    │
+│                                                             │
+│  LLM uses proxy_name from previous result                   │
+│  Halves threshold to show more vortex structures            │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+User: "Make them semi-transparent and color by pressure"
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  update_display_property("Opacity", 0.5, "Contour1")        │
+│  update_color("Contour1", "pressure")                       │
+│                                                             │
+│  Multiple refinement tools in sequence                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Refinement tools:**
+- `update_representation()` - Change to Wireframe, Surface, Points
+- `update_color()` - Recolor by different field
+- `update_list_property()` - Adjust thresholds/isovalues
+- `update_display_property()` - Set Opacity, LineWidth, PointSize
+- `show_or_hide()` - Toggle visibility
+- `list_properties()` - Discover adjustable properties
+
 ## Workflow Tools
 
 | Tool | Description |
@@ -294,14 +342,23 @@ Estimated cost: $0.007416
 ```bash
 cd examples/cfd_assistant
 
-# Test individual workflows
+# Test individual workflows (vortices, streamlines, slices, etc.)
 pvpython --venv .venv test_workflows.py
+
+# Test workflow + refinement pattern (threshold adjustment, recoloring, etc.)
+pvpython --venv .venv test_refinement.py
 
 # Test ontology-based explanations
 pvpython --venv .venv test_ontology.py
 
 # Test multi-step analysis (full reasoning)
 pvpython --venv .venv test_analysis.py
+
+# Test boundary layer profile extraction
+pvpython --venv .venv test_boundary_layer.py
+
+# Test spanwise slice positioning
+pvpython --venv .venv test_spanwise_slice.py
 ```
 
 All tests save:
@@ -315,7 +372,7 @@ src/trame_cfd_mcp/
 ├── __init__.py          # Package exports
 ├── workflow_mcp.py      # High-level workflow tools (20 tools)
 ├── workflows.py         # Workflow implementations
-├── cfd_analysis.py      # CFD analysis tools (40+ tools)
+├── cfd_analysis.py      # CFD analysis functions
 ├── ontology.json        # CFD domain knowledge
 └── cost_tracker.py      # Token/cost tracking
 
@@ -325,6 +382,8 @@ examples/cfd_assistant/
 ├── test_refinement.py   # Test workflow + refinement pattern
 ├── test_ontology.py     # Test explanation capability
 ├── test_analysis.py     # Test multi-step reasoning
+├── test_boundary_layer.py  # Test boundary layer extraction
+├── test_spanwise_slice.py  # Test spanwise slice positioning
 └── test.vtm             # Sample CFD dataset
 ```
 

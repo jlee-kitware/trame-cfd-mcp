@@ -105,6 +105,9 @@ async def main():
         print(f'EXPECTED TOOLS: {expected}')
         print("="*60)
         
+        # Start tracking this test
+        collector.start_test(name, prompt)
+        
         # Reset between tests
         sources = list(simple.GetSources().items())
         for sname, proxy in sources:
@@ -127,12 +130,11 @@ async def main():
         simple.ResetCamera(view)
         simple.Render(view)
         
-        # Track tools called
-        collector.clear()
         await llm.process_prompt(prompt)
         
         # Analyze what was called
         tools_called = collector.get_tool_names()
+        screenshots = collector.get_screenshots()
         
         # Check if expected tools were used
         missing = [t for t in expected if t not in tools_called]
@@ -142,12 +144,14 @@ async def main():
             "prompt": prompt,
             "expected": expected,
             "called": tools_called,
+            "screenshots": screenshots,
             "missing": missing,
             "extra": extra,
             "success": len(missing) == 0
         }
         
         print(f'\nTOOLS CALLED: {tools_called}')
+        print(f'SCREENSHOTS: {screenshots}')
         print(f'MISSING: {missing}')
         print(f'SUCCESS: {results[name]["success"]}')
     

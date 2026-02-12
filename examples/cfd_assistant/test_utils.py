@@ -11,8 +11,20 @@ class ResultCollector:
     
     def __init__(self, truncate_console: int = 400):
         self.results = []
-        self.tool_calls = []  # Track tool names called
+        self.tool_calls = []
         self.truncate_console = truncate_console
+        self._current_test = None
+        self._tests = {}  # test_name -> {tool_calls, results, screenshots}
+    
+    def start_test(self, name: str, prompt: str):
+        """Start tracking a new test."""
+        self._current_test = name
+        self._tests[name] = {
+            "prompt": prompt,
+            "tool_calls": [],
+            "results": [],
+            "screenshots": []
+        }
     
     def progress_callback(self, ptype, msg):
         """Progress callback that collects results and prints to console."""
@@ -21,14 +33,23 @@ class ResultCollector:
             if msg.startswith("Calling: "):
                 tool_name = msg.replace("Calling: ", "").strip()
                 self.tool_calls.append(tool_name)
+                if self._current_test:
+                    self._tests[self._current_test]["tool_calls"].append(tool_name)
             print(f"[call] {msg}")
         elif ptype == ProgressType.MCP:
             # Save full result
             try:
                 result = json.loads(msg)
                 self.results.append(result)
+                if self._current_test:
+                    self._tests[self._current_test]["results"].append(result)
+                    # Track screenshots
+                    if result.get("status") == "saved" and "filename" in result:
+                        self._tests[self._current_test]["screenshots"].append(result["filename"])
             except json.JSONDecodeError:
                 self.results.append({"raw": msg})
+                if self._current_test:
+                    self._tests[self._current_test]["results"].append({"raw": msg})
             
             # Print truncated
             if self.truncate_console and len(msg) > self.truncate_console:
@@ -44,23 +65,33 @@ class ResultCollector:
             print(f"[ERROR] {msg}")
     
     def get_tool_names(self) -> list:
-        """Return list of tool names that were called."""
+        """Return list of tool names called in current test."""
+        if self._current_test:
+            return self._tests[self._current_test]["tool_calls"]
         return self.tool_calls
+    
+    def get_screenshots(self) -> list:
+        """Return list of screenshots saved in current test."""
+        if self._current_test:
+            return self._tests[self._current_test]["screenshots"]
+        return []
     
     def save_json(self, filename: str):
         """Save collected results to JSON file."""
         os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
         with open(filename, "w", encoding="utf-8") as f:
             json.dump({
-                "tool_calls": self.tool_calls,
-                "results": self.results
+                "tests": self._tests,
+                "summary": {
+                    "total_tool_calls": len(self.tool_calls),
+                    "total_results": len(self.results)
+                }
             }, f, indent=2, ensure_ascii=False)
-        print(f"\nSaved {len(self.results)} tool results to {filename}")
+        print(f"\nSaved {len(self._tests)} test results to {filename}")
     
     def clear(self):
-        """Clear collected results and tool calls."""
-        self.results = []
-        self.tool_calls = []
+        """Clear current test tracking (for legacy compatibility)."""
+        self._current_test = None
 
 
 class MinimalApp:
