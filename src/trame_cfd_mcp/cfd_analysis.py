@@ -3702,8 +3702,9 @@ out.GetPointData().AddArray(arr)
         """
         Compute boundary layer profile data at a given chordwise and spanwise location.
         
-        Probes normal to the body surface and computes BL quantities using
-        multiple edge detection criteria (99% velocity, Haase diagnostic).
+        Cuts a spanwise plane to get the airfoil section, then probes normal to the
+        surface at the specified x/c location. Uses multiple edge detection criteria 
+        (99% velocity, Haase diagnostic).
         
         Args:
             proxy: Data proxy (default: active source)
@@ -3730,43 +3731,8 @@ out.GetPointData().AddArray(arr)
         merge = simple.MergeBlocks(Input=proxy)
         simple.UpdatePipeline(proxy=merge)
         
-        # Get body bounds
+        # Get body bounds (excludes farfield)
         body_bounds, _ = self._get_body_bounds(proxy)
-        
-        # Extract and clip surface to body region
-        surface = simple.ExtractSurface(Input=merge)
-        simple.UpdatePipeline(proxy=surface)
-        
-        clip = simple.Clip(Input=surface)
-        clip.ClipType = 'Box'
-        clip.ClipType.Bounds = [
-            body_bounds[0] - 0.01, body_bounds[1] + 0.01,
-            body_bounds[2] - 0.01, body_bounds[3] + 0.01,
-            body_bounds[4] - 0.01, body_bounds[5] + 0.01
-        ]
-        clip.Invert = 1
-        simple.UpdatePipeline(proxy=clip)
-        
-        body_surface = simple.ExtractSurface(Input=clip)
-        simple.UpdatePipeline(proxy=body_surface)
-        
-        normals_filter = simple.SurfaceNormals(Input=body_surface)
-        simple.UpdatePipeline(proxy=normals_filter)
-        
-        data = normals_filter.GetClientSideObject().GetOutputDataObject(0)
-        points = vtk_to_numpy(data.GetPoints().GetData())
-        normal_arr = vtk_to_numpy(data.GetPointData().GetArray('Normals'))
-        
-        def cleanup():
-            simple.Delete(normals_filter)
-            simple.Delete(body_surface)
-            simple.Delete(clip)
-            simple.Delete(surface)
-            simple.Delete(merge)
-        
-        if len(points) == 0:
-            cleanup()
-            return {"error": "No body surface points found"}
         
         # Detect geometry orientation
         span_info = self.detect_span_direction(proxy_name=proxy_name)
@@ -3798,51 +3764,102 @@ out.GetPointData().AddArray(arr)
         if probe_length is None:
             probe_length = 0.3 * chord
         
-        # Convert x_over_chord to absolute
+        # Compute absolute positions
         x_abs = stream_min + x_over_chord * chord
+        span_abs = span_min + span_fraction * span_extent
         
-        # Convert span_fraction to absolute
-        span_target = span_min + span_fraction * span_extent
+        # Step 1: Extract body surface and clip to body region
+        surface = simple.ExtractSurface(Input=merge)
+        simple.UpdatePipeline(proxy=surface)
         
-        # Tolerances
-        x_tolerance = 0.05 * chord
-        span_tolerance = 0.05 * span_extent
+        clip = simple.Clip(Input=surface)
+        clip.ClipType = 'Box'
+        clip.ClipType.Bounds = [
+            body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+            body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+            body_bounds[4] - 0.01, body_bounds[5] + 0.01
+        ]
+        clip.Invert = 1
+        simple.UpdatePipeline(proxy=clip)
         
-        # Find surface point on upper surface at specified x/c and span location
-        mask = (
-            (np.abs(points[:,stream_idx] - x_abs) < x_tolerance) &
-            (np.abs(points[:,span_idx] - span_target) < span_tolerance) &
-            (points[:,vert_idx] > vert_center)
-        )
-        candidates = np.where(mask)[0]
+        # Step 2: Cut with a plane at the span station to get airfoil section
+        plane_cut = simple.Slice(Input=clip)
+        plane_cut.SliceType = 'Plane'
         
-        # Widen search if needed
-        if len(candidates) == 0:
-            mask = (
-                (np.abs(points[:,stream_idx] - x_abs) < 0.1 * chord) &
-                (np.abs(points[:,span_idx] - span_target) < 0.1 * span_extent) &
-                (points[:,vert_idx] > vert_center)
-            )
-            candidates = np.where(mask)[0]
+        # Set plane origin and normal based on span axis
+        origin = [0, 0, 0]
+        origin[span_idx] = span_abs
+        normal = [0, 0, 0]
+        normal[span_idx] = 1.0
         
-        if len(candidates) == 0:
+        plane_cut.SliceType.Origin = origin
+        plane_cut.SliceType.Normal = normal
+        simple.UpdatePipeline(proxy=plane_cut)
+        
+        cut_data = plane_cut.GetClientSideObject().GetOutputDataObject(0)
+        
+        def cleanup():
+            simple.Delete(plane_cut)
+            simple.Delete(clip)
+            simple.Delete(surface)
+            simple.Delete(merge)
+        
+        if cut_data.GetNumberOfPoints() == 0:
             cleanup()
-            return {"error": f"No surface point found near x/c={x_over_chord}, span={span_fraction}"}
+            return {"error": f"Plane cut at span_fraction={span_fraction} returned no points"}
         
-        # Pick closest point to target location
-        target = np.array([x_abs if i == stream_idx else span_target if i == span_idx else vert_center for i in range(3)])
-        distances = np.linalg.norm(points[candidates] - target, axis=1)
-        best_idx = candidates[np.argmin(distances)]
+        cut_points = vtk_to_numpy(cut_data.GetPoints().GetData())
         
-        surface_point = points[best_idx].copy()
-        surface_normal = normal_arr[best_idx].copy()
+        # Step 3: Find point on upper surface at requested x/c
+        # Upper surface = points above the vertical center
+        upper_mask = cut_points[:, vert_idx] > vert_center
+        upper_points = cut_points[upper_mask]
         
-        # Ensure normal points outward
-        from_body_center = surface_point - body_center
-        if np.dot(surface_normal, from_body_center) < 0:
+        if len(upper_points) == 0:
+            cleanup()
+            return {"error": "No upper surface points found in cut section"}
+        
+        # Find point closest to requested x/c
+        x_distances = np.abs(upper_points[:, stream_idx] - x_abs)
+        best_local_idx = np.argmin(x_distances)
+        
+        surface_point = upper_points[best_local_idx].copy()
+        
+        # Actual x/c at the probed point
+        actual_x_over_chord = (surface_point[stream_idx] - stream_min) / chord
+        
+        # Step 4: Compute surface normal from the 2D section
+        # Sort upper surface points by streamwise coordinate
+        sort_idx = np.argsort(upper_points[:, stream_idx])
+        sorted_upper = upper_points[sort_idx]
+        
+        # Find index in sorted array
+        sorted_local_idx = np.searchsorted(sorted_upper[:, stream_idx], surface_point[stream_idx])
+        sorted_local_idx = np.clip(sorted_local_idx, 1, len(sorted_upper) - 2)
+        
+        # Compute tangent from neighboring points
+        pt_before = sorted_upper[sorted_local_idx - 1]
+        pt_after = sorted_upper[min(sorted_local_idx + 1, len(sorted_upper) - 1)]
+        
+        tangent = pt_after - pt_before
+        tangent = tangent / (np.linalg.norm(tangent) + 1e-10)
+        
+        # Normal is perpendicular to tangent in the streamwise-vertical plane
+        # For 2D section: rotate tangent 90 degrees in the (stream, vert) plane
+        surface_normal = np.zeros(3)
+        surface_normal[stream_idx] = -tangent[vert_idx]
+        surface_normal[vert_idx] = tangent[stream_idx]
+        surface_normal[span_idx] = 0.0  # No span component
+        
+        # Ensure normal points outward (away from body center)
+        from_center = surface_point - body_center
+        if np.dot(surface_normal, from_center) < 0:
             surface_normal = -surface_normal
         
-        # Create line probe
+        # Normalize
+        surface_normal = surface_normal / (np.linalg.norm(surface_normal) + 1e-10)
+        
+        # Step 5: Create line probe normal to surface
         end_point = surface_point + probe_length * surface_normal
         
         line = simple.PlotOverLine(Input=merge)
@@ -3916,10 +3933,6 @@ out.GetPointData().AddArray(arr)
         theta = np.trapz(u_bl * (1 - u_bl), y_bl) if len(y_bl) > 1 else 0.0
         shape_factor = delta_star / theta if theta > 1e-10 else float('nan')
         
-        # Span location
-        span_location = surface_point[span_idx]
-        span_fraction = (span_location - span_min) / span_extent if span_extent > 0 else 0
-        
         result = {
             "y": y.tolist(),
             "u": u.tolist(),
@@ -3935,10 +3948,11 @@ out.GetPointData().AddArray(arr)
             "shape_factor": float(shape_factor),
             "surface_point": surface_point.tolist(),
             "surface_normal": surface_normal.tolist(),
-            "x_over_chord": float(x_over_chord),
-            "x_absolute": float(x_abs),
+            "x_over_chord": float(actual_x_over_chord),
+            "x_over_chord_requested": float(x_over_chord),
+            "x_absolute": float(surface_point[stream_idx]),
             "span_fraction": float(span_fraction),
-            "span_absolute": float(surface_point[span_idx]),
+            "span_absolute": float(span_abs),
             "geometry": {
                 "chord": float(chord),
                 "span_extent": float(span_extent),
@@ -3952,7 +3966,7 @@ out.GetPointData().AddArray(arr)
         
         self._log_analysis(
             "boundary_layer_profile",
-            x_over_chord=x_over_chord,
+            x_over_chord=float(actual_x_over_chord),
             span_fraction=span_fraction,
             delta=float(delta),
             delta_star=float(delta_star),
