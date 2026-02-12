@@ -149,6 +149,61 @@ Implementation of workflow tools. Each method:
 
 The separation between compute and visualization tools allows workflows to get data first, then create appropriate visualizations. Compute-heavy operations are centralized in CFDAnalysis while workflows in CFDWorkflows handle visualization and user-facing output.
 
+### Provenance Tracking
+
+Full reproducibility through hybrid provenance architecture:
+
+**Filter Chain** (from ParaView):
+- `extract_filter_chain(proxy)` walks `proxy.Input` recursively
+- Extracts filter type, input/output names, key parameters
+- Always reflects current state (auto-tracks refinements)
+
+**Analysis Log** (from CFDAnalysis):
+- `_log_analysis(type, **details)` called for computational decisions
+- Records reasoning ParaView doesn't know:
+  - Why threshold = 28.06? (50th percentile of Q > 0)
+  - Where is wake? (velocity < 50% freestream)
+  - How was seed placed? (from wake centroid)
+
+**Workflow Pattern**:
+```python
+def show_vortices(self, ...):
+    self._mcp.clear_analysis_log()  # Fresh start
+    
+    vortex = self._mcp.compute_vortex_field(...)  # Logs auto_threshold
+    contour = simple.Contour(...)  # ParaView tracks
+    
+    return {
+        "provenance": {
+            "filter_chain": self._mcp.extract_filter_chain(contour),
+            "analysis": self._mcp.get_analysis_log()
+        }
+    }
+```
+
+**Example Provenance**:
+```json
+{
+  "filter_chain": [
+    {"filter": "XMLMultiBlockDataReader", "output": "Reader1", "params": {"FileName": "test.vtm"}},
+    {"filter": "MergeBlocks", "output": "MergeBlocks1", "input": "Reader1"},
+    {"filter": "Gradient", "output": "Gradient1", "input": "MergeBlocks1", 
+     "params": {"ScalarArray": "Velocity", "ComputeQCriterion": 1}},
+    {"filter": "Contour", "output": "Contour1", "input": "Gradient1",
+     "params": {"ContourBy": "Q", "Isosurfaces": [28.06]}}
+  ],
+  "analysis": [
+    {"type": "auto_threshold", "method": "percentile", "percentile": 50.0,
+     "field_range": [-23929, 75723], "positive_count": 9257, "result": 28.06}
+  ]
+}
+```
+
+**Benefits**:
+- No duplicate tracking (ParaView tracks filters)
+- Refinements automatically captured on re-extract
+- Full reproducibility: filter_chain + analysis = complete provenance
+
 ### Ontology (ontology.json)
 
 **Used for EXPLANATION only, not execution.**
