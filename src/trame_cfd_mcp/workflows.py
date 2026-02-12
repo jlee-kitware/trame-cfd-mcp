@@ -467,16 +467,18 @@ class CFDWorkflows:
         
         return result
 
-    def show_boundary_layer(self, x_location: float = 0.5, probe_length: float = None) -> dict:
+    def show_boundary_layer(self, x_over_chord: float = 0.5, span_fraction: float = 0.5, 
+                            probe_length: float = None) -> dict:
         """
-        Show boundary layer velocity profile at a given x-location.
+        Show boundary layer velocity profile at a given chordwise and spanwise location.
         
         Creates a line probe normal to the body surface and plots velocity vs distance from wall.
         Uses surface-normal probing with multiple edge detection criteria following
         Antares/CERFACS methodology.
         
         Args:
-            x_location: Streamwise location - either absolute coordinate or fraction (0-1) of chord
+            x_over_chord: Chordwise location as fraction of chord (0=LE, 1=TE, default: 0.5)
+            span_fraction: Spanwise location as fraction of span (0=root, 1=tip, default: 0.5 for mid-span)
             probe_length: How far to probe into the flow (default: 30% of chord)
             
         Returns:
@@ -498,7 +500,8 @@ class CFDWorkflows:
         # Compute boundary layer profile using cfd_analysis
         bl_data = self._mcp.compute_boundary_layer_profile(
             proxy=proxy, 
-            x_location=x_location, 
+            x_over_chord=x_over_chord,
+            span_fraction=span_fraction,
             probe_length=probe_length,
             proxy_name=proxy_name
         )
@@ -533,12 +536,12 @@ class CFDWorkflows:
         geom = bl_data["geometry"]
         span_axis = geom["span_axis"]
         x_over_chord = bl_data["x_over_chord"]
-        span_location = bl_data["span_location"]
-        span_fraction = bl_data["span_fraction"]
+        span_absolute = bl_data["span_absolute"]
+        span_frac = bl_data["span_fraction"]
         
         chart_view = simple.CreateXYPlotView()
         chart_view.ViewSize = [600, 500]
-        chart_view.ChartTitle = f'Boundary Layer Profile at x/c={x_over_chord:.2f}, {span_axis}={span_location:.3f} ({span_fraction*100:.0f}% span)'
+        chart_view.ChartTitle = f'Boundary Layer Profile at x/c={x_over_chord:.2f}, {span_axis}={span_absolute:.3f} ({span_frac*100:.0f}% span)'
         chart_view.BottomAxisTitle = 'u / Ue'
         chart_view.LeftAxisTitle = 'y (distance from wall)'
         chart_view.ShowLegend = 0
@@ -560,11 +563,10 @@ class CFDWorkflows:
         result = {
             "status": "created",
             "type": "boundary_layer_profile",
-            "x_location": bl_data["x_location"],
-            "x_absolute": bl_data["x_absolute"],
             "x_over_chord": bl_data["x_over_chord"],
-            "span_location": bl_data["span_location"],
+            "x_absolute": bl_data["x_absolute"],
             "span_fraction": bl_data["span_fraction"],
+            "span_absolute": bl_data["span_absolute"],
             "surface_point": bl_data["surface_point"],
             "surface_normal": bl_data["surface_normal"],
             "num_points": len(y),
@@ -582,8 +584,8 @@ class CFDWorkflows:
                 "filter_chain": ["MergeBlocks", "ExtractSurface", "SurfaceNormals", "PlotOverLine"],
                 "arrays_used": ["Velocity", "Normals"],
                 "parameters": {
-                    "x_location": x_location,
-                    "x_absolute": bl_data["x_absolute"],
+                    "x_over_chord": x_over_chord,
+                    "span_fraction": span_fraction,
                     "probe_length": bl_data["probe_length"]
                 }
             },
@@ -593,9 +595,10 @@ class CFDWorkflows:
                 "theta": bl_data["theta"],
                 "shape_factor": bl_data["shape_factor"],
                 "u_edge": bl_data["u_edge"],
-                "x_over_chord": x_over_chord
+                "x_over_chord": bl_data["x_over_chord"],
+                "span_fraction": bl_data["span_fraction"]
             },
-            "tip": f"Boundary layer chart created. Call show_boundary_layer(x_location={x_over_chord + 0.1:.2f}) to probe at a different location. Use save_screenshot() to capture."
+            "tip": f"Boundary layer at x/c={bl_data['x_over_chord']:.2f}, span={bl_data['span_fraction']:.2f}. Try show_boundary_layer(x_over_chord={min(x_over_chord + 0.2, 0.9):.1f}, span_fraction={span_fraction:.1f}) for next station."
         }
         
         return result

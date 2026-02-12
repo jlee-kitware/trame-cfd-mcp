@@ -93,7 +93,7 @@ def main():
         ("show_slice (center)", workflows.show_slice, {"location": "center"}),
         ("show_slice (span)", workflows.show_slice, {"location": "span", "offset": 0.25}),
         ("show_histogram", workflows.show_histogram, {"field": "p"}),
-        ("show_boundary_layer", workflows.show_boundary_layer, {"x_location": 0.5}),
+        ("show_boundary_layer", workflows.show_boundary_layer, {"x_over_chord": 0.5, "span_fraction": 0.5}),
         ("show_flow_topology", workflows.show_flow_topology, {}),
         ("show_forces", workflows.show_forces, {}),
         ("get_fields", workflows.get_fields, {}),

@@ -41,10 +41,11 @@ async def main():
     print(f'{len(llm.tools)} tools discovered')
     print(f'Model: {llm.config.model}\n')
     
-    # Boundary layer analysis prompt
-    prompt = """Analyze the boundary layer at several locations along the body (x=0.3, 0.5, 0.7).
-Compare the boundary layer thickness and shape factor at each location.
-What does this tell us about the flow development and drag?
+    # Boundary layer analysis prompt - non-leading
+    prompt = """Analyze how the boundary layer develops along the body. 
+Pick an appropriate span station and sample the boundary layer at several chordwise locations.
+Compare the boundary layer thickness and shape factor to understand flow development.
+What does this tell us about transition and drag?
 Save the charts to output/bl_*.png"""
     
     print(f'PROMPT: {prompt}')

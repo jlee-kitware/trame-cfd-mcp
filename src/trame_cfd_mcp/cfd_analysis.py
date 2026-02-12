@@ -3696,17 +3696,19 @@ out.GetPointData().AddArray(arr)
         return result, data
 
 
-    def compute_boundary_layer_profile(self, proxy=None, x_location: float = 0.5, 
+    def compute_boundary_layer_profile(self, proxy=None, x_over_chord: float = 0.5, 
+                                        span_fraction: float = 0.5,
                                         probe_length: float = None, proxy_name: str = None) -> dict:
         """
-        Compute boundary layer profile data at a given streamwise location.
+        Compute boundary layer profile data at a given chordwise and spanwise location.
         
         Probes normal to the body surface and computes BL quantities using
         multiple edge detection criteria (99% velocity, Haase diagnostic).
         
         Args:
             proxy: Data proxy (default: active source)
-            x_location: Streamwise location - absolute or fraction (0-1) of chord
+            x_over_chord: Chordwise location as fraction of chord (0=leading edge, 1=trailing edge)
+            span_fraction: Spanwise location as fraction of span (0=root/min, 1=tip/max, 0.5=mid-span)
             probe_length: Probe distance (default: 30% of chord)
             proxy_name: Proxy name for span detection
             
@@ -3796,36 +3798,41 @@ out.GetPointData().AddArray(arr)
         if probe_length is None:
             probe_length = 0.3 * chord
         
-        # Convert x_location to absolute
-        if 0 <= x_location <= 1 and chord > 1:
-            x_abs = stream_min + x_location * chord
-        else:
-            x_abs = x_location
+        # Convert x_over_chord to absolute
+        x_abs = stream_min + x_over_chord * chord
+        
+        # Convert span_fraction to absolute
+        span_target = span_min + span_fraction * span_extent
         
         # Tolerances
-        x_tolerance = 0.1 * chord
-        span_tolerance = 0.2 * span_extent
-        symmetry_offset = 0.05 * span_extent
+        x_tolerance = 0.05 * chord
+        span_tolerance = 0.05 * span_extent
         
-        # Find surface point on upper surface
+        # Find surface point on upper surface at specified x/c and span location
         mask = (
             (np.abs(points[:,stream_idx] - x_abs) < x_tolerance) &
-            (np.abs(points[:,span_idx] - span_min) < span_tolerance) &
+            (np.abs(points[:,span_idx] - span_target) < span_tolerance) &
             (points[:,vert_idx] > vert_center)
         )
         candidates = np.where(mask)[0]
         
+        # Widen search if needed
         if len(candidates) == 0:
-            mask = np.abs(points[:,stream_idx] - x_abs) < 0.2 * chord
+            mask = (
+                (np.abs(points[:,stream_idx] - x_abs) < 0.1 * chord) &
+                (np.abs(points[:,span_idx] - span_target) < 0.1 * span_extent) &
+                (points[:,vert_idx] > vert_center)
+            )
             candidates = np.where(mask)[0]
         
         if len(candidates) == 0:
             cleanup()
-            return {"error": f"No surface point found near x={x_location}"}
+            return {"error": f"No surface point found near x/c={x_over_chord}, span={span_fraction}"}
         
-        # Pick closest point
-        x_diffs = np.abs(points[candidates, stream_idx] - x_abs)
-        best_idx = candidates[np.argmin(x_diffs)]
+        # Pick closest point to target location
+        target = np.array([x_abs if i == stream_idx else span_target if i == span_idx else vert_center for i in range(3)])
+        distances = np.linalg.norm(points[candidates] - target, axis=1)
+        best_idx = candidates[np.argmin(distances)]
         
         surface_point = points[best_idx].copy()
         surface_normal = normal_arr[best_idx].copy()
@@ -3834,10 +3841,6 @@ out.GetPointData().AddArray(arr)
         from_body_center = surface_point - body_center
         if np.dot(surface_normal, from_body_center) < 0:
             surface_normal = -surface_normal
-        
-        # Offset from symmetry plane
-        if surface_point[span_idx] < span_min + symmetry_offset:
-            surface_point[span_idx] = span_min + symmetry_offset
         
         # Create line probe
         end_point = surface_point + probe_length * surface_normal
@@ -3932,11 +3935,10 @@ out.GetPointData().AddArray(arr)
             "shape_factor": float(shape_factor),
             "surface_point": surface_point.tolist(),
             "surface_normal": surface_normal.tolist(),
-            "x_location": x_location,
+            "x_over_chord": float(x_over_chord),
             "x_absolute": float(x_abs),
-            "x_over_chord": float(x_abs / chord) if chord > 0 else float(x_abs),
-            "span_location": float(span_location),
             "span_fraction": float(span_fraction),
+            "span_absolute": float(surface_point[span_idx]),
             "geometry": {
                 "chord": float(chord),
                 "span_extent": float(span_extent),
@@ -3950,7 +3952,8 @@ out.GetPointData().AddArray(arr)
         
         self._log_analysis(
             "boundary_layer_profile",
-            x_location=x_location,
+            x_over_chord=x_over_chord,
+            span_fraction=span_fraction,
             delta=float(delta),
             delta_star=float(delta_star),
             theta=float(theta),
