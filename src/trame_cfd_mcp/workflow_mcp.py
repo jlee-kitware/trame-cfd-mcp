@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Workflow-based MCP for CFD visualization.
 
@@ -31,7 +30,7 @@ class WorkflowMCP:
             base_mcp: ParaViewMCP instance from trame-llm
         """
         self._base_mcp = base_mcp
-        self._analysis = CFDAnalysis(base_mcp)
+        self._analysis = CFDAnalysis()
         self._workflows = CFDWorkflows(self._analysis)
         self._ontology = CFD_ONTOLOGY
     
@@ -173,7 +172,7 @@ class WorkflowMCP:
                 "name": name,
                 "property": actual_prop,
                 "value": value,
-                "tip": f"Display property set. Opacity=0 is invisible, Opacity=1 is fully opaque."
+                "tip": "Display property set. Opacity=0 is invisible, Opacity=1 is fully opaque."
             }
         except Exception as e:
             return {"error": str(e)}
@@ -213,14 +212,6 @@ class WorkflowMCP:
     
     def get_mcp(self) -> dict:
         """Return MCP declaration with workflow and refinement tools."""
-        
-        # Format ontology for instructions
-        flow_features = self._ontology.get("flow_features", {})
-        feature_summary = []
-        for name, info in flow_features.items():
-            desc = info.get("description", "")
-            feature_summary.append(f"- {name}: {desc}")
-        
         return {
             "name": "cfd_visualization",
             "instructions": """

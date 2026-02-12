@@ -63,14 +63,14 @@ async def main():
             if proxy != reader:
                 try:
                     simple.Delete(proxy)
-                except:
+                except Exception:
                     pass
         
         for v in simple.GetViews():
             if v != view:
                 try:
                     simple.Delete(v)
-                except:
+                except Exception:
                     pass
         
         simple.SetActiveView(view)

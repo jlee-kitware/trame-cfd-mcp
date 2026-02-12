@@ -30,22 +30,9 @@ FIELD_TYPE_PATTERNS = {
 
 
 class CFDAnalysis:
-    """
-    CFD analysis methods for ParaView.
+    """CFD analysis functions for ParaView visualization workflows."""
     
-    Used internally by WorkflowMCP to implement high-level workflows.
-    Not intended for direct LLM use.
-    
-    Usage:
-        # Don't use directly - use WorkflowMCP instead:
-        from trame_cfd_mcp import WorkflowMCP
-        workflow_mcp = WorkflowMCP(base_mcp)
-        llm_client.register_mcp(workflow_mcp)
-    """
-    
-    def __init__(self, paraview_mcp):
-        self._base = paraview_mcp
-        self.base_mcp = paraview_mcp  # Also expose as base_mcp for convenience
+    def __init__(self):
         self._chart_view_queue = []
         self._body_bounds_cache = {}
     
@@ -161,21 +148,6 @@ class CFDAnalysis:
         
         return result
     
-    @property
-    def mcp(self):
-        """
-        DEPRECATED: Use WorkflowMCP instead.
-        
-        This property was used for direct LLM orchestration of fine-grained tools,
-        which proved unreliable. WorkflowMCP provides high-level workflow tools
-        that execute deterministically.
-        """
-        raise NotImplementedError(
-            "CFDAnalysis.mcp is deprecated. Use WorkflowMCP instead:\n"
-            "  workflow_mcp = WorkflowMCP(base_mcp)\n"
-            "  llm.register_mcp(workflow_mcp)"
-        )
-    
     def get_visibility_state(self) -> dict:
         """Get visibility state of all proxies in the current view."""
         view = simple.GetActiveView()
@@ -194,9 +166,6 @@ class CFDAnalysis:
     # =========================================================================
     # DATA VALIDATION AND CHARACTERIZATION
     # =========================================================================
-    
-    # Cache for body bounds to avoid repeated ExtractSurface + Clip creation
-    _body_bounds_cache = {}
     
     def _get_body_bounds(self, proxy, clip_margin: float = 0.05):
         """

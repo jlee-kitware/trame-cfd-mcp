@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 High-level CFD workflow tools.
 
@@ -476,7 +475,7 @@ class CFDWorkflows:
             result["interpretation"] = {
                 "claim": f"Histogram shows distribution of {result.get('field', field)}. Asymmetric distributions may indicate flow features."
             }
-            result["tip"] = f"Histogram is a chart view. Use save_screenshot() to capture it."
+            result["tip"] = "Histogram is a chart view. Use save_screenshot() to capture it."
         
         return result
 
