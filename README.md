@@ -232,10 +232,11 @@ User: "Make them semi-transparent and color by pressure"
 | `show_slice(location, normal)` | Slice through wake or domain center |
 | `show_histogram(field)` | Field distribution chart |
 | `show_forces()` | Force distribution along body (uses projected frontal area for Cd) |
-| `show_boundary_layer(x_location)` | Boundary layer profile with δ, δ*, θ, H (Antares methodology) |
+| `show_boundary_layer(x_over_chord, span_fraction)` | Boundary layer profile with δ, δ*, θ, H |
 | `show_flow_topology()` | Vortex core lines via VTK VortexCores filter |
 | `get_ontology()` | CFD domain knowledge for explanations |
-| `save_screenshot(filename)` | Save current view (3D or chart) |
+| `save_screenshot(filename)` | Save current view (3D render or next chart in queue) |
+| `save_all_charts(prefix)` | Save all pending charts (e.g., multiple BL profiles) |
 | `save_state(filename)` | Save full ParaView state for reproducibility |
 | `set_view(direction)` | Set camera angle |
 
@@ -303,14 +304,22 @@ The LLM retrieves this via `get_ontology()` when explaining visualizations. The 
 
 ### Boundary Layer Analysis
 
-`show_boundary_layer(x_location)` provides comprehensive boundary layer characterization:
+`show_boundary_layer(x_over_chord, span_fraction)` provides comprehensive boundary layer characterization:
 
-- **Surface-normal probing**: Automatically detects body surface and probes perpendicular to it
-- **Multiple edge detection criteria** (following Antares/CERFACS methodology):
+- **Explicit station selection**: Specify chordwise position (0=LE, 1=TE) and span fraction (0=root, 1=tip)
+- **Plane-cut methodology**: Cuts spanwise plane to get true airfoil section, then probes normal to surface
+- **Geometric sampling**: Uses `BoundaryLayerSampler` with dense near-wall points (~50 vs 200 uniform)
+- **Multiple edge detection criteria**:
   - 99% of local edge velocity
   - Haase diagnostic function: y × |du/dy| maximum
 - **Integral quantities**: δ (thickness), δ* (displacement), θ (momentum), H (shape factor)
-- **Flow state indication**: H ≈ 1.3-1.4 turbulent, H ≈ 2.6 laminar
+- **Flow state indication**: H ≈ 1.3-1.4 turbulent, H ≈ 2.6 laminar, H > 3.5 separation risk
+
+**Modular line samplers** (`line_samplers.py`) support different sampling strategies:
+- `UniformSampler` - even spacing
+- `GeometricSampler` - geometric progression from wall
+- `TanhSampler` - hyperbolic tangent stretching  
+- `BoundaryLayerSampler` - two-region geometric (default, optimized for BL)
 
 ### Projected Frontal Area
 
