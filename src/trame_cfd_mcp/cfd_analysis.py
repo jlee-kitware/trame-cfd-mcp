@@ -1843,7 +1843,7 @@ out.GetPointData().AddArray(arr)
             if merge_input != proxy:
                 simple.Delete(merge_input)
             
-            return {
+            result = {
                 "drag_force": float(drag),
                 "lift_force": float(lift),
                 "force_x": float(force_x),
@@ -1859,6 +1859,18 @@ out.GetPointData().AddArray(arr)
                 "streamwise_axis": streamwise_axis,
                 "lift_axis": lift_axis,
             }
+            
+            self._log_analysis(
+                "force_computation",
+                Cd=float(Cd),
+                Cl=float(Cl),
+                drag_force=float(drag),
+                lift_force=float(lift),
+                reference_area=float(reference_area),
+                freestream_velocity=float(freestream_velocity)
+            )
+            
+            return result
             
         except Exception as e:
             return {"error": str(e)}
@@ -2189,7 +2201,7 @@ out.GetPointData().AddArray(arr)
             simple.Delete(clip)
             simple.Delete(merge)
             
-            return {
+            result = {
                 "area": float(area),
                 "pixel_count": covered_pixels,
                 "pixel_size": float(pixel_size),
@@ -2197,6 +2209,15 @@ out.GetPointData().AddArray(arr)
                 "flow_direction": flow.tolist(),
                 "body_bounds": body_bounds
             }
+            
+            self._log_analysis(
+                "projected_area",
+                area=float(area),
+                flow_direction=flow.tolist(),
+                resolution=resolution
+            )
+            
+            return result
             
         except Exception as e:
             return {"error": str(e)}
@@ -2633,11 +2654,19 @@ out.GetPointData().AddArray(arr)
                     best_dot = dot
                     best_dir = name
             
-            return {
+            result = {
                 "streamwise": best_dir,
                 "direction_vector": avg_direction.tolist(),
                 "confidence": float(best_dot)  # 1.0 = perfectly aligned with axis
             }
+            
+            self._log_analysis(
+                "streamwise_direction",
+                streamwise=best_dir,
+                confidence=float(best_dot)
+            )
+            
+            return result
         except Exception as e:
             return {"error": str(e)}
     
@@ -2687,7 +2716,7 @@ out.GetPointData().AddArray(arr)
                 (body_bounds[4] + body_bounds[5]) / 2
             ]
             
-            return {
+            result = {
                 "span_axis": span_axis,
                 "streamwise_axis": streamwise_axis,
                 "vertical_axis": vertical_axis,
@@ -2696,6 +2725,15 @@ out.GetPointData().AddArray(arr)
                 "body_center": body_center,
                 "span_extent": extents[span_axis],
             }
+            
+            self._log_analysis(
+                "span_direction",
+                span_axis=span_axis,
+                streamwise_axis=streamwise_axis,
+                span_extent=extents[span_axis]
+            )
+            
+            return result
             
         except Exception as e:
             return {"error": str(e)}
@@ -2743,7 +2781,7 @@ out.GetPointData().AddArray(arr)
             normal_vector = [0.0, 0.0, 0.0]
             normal_vector[axis_idx] = 1.0
             
-            return {
+            result = {
                 "origin": origin,
                 "normal_vector": normal_vector,
                 "normal_axis": span_axis,
@@ -2755,6 +2793,15 @@ out.GetPointData().AddArray(arr)
                 "streamwise_axis": span_info["streamwise_axis"],
                 "vertical_axis": span_info["vertical_axis"],
             }
+            
+            self._log_analysis(
+                "spanwise_slice_params",
+                offset=offset,
+                span_axis=span_axis,
+                origin=origin
+            )
+            
+            return result
             
         except Exception as e:
             return {"error": str(e)}
@@ -3108,13 +3155,22 @@ out.GetPointData().AddArray(arr)
             normal_vector = [0.0, 0.0, 0.0]
             normal_vector[axis_idx] = 1.0
             
-            return {
+            result = {
                 "origin": origin,
                 "normal_vector": normal_vector,
                 "normal_axis": normal,
                 "body_center": center,
                 "body_bounds": list(body_bounds),
             }
+            
+            self._log_analysis(
+                "slice_params",
+                normal=normal,
+                offset=offset,
+                origin=origin
+            )
+            
+            return result
             
         except Exception as e:
             return {"error": str(e)}
@@ -3857,7 +3913,7 @@ out.GetPointData().AddArray(arr)
         span_location = surface_point[span_idx]
         span_fraction = (span_location - span_min) / span_extent if span_extent > 0 else 0
         
-        return {
+        result = {
             "y": y.tolist(),
             "u": u.tolist(),
             "u_normalized": u_normalized.tolist(),
@@ -3887,3 +3943,15 @@ out.GetPointData().AddArray(arr)
             },
             "probe_length": float(probe_length)
         }
+        
+        self._log_analysis(
+            "boundary_layer_profile",
+            x_location=x_location,
+            delta=float(delta),
+            delta_star=float(delta_star),
+            theta=float(theta),
+            shape_factor=float(shape_factor),
+            u_edge=float(u_edge)
+        )
+        
+        return result
