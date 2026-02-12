@@ -140,7 +140,7 @@ User Query: "Analyze the wake and explain drag"
                     │
                     ▼
         ┌───────────────────────┐
-        │    WorkflowMCP        │  13 high-level tools    ─┐
+        │    WorkflowMCP        │  21 high-level tools    ─┐
         │  - show_vortices()    │  Deterministic execution  │
         │  - show_streamlines() │  Full provenance tracking │
         │  - show_slice()       │                           │ trame-cfd-mcp
@@ -334,6 +334,24 @@ The LLM retrieves this via `get_ontology()` when explaining visualizations. The 
 
 `show_flow_topology()` extracts vortex core lines using VTK's VortexCores filter, which is more appropriate for external aerodynamics than critical point analysis (which finds spurious points on no-slip walls).
 
+### Chart Saving
+
+Workflows that create charts (`show_boundary_layer`, `show_histogram`, `show_forces`) queue them for saving:
+
+- **Single chart**: `save_screenshot("output/histogram.png")` - saves next chart in queue
+- **Multiple charts**: `save_all_charts(prefix="output/bl")` - saves all pending charts as `bl_0.png`, `bl_1.png`, etc.
+
+Example workflow for multiple boundary layer profiles:
+```python
+# LLM calls show_boundary_layer multiple times
+show_boundary_layer(x_over_chord=0.2, span_fraction=0.5)  # creates chart
+show_boundary_layer(x_over_chord=0.5, span_fraction=0.5)  # creates chart
+show_boundary_layer(x_over_chord=0.8, span_fraction=0.5)  # creates chart
+
+# Then saves all at once
+save_all_charts(prefix="output/bl")  # -> bl_0.png, bl_1.png, bl_2.png
+```
+
 ## Cost Tracking
 
 Every test automatically reports costs:
@@ -385,19 +403,22 @@ All tests save:
 ```
 src/trame_cfd_mcp/
 ├── __init__.py          # Package exports
-├── workflow_mcp.py      # High-level workflow tools (20 tools)
+├── workflow_mcp.py      # High-level workflow tools (21 tools)
 ├── workflows.py         # Workflow implementations
 ├── cfd_analysis.py      # CFD analysis functions
+├── line_samplers.py     # Modular line sampling strategies
 ├── ontology.json        # CFD domain knowledge
 └── cost_tracker.py      # Token/cost tracking
 
 examples/cfd_assistant/
 ├── test_utils.py        # Shared test utilities
-├── test_workflows.py    # Test individual workflows
+├── test_workflows.py    # Test individual workflows (with LLM)
+├── test_workflows_basic.py  # Test workflows without LLM
 ├── test_refinement.py   # Test workflow + refinement pattern
 ├── test_ontology.py     # Test explanation capability
 ├── test_analysis.py     # Test multi-step reasoning
-├── test_boundary_layer.py  # Test boundary layer extraction
+├── test_boundary_layer.py  # Test boundary layer extraction (with LLM)
+├── test_boundary_layer_debug.py  # Test BL with debug visualization
 ├── test_spanwise_slice.py  # Test spanwise slice positioning
 └── test.vtm             # Sample CFD dataset
 ```
