@@ -93,17 +93,24 @@ This separates execution (deterministic) from explanation (LLM strength).
 
 ### 3. Rich Return Values Enable Reasoning
 
-Workflows return analysis data, not just "done":
+Workflows return data and provenance, not just "done":
 
 ```python
 {
     "status": "created",
     "type": "vortex_isosurface", 
     "method": "q_criterion",
-    "threshold": 28.06,
-    "field_range": [-23929, 75723],
-    "color_by": "Velocity",
-    "tip": "Threshold auto-computed. Adjust percentile for more/fewer structures."
+    "proxy_name": "Contour1",
+    "result": {
+        "field": "Q",
+        "threshold": 28.06,
+        "field_range": [-23929, 75723]
+    },
+    "provenance": {
+        "filter_chain": [...],  # ParaView filters created
+        "analysis": [...]       # Why those parameters
+    },
+    "tip": "To show MORE structures: update_list_property(...)"
 }
 ```
 

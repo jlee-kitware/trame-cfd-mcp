@@ -169,7 +169,7 @@ User Query: "Analyze the wake and explain drag"
 
 1. **LLM reasons, workflows execute** - LLM decides what to do; Python does it deterministically
 2. **Ontology for explanation** - Domain knowledge helps LLM explain physics, not control execution
-3. **Full provenance** - Every workflow returns dataset, filter chain, parameters, and claims
+3. **Full provenance** - Every workflow returns filter chain and analysis decisions for traceability
 4. **Cost tracking built-in** - Monitor token usage and costs
 
 ### Refinement Workflow
@@ -247,25 +247,31 @@ Every workflow returns structured provenance for traceability:
 {
   "status": "created",
   "type": "vortex_isosurface",
-  "provenance": {
-    "dataset": "simulation.vtm",
-    "filter_chain": ["MergeBlocks", "Gradient", "Contour"],
-    "arrays_used": ["Velocity", "Q"],
-    "parameters": {
-      "method": "q_criterion",
-      "threshold": 28.06,
-      "ContourBy": "Q"
-    }
-  },
-  "interpretation": {
+  "proxy_name": "Contour1",
+  "result": {
     "field": "Q",
     "threshold": 28.06,
-    "claim": "Q Criterion > 0 indicates vortex cores where rotation dominates strain"
-  }
+    "field_range": [-23929, 75723]
+  },
+  "provenance": {
+    "dataset": "simulation.vtm",
+    "filter_chain": [
+      {"filter": "Gradient", "params": {"ComputeQCriterion": 1}},
+      {"filter": "Contour", "params": {"Isosurfaces": [28.06]}}
+    ],
+    "analysis": [
+      {"type": "auto_threshold", "method": "percentile", "percentile": 50.0, "result": 28.06}
+    ]
+  },
+  "tip": "To show MORE structures: update_list_property('Isosurfaces', [14.0], 'Contour1')"
 }
 ```
 
-Full results are saved to JSON files for inspection.
+- **result**: Computed values from this execution
+- **provenance.filter_chain**: ParaView filters created (what)
+- **provenance.analysis**: Computational decisions (why)
+
+The LLM uses `get_ontology()` to interpret results - workflows return data, ontology provides domain knowledge.
 
 ## Ontology
 
