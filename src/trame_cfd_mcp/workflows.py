@@ -736,8 +736,8 @@ class CFDWorkflows:
         markers_display.SeriesVisibility = ['z_over_c']
         markers_display.SeriesColor = ['z_over_c', '1', '0', '0']
         markers_display.SeriesLineStyle = ['z_over_c', '0']  # No line
-        markers_display.SeriesMarkerStyle = ['z_over_c', '2']  # Circle
-        markers_display.SeriesMarkerSize = ['z_over_c', '12']
+        markers_display.SeriesMarkerStyle = ['z_over_c', '4']  # Filled circle
+        markers_display.SeriesMarkerSize = ['z_over_c', '15']
         
         simple.Render(chart)
         self._mcp._chart_view_queue.append(chart)
