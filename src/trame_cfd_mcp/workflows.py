@@ -536,92 +536,13 @@ class CFDWorkflows:
         span_absolute = bl_data["span_absolute"]
         span_frac = bl_data["span_fraction"]
         
-        # ===== Section chart with probe location =====
-        section = bl_data["section"]
-        section_chord = section["chord"]
-        le_x = section["le"][section["stream_idx"]]
-        
-        # Normalize coordinates to x/c, z/c
-        suction_contour = np.array(section["suction_contour"])
-        pressure_contour = np.array(section["pressure_contour"]) if section["pressure_contour"] else np.array([])
-        
-        # Write section contour CSV
-        section_csv = os.path.join(tempfile.gettempdir(), 'section_contour.csv')
-        with open(section_csv, 'w') as f:
-            f.write('x_over_c,z_over_c\n')
-            # Suction side (LE to TE)
-            for pt in suction_contour:
-                xc = (pt[0] - le_x) / section_chord
-                zc = pt[1] / section_chord
-                f.write(f'{xc:.6f},{zc:.6f}\n')
-            # Pressure side (TE to LE) - closes the contour
-            if len(pressure_contour) > 0:
-                for pt in pressure_contour:
-                    xc = (pt[0] - le_x) / section_chord
-                    zc = pt[1] / section_chord
-                    f.write(f'{xc:.6f},{zc:.6f}\n')
-        
-        # Write probe location CSV
-        probe_csv = os.path.join(tempfile.gettempdir(), 'probe_location.csv')
-        surface_pt = bl_data["surface_point"]
-        surface_norm = bl_data["surface_normal"]
-        probe_len = bl_data["probe_length"]
-        stream_idx = section["stream_idx"]
-        vert_idx = section["vert_idx"]
-        
-        with open(probe_csv, 'w') as f:
-            f.write('x_over_c,z_over_c\n')
-            # Probe start (on surface)
-            xc = (surface_pt[stream_idx] - le_x) / section_chord
-            zc = surface_pt[vert_idx] / section_chord
-            f.write(f'{xc:.6f},{zc:.6f}\n')
-            # Probe end
-            end_x = surface_pt[stream_idx] + probe_len * surface_norm[stream_idx]
-            end_z = surface_pt[vert_idx] + probe_len * surface_norm[vert_idx]
-            xc_end = (end_x - le_x) / section_chord
-            zc_end = end_z / section_chord
-            f.write(f'{xc_end:.6f},{zc_end:.6f}\n')
-        
-        # Create section chart
-        section_table = simple.CSVReader(FileName=[section_csv])
-        simple.UpdatePipeline(proxy=section_table)
-        
-        probe_table = simple.CSVReader(FileName=[probe_csv])
-        simple.UpdatePipeline(proxy=probe_table)
-        
-        section_chart = simple.CreateXYPlotView()
-        section_chart.ViewSize = [500, 300]
-        section_chart.ChartTitle = f'Section at {span_axis}={span_absolute:.3f} ({span_frac*100:.0f}% span)'
-        section_chart.BottomAxisTitle = 'x/c'
-        section_chart.LeftAxisTitle = 'z/c'
-        section_chart.ShowLegend = 0
-        
-        # Show section contour (black)
-        section_display = simple.Show(section_table, section_chart)
-        section_display.XArrayName = 'x_over_c'
-        section_display.UseIndexForXAxis = 0
-        section_display.SeriesVisibility = ['z_over_c']
-        section_display.SeriesColor = ['z_over_c', '0', '0', '0']
-        section_display.SeriesLineThickness = ['z_over_c', '2']
-        
-        # Show probe (red)
-        probe_display = simple.Show(probe_table, section_chart)
-        probe_display.XArrayName = 'x_over_c'
-        probe_display.UseIndexForXAxis = 0
-        probe_display.SeriesVisibility = ['z_over_c']
-        probe_display.SeriesColor = ['z_over_c', '1', '0', '0']
-        probe_display.SeriesLineThickness = ['z_over_c', '3']
-        
-        simple.Render(section_chart)
-        self._mcp._chart_view_queue.append(section_chart)
-        
         # ===== BL profile chart =====
         table = simple.CSVReader(FileName=[csv_path])
         simple.UpdatePipeline(proxy=table)
         
         chart_view = simple.CreateXYPlotView()
         chart_view.ViewSize = [600, 500]
-        chart_view.ChartTitle = f'Boundary Layer Profile at x/c={x_over_chord:.2f}'
+        chart_view.ChartTitle = f'Boundary Layer at x/c={x_over_chord:.2f}, {span_axis}={span_absolute:.3f} ({span_frac*100:.0f}% span)'
         chart_view.BottomAxisTitle = 'u / Ue'
         chart_view.LeftAxisTitle = 'y (distance from wall)'
         chart_view.ShowLegend = 0
