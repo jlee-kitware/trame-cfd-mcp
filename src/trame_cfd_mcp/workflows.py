@@ -3,6 +3,7 @@ High-level CFD workflow tools.
 
 These wrap the fine-grained tools into complete workflows.
 The LLM just does intent matching - workflows execute deterministically.
+Full provenance tracking enables reproducibility and explanation.
 """
 
 from paraview import simple
@@ -19,6 +20,16 @@ class CFDWorkflows:
             cfd_analysis: CFDAnalysis instance
         """
         self._mcp = cfd_analysis  # Keep as _mcp for minimal code changes
+        self._provenance_registry = {}  # proxy_name -> provenance dict
+    
+    def _register_provenance(self, proxy_name: str, provenance: dict):
+        """Register provenance for a proxy to enable chaining."""
+        if proxy_name and provenance:
+            self._provenance_registry[proxy_name] = provenance
+    
+    def _get_input_provenance(self, proxy_name: str) -> dict:
+        """Get provenance for an input proxy if it was created by a workflow."""
+        return self._provenance_registry.get(proxy_name)
     
     def _get_data_reader(self):
         """Get the original data reader (not CSV/temporary readers)."""
@@ -121,30 +132,30 @@ class CFDWorkflows:
             color_by: Field to color by (default: "Velocity")
             
         Returns:
-            Dict with visualization info including proxy_name
+            Dict with visualization info including proxy_name and full provenance
         """
         view = simple.GetActiveView()
         proxy = self._get_data_reader()
-        proxy_name = self._get_proxy_name(proxy)
+        
+        # Clear analysis log for fresh provenance
+        self._mcp.clear_analysis_log()
         
         # Hide all first
         self._mcp.hide_all()
         
-        # Compute vortex field
-        vortex = self._mcp.compute_vortex_field(method=method, proxy_name=proxy_name)
+        # Compute vortex field (logs analysis decisions)
+        vortex = self._mcp.compute_vortex_field(method=method, proxy_name=self._get_proxy_name(proxy))
         if "error" in vortex:
             return vortex
         
         # Create contour on the vortex field proxy
         vortex_proxy = simple.FindSource(vortex["proxy_name"])
         contour = simple.Contour(Input=vortex_proxy)
-        
-        # Set ContourBy to the vortex field (CRITICAL!)
         contour.ContourBy = ['POINTS', vortex["field_name"]]
-        
-        # Set isosurface value
         contour.Isosurfaces = [vortex["threshold"]]
         simple.UpdatePipeline(proxy=contour)
+        
+        contour_name = self._get_proxy_name(contour)
         
         # Show and color
         display = simple.Show(contour, view)
@@ -154,33 +165,29 @@ class CFDWorkflows:
             display.RescaleTransferFunctionToDataRange(True, False)
             display.SetScalarBarVisibility(view, True)
         
-        # Focus on result
         simple.ResetCamera(view)
         simple.Render(view)
         
-        # Get contour name
-        contour_name = None
-        for name, p in simple.GetSources().items():
-            if p == contour:
-                contour_name = name[0]
-                break
+        # Build provenance: filter chain from ParaView, analysis from our log
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(contour),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {
+                "color_by": color_array or color_by,
+                "representation": "Surface"
+            }
+        }
+        
+        # Register for chaining
+        self._register_provenance(contour_name, provenance)
         
         return {
             "status": "created",
             "type": "vortex_isosurface", 
             "method": method,
             "proxy_name": contour_name,
-            "provenance": {
-                "dataset": self._get_dataset_filename(proxy),
-                "filter_chain": ["MergeBlocks", "Gradient", "Contour"],
-                "arrays_used": ["Velocity", vortex["field_name"]],
-                "parameters": {
-                    "method": method,
-                    "threshold": vortex["threshold"],
-                    "ContourBy": vortex["field_name"],
-                    "color_by": color_array or color_by
-                }
-            },
+            "provenance": provenance,
             "interpretation": {
                 "field": vortex["field_name"],
                 "threshold": vortex["threshold"],
@@ -203,24 +210,25 @@ class CFDWorkflows:
             num_points: Number of seed points (default: 100)
             
         Returns:
-            Dict with visualization info including proxy_name
+            Dict with visualization info including proxy_name and provenance
         """
         view = simple.GetActiveView()
         proxy = self._get_data_reader()
         proxy_name = self._get_proxy_name(proxy)
         
+        # Clear analysis log for fresh provenance
+        self._mcp.clear_analysis_log()
+        
         # Hide all first
         self._mcp.hide_all()
         
-        # Compute seed parameters
+        # Compute seed parameters (logs analysis decisions)
         seed = self._mcp.compute_streamline_seed(proxy_name=proxy_name)
         if "error" in seed:
             return seed
         
         # Create StreamTracer
         stream = simple.StreamTracer(Input=proxy)
-        
-        # Configure all parameters
         stream.SeedType = "Point Cloud"
         stream.SeedType.Center = seed["center"]
         stream.SeedType.Radius = seed["radius"]
@@ -228,6 +236,8 @@ class CFDWorkflows:
         stream.MaximumStreamlineLength = seed["max_length"]
         stream.Vectors = ['POINTS', 'Velocity']
         simple.UpdatePipeline(proxy=stream)
+        
+        stream_name = self._get_proxy_name(stream)
         
         # Show and color
         display = simple.Show(stream, view)
@@ -237,35 +247,28 @@ class CFDWorkflows:
             display.RescaleTransferFunctionToDataRange(True, False)
             display.SetScalarBarVisibility(view, True)
         
-        # Focus
         simple.ResetCamera(view)
         simple.Render(view)
         
-        # Get name
-        stream_name = None
-        for name, p in simple.GetSources().items():
-            if p == stream:
-                stream_name = name[0]
-                break
+        # Build provenance
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(stream),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {
+                "color_by": color_array or color_by,
+                "representation": "Surface"
+            }
+        }
+        
+        self._register_provenance(stream_name, provenance)
         
         return {
             "status": "created",
             "type": "streamlines",
             "proxy_name": stream_name,
-            "provenance": {
-                "dataset": self._get_dataset_filename(proxy),
-                "filter_chain": ["StreamTracer"],
-                "arrays_used": ["Velocity"],
-                "parameters": {
-                    "seed_center": seed["center"],
-                    "seed_radius": seed["radius"],
-                    "num_points": num_points,
-                    "max_length": seed["max_length"],
-                    "color_by": color_array or color_by
-                }
-            },
+            "provenance": provenance,
             "interpretation": {
-                "seed_location": seed.get("source", "wake"),
                 "claim": "Streamlines show flow path lines. In wake region, they reveal recirculation and separation."
             },
             "tip": f"To refine: update_color('{stream_name}', field_name='pressure') to recolor, or update_representation('Wireframe', '{stream_name}') to change style."
@@ -295,18 +298,20 @@ class CFDWorkflows:
             representation: "Surface" or "Surface LIC" for flow patterns
             
         Returns:
-            Dict with visualization info including proxy_name
+            Dict with visualization info including proxy_name and provenance
         """
         view = simple.GetActiveView()
         proxy = self._get_data_reader()
         proxy_name = self._get_proxy_name(proxy)
         
+        # Clear analysis log for fresh provenance
+        self._mcp.clear_analysis_log()
+        
         # Hide all first
         self._mcp.hide_all()
         
-        # Determine slice parameters based on location
+        # Determine slice parameters based on location (logs analysis decisions)
         if location in ("span", "spanwise"):
-            # Use spanwise slice params from cfd_analysis
             slice_params = self._mcp.compute_spanwise_slice_params(
                 offset=offset, 
                 proxy_name=proxy_name
@@ -322,7 +327,6 @@ class CFDWorkflows:
             location = f"span (offset={offset:.2f})"
             
         else:
-            # Get span info for metadata
             span_info = self._mcp.detect_span_direction(proxy_name=proxy_name)
             span_axis = span_info.get("span_axis", "z")
             streamwise_axis = span_info.get("streamwise_axis", "x")
@@ -370,6 +374,8 @@ class CFDWorkflows:
         slice_filter.SliceType.Normal = normal_vec
         simple.UpdatePipeline(proxy=slice_filter)
         
+        slice_name = self._get_proxy_name(slice_filter)
+        
         # Show with representation
         display = simple.Show(slice_filter, view)
         
@@ -388,7 +394,7 @@ class CFDWorkflows:
         # Set view perpendicular to slice
         self._mcp.set_view(direction=f"-{slice_normal}")
         
-        # Focus on slice (zoom to body region for span slices)
+        # Focus on slice
         if location.startswith("span") and body_bounds:
             view.ResetCamera(body_bounds[0], body_bounds[1], 
                            body_bounds[2], body_bounds[3], 
@@ -398,12 +404,18 @@ class CFDWorkflows:
             view.ResetCamera(*bounds, False, 0.9)
         simple.Render(view)
         
-        # Get name
-        slice_name = None
-        for name, p in simple.GetSources().items():
-            if p == slice_filter:
-                slice_name = name[0]
-                break
+        # Build provenance
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(slice_filter),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {
+                "color_by": color_array or color_by,
+                "representation": representation
+            }
+        }
+        
+        self._register_provenance(slice_name, provenance)
         
         return {
             "status": "created",
@@ -411,19 +423,7 @@ class CFDWorkflows:
             "proxy_name": slice_name,
             "span_axis": span_axis,
             "streamwise_axis": streamwise_axis,
-            "provenance": {
-                "dataset": self._get_dataset_filename(proxy),
-                "filter_chain": ["Slice"],
-                "arrays_used": [color_array or color_by],
-                "parameters": {
-                    "origin": list(origin),
-                    "normal": slice_normal,
-                    "location": location,
-                    "offset": offset,
-                    "color_by": color_by,
-                    "representation": representation
-                }
-            },
+            "provenance": provenance,
             "interpretation": {
                 "location_type": location,
                 "claim": f"Slice shows {color_array or color_by} distribution. " +

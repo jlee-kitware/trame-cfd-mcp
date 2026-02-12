@@ -35,6 +35,112 @@ class CFDAnalysis:
     def __init__(self):
         self._chart_view_queue = []
         self._body_bounds_cache = {}
+        self._analysis_log = []  # Track analysis decisions for provenance
+    
+    # =========================================================================
+    # Provenance tracking
+    # =========================================================================
+    
+    def _log_analysis(self, analysis_type: str, **details):
+        """
+        Log an analysis decision for provenance.
+        
+        Call this whenever CFDAnalysis makes a decision that ParaView doesn't
+        track - threshold computations, wake detection, seed placement, etc.
+        """
+        self._analysis_log.append({"type": analysis_type, **details})
+    
+    def get_analysis_log(self) -> list:
+        """Get the accumulated analysis log."""
+        return self._analysis_log.copy()
+    
+    def clear_analysis_log(self):
+        """Clear the analysis log. Call at start of each workflow."""
+        self._analysis_log = []
+    
+    def extract_filter_chain(self, proxy) -> list:
+        """
+        Extract full filter chain by walking ParaView's input chain.
+        
+        Returns list of filters from root (reader) to the given proxy,
+        with key parameters for each filter.
+        """
+        chain = []
+        current = proxy
+        
+        while current is not None:
+            name = self._get_source_name(current)
+            xml_name = current.GetXMLName()
+            params = self._get_filter_params(current)
+            
+            # Get input
+            input_proxy = None
+            input_name = None
+            if hasattr(current, 'Input') and current.Input:
+                input_proxy = current.Input
+                input_name = self._get_source_name(input_proxy)
+            
+            entry = {'filter': xml_name, 'output': name}
+            if input_name:
+                entry['input'] = input_name
+            if params:
+                entry['params'] = params
+            
+            chain.append(entry)
+            current = input_proxy
+        
+        chain.reverse()
+        return chain
+    
+    def _get_filter_params(self, proxy) -> dict:
+        """Extract key parameters based on filter type."""
+        xml_name = proxy.GetXMLName()
+        params = {}
+        
+        try:
+            if xml_name == 'Gradient':
+                if hasattr(proxy, 'ScalarArray') and proxy.ScalarArray:
+                    params['ScalarArray'] = proxy.ScalarArray[1]
+                params['ComputeQCriterion'] = int(proxy.ComputeQCriterion)
+                params['ComputeVorticity'] = int(proxy.ComputeVorticity)
+            elif xml_name == 'Contour':
+                if hasattr(proxy, 'ContourBy') and proxy.ContourBy:
+                    params['ContourBy'] = proxy.ContourBy[1]
+                params['Isosurfaces'] = list(proxy.Isosurfaces)
+            elif xml_name == 'Slice':
+                st = proxy.SliceType
+                params['SliceType'] = st.GetXMLName() if hasattr(st, 'GetXMLName') else 'Plane'
+                if hasattr(st, 'Origin'):
+                    params['Origin'] = [round(x, 6) for x in st.Origin]
+                if hasattr(st, 'Normal'):
+                    params['Normal'] = [round(x, 6) for x in st.Normal]
+            elif xml_name == 'Calculator':
+                params['Function'] = proxy.Function
+                params['ResultArrayName'] = proxy.ResultArrayName
+            elif xml_name == 'ProgrammableFilter':
+                # Don't include full script, just note what it does
+                params['operation'] = 'custom_computation'
+            elif xml_name == 'StreamTracer':
+                params['IntegrationDirection'] = proxy.IntegrationDirection
+                params['MaximumStreamlineLength'] = proxy.MaximumStreamlineLength
+            elif xml_name == 'Clip':
+                if hasattr(proxy, 'ClipType'):
+                    ct = proxy.ClipType
+                    params['ClipType'] = ct.GetXMLName() if hasattr(ct, 'GetXMLName') else 'Plane'
+            elif 'Reader' in xml_name:
+                # Get filename for readers
+                if hasattr(proxy, 'FileName'):
+                    fn = proxy.FileName
+                    if fn:
+                        # Extract just the filename, not full path
+                        if isinstance(fn, (list, tuple)):
+                            fn = fn[0] if fn else None
+                        if fn:
+                            params['FileName'] = str(fn).split('/')[-1]
+        except Exception:
+            pass  # Skip params we can't extract
+        
+        return params if params else None
     
     def _resolve_field_type(self, field_type: str, proxy) -> str:
         """
@@ -1391,15 +1497,9 @@ class CFDAnalysis:
             proxy_name: Source proxy name
             
         Returns:
-            {field_name, proxy_name, threshold, field_range} 
+            {field_name, proxy_name, threshold, field_range}
             - Use proxy_name as input to create("Contour")
             - Use threshold for Isosurfaces property
-            
-        Example workflow:
-            result = compute_vortex_field("q_criterion")
-            create("Contour", input_proxy=result["proxy_name"])
-            update_list_property("Isosurfaces", [result["threshold"]])
-            update_color(field_name="Velocity")
         """
         from vtk.util.numpy_support import vtk_to_numpy
         
@@ -1490,26 +1590,38 @@ out.GetPointData().AddArray(arr)
             field_array = vtk_to_numpy(field_vtk)
             field_min, field_max = float(field_array.min()), float(field_array.max())
             
-            # Compute threshold
+            # Compute threshold (ANALYSIS DECISION - log it)
             if method == "lambda2":
-                # Lambda2: use 1% of min (small negative)
                 threshold = 0.01 * field_min
+                self._log_analysis(
+                    "auto_threshold",
+                    method="fraction_of_min",
+                    fraction=0.01,
+                    input_field=field_name,
+                    field_range=[field_min, field_max],
+                    result=float(threshold)
+                )
             else:
-                # Q-criterion, vorticity: percentile of positive values
                 positive_vals = field_array[field_array > 0]
                 if len(positive_vals) > 0:
                     threshold = float(np.percentile(positive_vals, percentile))
                 else:
                     threshold = max(0.0, field_max * 0.01)
+                self._log_analysis(
+                    "auto_threshold",
+                    method="percentile",
+                    percentile=percentile,
+                    input_field=field_name,
+                    field_range=[field_min, field_max],
+                    positive_count=int(len(positive_vals)),
+                    total_count=int(len(field_array)),
+                    result=float(threshold)
+                )
             
             # Get output proxy name
-            output_name = None
-            for name, p in simple.GetSources().items():
-                if p == output_proxy:
-                    output_name = name[0]
-                    break
+            output_name = self._get_source_name(output_proxy)
             
-            # Hide intermediate filters (MergeBlocks, Gradient, etc.) so they don't block visualization
+            # Hide intermediate filters
             view = simple.GetActiveView()
             if view:
                 for p in [merge, gradient]:
@@ -1517,7 +1629,6 @@ out.GetPointData().AddArray(arr)
                         rep = simple.GetRepresentation(p, view)
                         if rep:
                             rep.Visibility = 0
-                # Also hide output proxy - user will show it via Contour
                 rep = simple.GetRepresentation(output_proxy, view)
                 if rep:
                     rep.Visibility = 0
@@ -2776,7 +2887,8 @@ out.GetPointData().AddArray(arr)
             if original_source:
                 simple.SetActiveSource(original_source)
             
-            return {
+            # Log the wake detection analysis
+            result = {
                 "wake_centroid": centroid_result.get("location", centroid_result.get("centroid")),
                 "wake_bounds": centroid_result.get("bounds"),
                 "num_points": centroid_result.get("num_points", centroid_result.get("count", 0)),
@@ -2786,6 +2898,18 @@ out.GetPointData().AddArray(arr)
                 "streamwise": streamwise,
                 "trailing_edge_coord": trailing_edge
             }
+            
+            self._log_analysis(
+                "wake_detection",
+                velocity_deficit_fraction=velocity_deficit,
+                freestream_velocity=v_freestream,
+                velocity_threshold=v_threshold,
+                streamwise_direction=streamwise,
+                wake_centroid=result["wake_centroid"],
+                num_points=result["num_points"]
+            )
+            
+            return result
             
         except Exception as e:
             return {"error": str(e)}
@@ -2881,6 +3005,15 @@ out.GetPointData().AddArray(arr)
                 ]
                 cross_extents = [e for i, e in enumerate(body_extents) if i != stream_idx and e > 1e-10]
                 radius = max(cross_extents) * 0.5 if cross_extents else body_diag * 0.1
+            
+            # Log the seed computation
+            self._log_analysis(
+                "streamline_seed_computation",
+                center=center,
+                radius=float(radius),
+                num_points=100,
+                source="wake_detection" if (wake_result and "wake_centroid" in wake_result) else "body_geometry_fallback"
+            )
             
             return {
                 "center": center,
@@ -3461,6 +3594,15 @@ out.GetPointData().AddArray(arr)
         if proxy_name:
             return simple.FindSource(proxy_name)
         return simple.GetActiveSource()
+    
+    def _get_source_name(self, proxy) -> str:
+        """Get the registered name of a proxy."""
+        if proxy is None:
+            return None
+        for name, p in simple.GetSources().items():
+            if p == proxy:
+                return name[0]  # name is tuple (name, id)
+        return None
     
     def _get_array(self, proxy, field_name: str):
         """Get VTK array as numpy array."""
