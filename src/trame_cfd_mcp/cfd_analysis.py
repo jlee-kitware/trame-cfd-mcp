@@ -3422,6 +3422,66 @@ out.GetPointData().AddArray(arr)
             return {"status": "saved", "filename": filename, "width": width, "height": height}
         except Exception as e:
             return {"error": str(e)}
+
+    def save_all_charts(
+        self,
+        prefix: str = "output/chart",
+        width: int = 800,
+        height: int = 600
+    ) -> dict:
+        """
+        Save all pending chart views to files.
+        
+        Charts are created by workflows like show_boundary_layer, show_histogram,
+        show_forces, etc. This saves all of them at once with sequential numbering.
+        
+        Args:
+            prefix: Output filename prefix (e.g., "output/bl" -> bl_0.png, bl_1.png, ...)
+            width: Image width in pixels (default: 800)
+            height: Image height in pixels (default: 600)
+            
+        Returns:
+            Dict with list of saved filenames and count
+        """
+        import os
+        
+        chart_views = getattr(self, '_chart_view_queue', [])
+        if not chart_views:
+            return {"status": "no_charts", "count": 0, "files": []}
+        
+        # Ensure directory exists
+        dirname = os.path.dirname(prefix)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        
+        saved_files = []
+        errors = []
+        
+        for i, view in enumerate(chart_views):
+            filename = f"{prefix}_{i}.png"
+            try:
+                simple.Render(view)
+                simple.SaveScreenshot(filename, view, ImageResolution=[width, height])
+                
+                # Get chart title if available
+                title = getattr(view, 'ChartTitle', f'Chart {i}')
+                saved_files.append({"filename": filename, "title": title})
+            except Exception as e:
+                errors.append({"filename": filename, "error": str(e)})
+        
+        # Clear the queue after saving
+        self._chart_view_queue = []
+        
+        result = {
+            "status": "saved",
+            "count": len(saved_files),
+            "files": saved_files
+        }
+        
+        if errors:
+            result["errors"] = errors
+        
+        return result
     
     def show_data_context(
         self,

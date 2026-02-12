@@ -77,6 +77,31 @@ class WorkflowMCP:
             result["tip"] = "Screenshot saved. Use set_view() to change camera angle before saving another."
         return result
     
+    def save_all_charts(
+        self,
+        prefix: str = "output/chart",
+        width: int = 800,
+        height: int = 600
+    ) -> dict:
+        """
+        Save all pending chart views to files.
+        
+        Charts are created by workflows like show_boundary_layer, show_histogram,
+        show_forces, etc. This saves all of them at once with sequential numbering.
+        
+        Args:
+            prefix: Output filename prefix (e.g., "output/bl" -> bl_0.png, bl_1.png, ...)
+            width: Image width in pixels (default: 800)
+            height: Image height in pixels (default: 600)
+            
+        Returns:
+            Dict with list of saved filenames and count
+        """
+        result = self._analysis.save_all_charts(prefix, width, height)
+        if result.get("count", 0) > 0:
+            result["tip"] = f"Saved {result['count']} charts. Charts are cleared after saving."
+        return result
+    
     def set_view(self, direction: str = "+x") -> dict:
         """
         Set camera view direction.
@@ -308,6 +333,7 @@ When explaining visualizations, use the ontology to provide:
                 # Knowledge and utilities
                 self.get_ontology,
                 self.save_screenshot,
+                self.save_all_charts,
                 self.save_state,
                 self.set_view,
             ],
