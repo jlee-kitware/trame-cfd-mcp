@@ -3825,10 +3825,18 @@ out.GetPointData().AddArray(arr)
         # Step 4: Select suction side (upper surface for typical wing orientation)
         suction_mask = cut_points[:, vert_idx] > vert_center
         suction_points = cut_points[suction_mask]
+        pressure_points = cut_points[~suction_mask]
         
         if len(suction_points) == 0:
             cleanup()
             return {"error": "No suction side points found in cut section"}
+        
+        # Sort points by streamwise coordinate for proper contour ordering
+        suction_sorted_idx = np.argsort(suction_points[:, stream_idx])
+        suction_points_sorted = suction_points[suction_sorted_idx]
+        
+        pressure_sorted_idx = np.argsort(pressure_points[:, stream_idx])[::-1]  # TE to LE
+        pressure_points_sorted = pressure_points[pressure_sorted_idx] if len(pressure_points) > 0 else np.array([])
         
         # Find point closest to requested x/c
         x_distances = np.abs(suction_points[:, stream_idx] - x_abs)
@@ -3968,7 +3976,11 @@ out.GetPointData().AddArray(arr)
             "section": {
                 "chord": float(section_chord),
                 "le": le_point.tolist(),
-                "te": te_point.tolist()
+                "te": te_point.tolist(),
+                "suction_contour": suction_points_sorted[:, [stream_idx, vert_idx]].tolist(),
+                "pressure_contour": pressure_points_sorted[:, [stream_idx, vert_idx]].tolist() if len(pressure_points_sorted) > 0 else [],
+                "stream_idx": stream_idx,
+                "vert_idx": vert_idx
             },
             "geometry": {
                 "body_chord": float(chord),
