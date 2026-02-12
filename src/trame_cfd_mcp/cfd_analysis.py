@@ -115,14 +115,18 @@ class CFDAnalysis:
                 if hasattr(st, 'Normal'):
                     params['Normal'] = [round(x, 6) for x in st.Normal]
             elif xml_name == 'Calculator':
-                params['Function'] = proxy.Function
-                params['ResultArrayName'] = proxy.ResultArrayName
+                params['Function'] = str(proxy.Function)
+                params['ResultArrayName'] = str(proxy.ResultArrayName)
             elif xml_name == 'ProgrammableFilter':
                 # Don't include full script, just note what it does
                 params['operation'] = 'custom_computation'
             elif xml_name == 'StreamTracer':
-                params['IntegrationDirection'] = proxy.IntegrationDirection
-                params['MaximumStreamlineLength'] = proxy.MaximumStreamlineLength
+                # IntegrationDirection is an EnumerationProperty - get the string value
+                try:
+                    params['IntegrationDirection'] = str(proxy.IntegrationDirection)
+                except:
+                    params['IntegrationDirection'] = 'BOTH'
+                params['MaximumStreamlineLength'] = float(proxy.MaximumStreamlineLength)
             elif xml_name == 'Clip':
                 if hasattr(proxy, 'ClipType'):
                     ct = proxy.ClipType
