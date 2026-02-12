@@ -597,7 +597,7 @@ class CFDWorkflows:
                 "filter_chain": ["MergeBlocks", "ExtractSurface", "Clip", "Slice", "ResampleWithDataset"],
                 "arrays_used": ["Velocity"],
             },
-            "tip": f"BL profile chart created. Use save_all_charts(prefix='output/bl') after all BL calls to save charts."
+            "tip": "BL profile chart created. After all BL calls: save_all_charts() for charts, show_boundary_layer_context() for 3D visualization."
         }
         
         return result
