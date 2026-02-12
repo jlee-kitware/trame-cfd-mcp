@@ -562,7 +562,7 @@ class CFDWorkflows:
         
         # Build result with provenance
         # Build result - keep lightweight for LLM, store full data internally
-        # Full data (y, section contours) stored in _last_bl_result for debug chart
+        # Full data stored in _last_bl_results for debug chart and context visualization
         self._last_bl_results = getattr(self, '_last_bl_results', [])
         full_result = {
             "y": y.tolist(),
@@ -570,6 +570,13 @@ class CFDWorkflows:
             "surface_normal": bl_data["surface_normal"],
             "section": bl_data["section"],
             "probe_length": bl_data["probe_length"],
+            "span_absolute": bl_data["span_absolute"],
+            "x_over_chord": bl_data["x_over_chord"],
+            "shape_factor": bl_data["shape_factor"],
+            "delta": bl_data["delta"],
+            "delta_star": bl_data["delta_star"],
+            "theta": bl_data["theta"],
+            "u_edge": bl_data["u_edge"],
         }
         self._last_bl_results.append(full_result)
         
@@ -907,7 +914,7 @@ class CFDWorkflows:
                 "orange": "transitional (2.0 < H < 3.5)",
                 "blue": "turbulent (H < 2.0)"
             },
-            "tip": "Use save_screenshot() to capture this view. Velocity slice shows flow field at span station."
+            "tip": "Call save_all_charts() first to save BL profile charts, then save_screenshot() for this 3D view."
         }
 
     def show_flow_topology(self) -> dict:
