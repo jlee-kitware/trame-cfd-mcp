@@ -573,6 +573,7 @@ class CFDWorkflows:
             "surface_point": bl_data["surface_point"],
             "surface_normal": bl_data["surface_normal"],
             "num_points": len(y),
+            "y": y.tolist(),  # Arc length values for sample points
             "u_edge": bl_data["u_edge"],
             "delta": bl_data["delta"],
             "delta_99": bl_data["delta_99"],
@@ -655,9 +656,10 @@ class CFDWorkflows:
                 zc = pt[1] / chord
                 f.write(f'{xc:.6f},{zc:.6f}\n')
         
-        # Write probe lines and markers
+        # Write probe lines and sample points
         probe_lines = []
-        markers = []
+        surface_markers = []
+        all_sample_points = []  # All sample points along all probes
         
         for r in bl_results:
             if 'error' in r:
@@ -675,7 +677,17 @@ class CFDWorkflows:
             zc_end = end_z / chord
             
             probe_lines.append({'xc': xc, 'zc': zc, 'xc_end': xc_end, 'zc_end': zc_end})
-            markers.append({'xc': xc, 'zc': zc})
+            surface_markers.append({'xc': xc, 'zc': zc})
+            
+            # Compute sample point positions along the probe
+            if 'y' in r:
+                y_vals = r['y']  # arc_length values
+                for y_dist in y_vals:
+                    sample_x = pt[stream_idx] + y_dist * norm[stream_idx]
+                    sample_z = pt[vert_idx] + y_dist * norm[vert_idx]
+                    sample_xc = (sample_x - le_x) / chord
+                    sample_zc = sample_z / chord
+                    all_sample_points.append({'xc': sample_xc, 'zc': sample_zc})
         
         # Write probe lines (each as separate file for different colors)
         for i, p in enumerate(probe_lines):
@@ -685,12 +697,19 @@ class CFDWorkflows:
                 f.write(f'{p["xc"]:.6f},{p["zc"]:.6f}\n')
                 f.write(f'{p["xc_end"]:.6f},{p["zc_end"]:.6f}\n')
         
-        # Write all markers to single file
+        # Write surface markers
         markers_csv = os.path.join(tempfile.gettempdir(), 'probe_markers.csv')
         with open(markers_csv, 'w') as f:
             f.write('x_over_c,z_over_c\n')
-            for m in markers:
+            for m in surface_markers:
                 f.write(f'{m["xc"]:.6f},{m["zc"]:.6f}\n')
+        
+        # Write all sample points
+        samples_csv = os.path.join(tempfile.gettempdir(), 'sample_points.csv')
+        with open(samples_csv, 'w') as f:
+            f.write('x_over_c,z_over_c\n')
+            for sp in all_sample_points:
+                f.write(f'{sp["xc"]:.6f},{sp["zc"]:.6f}\n')
         
         # Create chart
         section_table = simple.CSVReader(FileName=[section_csv])
@@ -729,7 +748,7 @@ class CFDWorkflows:
             probe_display.SeriesColor = ['z_over_c', c[0], c[1], c[2]]
             probe_display.SeriesLineThickness = ['z_over_c', '2']
         
-        # Markers (red circles)
+        # Surface markers (red circles)
         markers_display = simple.Show(markers_table, chart)
         markers_display.XArrayName = 'x_over_c'
         markers_display.UseIndexForXAxis = 0
@@ -737,7 +756,21 @@ class CFDWorkflows:
         markers_display.SeriesColor = ['z_over_c', '1', '0', '0']
         markers_display.SeriesLineStyle = ['z_over_c', '0']  # No line
         markers_display.SeriesMarkerStyle = ['z_over_c', '4']  # Filled circle
-        markers_display.SeriesMarkerSize = ['z_over_c', '15']
+        markers_display.SeriesMarkerSize = ['z_over_c', '12']
+        
+        # Sample points along probes (small blue dots)
+        if all_sample_points:
+            samples_table = simple.CSVReader(FileName=[samples_csv])
+            simple.UpdatePipeline(proxy=samples_table)
+            
+            samples_display = simple.Show(samples_table, chart)
+            samples_display.XArrayName = 'x_over_c'
+            samples_display.UseIndexForXAxis = 0
+            samples_display.SeriesVisibility = ['z_over_c']
+            samples_display.SeriesColor = ['z_over_c', '0', '0', '0.8']
+            samples_display.SeriesLineStyle = ['z_over_c', '0']  # No line
+            samples_display.SeriesMarkerStyle = ['z_over_c', '4']  # Filled circle
+            samples_display.SeriesMarkerSize = ['z_over_c', '3']
         
         simple.Render(chart)
         self._mcp._chart_view_queue.append(chart)
@@ -746,6 +779,7 @@ class CFDWorkflows:
             "status": "created",
             "type": "section_debug_chart",
             "num_probes": len(probe_lines),
+            "num_sample_points": len(all_sample_points),
             "section_chord": chord
         }
 
