@@ -463,7 +463,7 @@ class CFDWorkflows:
                     "num_bins": num_bins
                 }
             }
-            result["tip"] = "Histogram is a chart view. Use save_screenshot() to capture it."
+            result["tip"] = "Chart created. Use save_screenshot() for single chart or save_all_charts() for multiple."
         
         return result
 
@@ -590,7 +590,7 @@ class CFDWorkflows:
                 "filter_chain": ["MergeBlocks", "ExtractSurface", "Clip", "Slice", "ResampleWithDataset"],
                 "arrays_used": ["Velocity"],
             },
-            "tip": f"BL at x/c={bl_data['x_over_chord']:.2f}. δ*={bl_data['delta_star']:.5f}, θ={bl_data['theta']:.5f}, H={bl_data['shape_factor']:.2f}"
+            "tip": f"BL profile chart created. Use save_all_charts(prefix='output/bl') after all BL calls to save charts."
         }
         
         return result
@@ -866,7 +866,7 @@ class CFDWorkflows:
                 "arrays_used": ["p", "Normals"],
                 "parameters": {}
             }
-            result["tip"] = "Force chart is a chart view. Use save_screenshot() to capture it."
+            result["tip"] = "Chart created. Use save_screenshot() for single chart or save_all_charts() for multiple."
         
         return result
 
