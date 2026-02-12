@@ -320,6 +320,7 @@ When explaining visualizations, use the ontology to provide:
                 self._workflows.show_histogram,
                 self._workflows.show_forces,
                 self._workflows.show_boundary_layer,
+                self._workflows.show_boundary_layer_context,
                 self._workflows.show_flow_topology,
                 
                 # Refinement tools (from base MCP)

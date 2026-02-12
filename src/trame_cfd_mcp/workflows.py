@@ -774,6 +774,142 @@ class CFDWorkflows:
             "section_chord": chord
         }
 
+    def show_boundary_layer_context(self, span_fraction: float = 0.5) -> dict:
+        """
+        Show boundary layer probe locations on a velocity slice.
+        
+        Creates a 3D visualization showing:
+        - Velocity slice at the specified span station  
+        - Probe markers colored by flow state (red=separation, orange=laminar, blue=turbulent)
+        - Probe length proportional to boundary layer thickness
+        
+        This provides visual context for boundary layer analysis results.
+        
+        Args:
+            span_fraction: Span location (0=root, 1=tip), default 0.5 (midspan)
+            
+        Returns:
+            Dict with visualization info and probe data
+        """
+        import vtk
+        
+        view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        if proxy is None:
+            return {"error": "No data reader found"}
+        
+        # Hide the reader
+        simple.Hide(proxy, view)
+        
+        # Get probe data from cache, or compute it
+        probe_results = getattr(self, '_last_bl_results', [])
+        if not probe_results:
+            # Compute BL at several locations
+            for xc in [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]:
+                r = self._mcp.compute_boundary_layer_profile(
+                    x_over_chord=xc, 
+                    span_fraction=span_fraction
+                )
+                if 'error' not in r:
+                    probe_results.append(r)
+        
+        if not probe_results:
+            return {"error": "Could not compute boundary layer profiles"}
+        
+        span_y = probe_results[0]['span_absolute']
+        
+        # Create velocity slice at span station
+        merge = simple.MergeBlocks(Input=proxy)
+        simple.UpdatePipeline(proxy=merge)
+        
+        slice_filter = simple.Slice(Input=merge, registrationName='BL_Context_Slice')
+        slice_filter.SliceType = 'Plane'
+        slice_filter.SliceType.Origin = [0.5, span_y, 0.0]
+        slice_filter.SliceType.Normal = [0, 1, 0]
+        simple.UpdatePipeline(proxy=slice_filter)
+        
+        # Clip to body region
+        bounds = proxy.GetDataInformation().GetBounds()
+        body_xmin = bounds[0] * 0.1 + bounds[1] * 0.9  # Approximate body region
+        body_xmax = bounds[1] * 0.1 + bounds[0] * 0.9
+        
+        clip = simple.Clip(Input=slice_filter, registrationName='BL_Context_Clip')
+        clip.ClipType = 'Box'
+        clip.ClipType.Position = [0.15, span_y - 0.01, -0.15]
+        clip.ClipType.Length = [0.85, 0.02, 0.30]
+        clip.Invert = 1
+        simple.UpdatePipeline(proxy=clip)
+        
+        # Show slice with velocity coloring
+        clip_display = simple.Show(clip, view)
+        simple.ColorBy(clip_display, ('POINTS', 'Velocity', 'Magnitude'))
+        
+        vel_lut = simple.GetColorTransferFunction('Velocity')
+        vel_lut.ApplyPreset('Jet', True)
+        vel_lut.RescaleTransferFunction(0.0, 0.95)
+        clip_display.SetScalarBarVisibility(view, True)
+        
+        # Add probe markers
+        probe_info = []
+        for i, p in enumerate(probe_results):
+            pt = p['surface_point']
+            norm = p['surface_normal']
+            H = p['shape_factor']
+            delta = p['delta']
+            
+            # Create tube from surface along normal
+            line = simple.Line(registrationName=f'BL_Probe_{i}')
+            line.Point1 = [pt[0], span_y, pt[2]]
+            end_pt = [pt[0] + delta * 4 * norm[0], span_y, pt[2] + delta * 4 * norm[2]]
+            line.Point2 = end_pt
+            simple.UpdatePipeline(proxy=line)
+            
+            tube = simple.Tube(Input=line, registrationName=f'BL_Probe_Tube_{i}')
+            tube.Radius = 0.003
+            simple.UpdatePipeline(proxy=tube)
+            
+            display = simple.Show(tube, view)
+            
+            # Color by flow state
+            if H > 3.5:
+                display.DiffuseColor = [1.0, 0.2, 0.2]  # Red - separation
+                state = "separation"
+            elif H > 2.0:
+                display.DiffuseColor = [1.0, 0.6, 0.2]  # Orange - transitional
+                state = "transitional"
+            else:
+                display.DiffuseColor = [0.2, 0.5, 1.0]  # Blue - turbulent
+                state = "turbulent"
+            
+            probe_info.append({
+                "x_over_chord": round(p['x_over_chord'], 2),
+                "shape_factor": round(H, 2),
+                "delta_mm": round(delta * 1000, 2),
+                "state": state
+            })
+        
+        # Set camera view
+        view.CameraPosition = [0.0, span_y - 0.4, 0.15]
+        view.CameraFocalPoint = [0.5, span_y, 0.02]
+        view.CameraViewUp = [0, 0, 1]
+        
+        simple.Render(view)
+        
+        return {
+            "status": "created",
+            "type": "boundary_layer_context",
+            "span_fraction": span_fraction,
+            "span_y": round(span_y, 4),
+            "num_probes": len(probe_info),
+            "probes": probe_info,
+            "legend": {
+                "red": "separation (H > 3.5)",
+                "orange": "transitional (2.0 < H < 3.5)",
+                "blue": "turbulent (H < 2.0)"
+            },
+            "tip": "Use save_screenshot() to capture this view. Velocity slice shows flow field at span station."
+        }
+
     def show_flow_topology(self) -> dict:
         """
         Show flow topology using vortex core detection.
