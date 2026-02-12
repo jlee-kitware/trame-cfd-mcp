@@ -23,7 +23,8 @@ class ResultCollector:
             "prompt": prompt,
             "tool_calls": [],
             "results": [],
-            "screenshots": []
+            "screenshots": [],
+            "llm_responses": []
         }
     
     def progress_callback(self, ptype, msg):
@@ -58,6 +59,9 @@ class ResultCollector:
         elif ptype == ProgressType.MCP_ERROR:
             print(f"[ERROR] {msg}")
         elif ptype == ProgressType.LLM_RESPONSE:
+            # Save LLM responses (the explanations/interpretations)
+            if self._current_test:
+                self._tests[self._current_test]["llm_responses"].append(msg)
             print(f"[llm] {msg}")
         elif ptype == ProgressType.MAX_ITERATION:
             print(f"[LIMIT] {msg}")
