@@ -50,6 +50,7 @@ Save the charts to output/bl_*.png"""
     print(f'PROMPT: {prompt}')
     print("="*60)
     
+    collector.start_test("boundary_layer", prompt)
     await llm.process_prompt(prompt)
     
     collector.save_json("output/boundary_layer_results.json")

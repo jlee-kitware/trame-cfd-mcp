@@ -47,6 +47,7 @@ async def main():
     print(f'PROMPT: {prompt}')
     print("="*60)
     
+    collector.start_test("ontology", prompt)
     await llm.process_prompt(prompt)
     
     collector.save_json("output/ontology_results.json")

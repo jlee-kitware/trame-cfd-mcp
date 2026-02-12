@@ -57,6 +57,9 @@ async def main():
         print(f'PROMPT: {prompt}')
         print("="*60)
         
+        # Start tracking this test
+        collector.start_test(name, prompt)
+        
         # Reset between tests
         sources = list(simple.GetSources().items())
         for sname, proxy in sources:

@@ -50,6 +50,7 @@ Save each visualization to output/analysis_*.png"""
     print(f'PROMPT: {prompt}')
     print("="*60)
     
+    collector.start_test("analysis", prompt)
     await llm.process_prompt(prompt)
     
     collector.save_json("output/analysis_results.json")

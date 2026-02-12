@@ -50,6 +50,7 @@ separation or attachment on the wing."""
     print(f'PROMPT: {prompt}')
     print("="*60)
     
+    collector.start_test("spanwise_slice", prompt)
     await llm.process_prompt(prompt)
     
     collector.save_json("output/spanwise_slice_results.json")
