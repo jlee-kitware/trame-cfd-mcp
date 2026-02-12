@@ -561,59 +561,46 @@ class CFDWorkflows:
             simple.SetActiveView(original_view)
         
         # Build result with provenance
+        # Build result - keep lightweight for LLM, store full data internally
+        # Full data (y, section contours) stored in _last_bl_result for debug chart
+        self._last_bl_results = getattr(self, '_last_bl_results', [])
+        full_result = {
+            "y": y.tolist(),
+            "surface_point": bl_data["surface_point"],
+            "surface_normal": bl_data["surface_normal"],
+            "section": bl_data["section"],
+            "probe_length": bl_data["probe_length"],
+        }
+        self._last_bl_results.append(full_result)
+        
         result = {
             "status": "created",
             "type": "boundary_layer_profile",
             "surface": bl_data["surface"],
             "x_over_chord": bl_data["x_over_chord"],
-            "x_absolute": bl_data["x_absolute"],
             "span_fraction": bl_data["span_fraction"],
-            "span_absolute": bl_data["span_absolute"],
             "section_chord": bl_data["section"]["chord"],
-            "surface_point": bl_data["surface_point"],
-            "surface_normal": bl_data["surface_normal"],
             "num_points": len(y),
-            "y": y.tolist(),  # Arc length values for sample points
             "u_edge": bl_data["u_edge"],
             "delta": bl_data["delta"],
-            "delta_99": bl_data["delta_99"],
-            "delta_haase": bl_data["delta_haase"],
-            "edge_method": bl_data["edge_method"],
             "delta_star": bl_data["delta_star"],
             "theta": bl_data["theta"],
             "shape_factor": bl_data["shape_factor"],
-            "section": bl_data["section"],
-            "geometry": bl_data["geometry"],
             "provenance": {
-                "dataset": self._get_dataset_filename(proxy),
-                "filter_chain": ["MergeBlocks", "ExtractSurface", "Clip", "Slice", "PlotOverLine"],
+                "filter_chain": ["MergeBlocks", "ExtractSurface", "Clip", "Slice", "ResampleWithDataset"],
                 "arrays_used": ["Velocity"],
-                "parameters": {
-                    "x_over_chord": x_over_chord,
-                    "span_fraction": span_fraction,
-                    "probe_length": bl_data["probe_length"]
-                }
             },
-            "result": {
-                "delta": bl_data["delta"],
-                "delta_star": bl_data["delta_star"],
-                "theta": bl_data["theta"],
-                "shape_factor": bl_data["shape_factor"],
-                "u_edge": bl_data["u_edge"],
-                "x_over_chord": bl_data["x_over_chord"],
-                "span_fraction": bl_data["span_fraction"]
-            },
-            "tip": f"Boundary layer at x/c={bl_data['x_over_chord']:.2f}, span={bl_data['span_fraction']:.2f}. Try show_boundary_layer(x_over_chord={min(x_over_chord + 0.2, 0.9):.1f}, span_fraction={span_fraction:.1f}) for next station."
+            "tip": f"BL at x/c={bl_data['x_over_chord']:.2f}. δ*={bl_data['delta_star']:.5f}, θ={bl_data['theta']:.5f}, H={bl_data['shape_factor']:.2f}"
         }
         
         return result
 
-    def create_section_debug_chart(self, bl_results: list, title: str = None) -> dict:
+    def create_section_debug_chart(self, bl_results: list = None, title: str = None) -> dict:
         """
         Create a debug chart showing airfoil section with probe locations.
         
         Args:
-            bl_results: List of boundary layer result dicts from show_boundary_layer
+            bl_results: List of boundary layer result dicts (optional - uses internal cache if None)
             title: Optional chart title
             
         Returns:
@@ -621,6 +608,10 @@ class CFDWorkflows:
         """
         import tempfile
         import os
+        
+        # Use internal cache if no results provided
+        if bl_results is None:
+            bl_results = getattr(self, '_last_bl_results', [])
         
         if not bl_results:
             return {"error": "No boundary layer results provided"}

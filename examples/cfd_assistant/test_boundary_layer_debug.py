@@ -30,9 +30,9 @@ def main():
     span_fraction = 0.5  # mid-span
     
     print(f"Boundary Layer Analysis at {span_fraction*100:.0f}% span")
-    print("=" * 70)
-    print(f"{'x/c':>6} {'actual':>8} {'δ':>10} {'δ*':>10} {'θ':>10} {'H':>6} {'normal'}")
-    print("-" * 70)
+    print("=" * 60)
+    print(f"{'x/c':>6} {'actual':>8} {'δ':>10} {'δ*':>10} {'θ':>10} {'H':>6}")
+    print("-" * 60)
     
     bl_results = []
     for xc in x_locations:
@@ -47,16 +47,13 @@ def main():
             delta_star = result['delta_star']
             theta = result['theta']
             H = result['shape_factor']
-            norm = result['surface_normal']
-            norm_str = f"({norm[0]:.2f}, {norm[2]:.2f})"
-            print(f"{xc:6.2f} {actual_xc:8.3f} {delta:10.5f} {delta_star:10.5f} {theta:10.5f} {H:6.2f} {norm_str}")
+            print(f"{xc:6.2f} {actual_xc:8.3f} {delta:10.5f} {delta_star:10.5f} {theta:10.5f} {H:6.2f}")
     
-    print("-" * 70)
+    print("-" * 60)
     
-    # Create debug section chart
+    # Create debug section chart (uses internal cache from show_boundary_layer calls)
     print("\nCreating debug section chart...")
     debug_result = workflows.create_section_debug_chart(
-        bl_results, 
         title=f"Section at {span_fraction*100:.0f}% span with BL probe locations"
     )
     print(f"Debug chart: {debug_result}")
