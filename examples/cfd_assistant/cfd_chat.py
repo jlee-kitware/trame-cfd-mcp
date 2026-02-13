@@ -4,6 +4,10 @@ import sys
 import os
 import asyncio
 
+# Reduce OpenGL texture usage to avoid macOS driver limits
+os.environ.setdefault("VTK_MAX_TEXTURE_SIZE", "2048")
+os.environ.setdefault("PV_PLUGIN_DEBUG", "0")
+
 try:
     asyncio.get_event_loop()
 except RuntimeError:

@@ -238,6 +238,73 @@ class WorkflowMCP:
         """
         return self._ontology
     
+    def delete_filter(self, proxy_name: str) -> dict:
+        """
+        Delete a filter from the pipeline.
+        
+        Use this to clean up unwanted visualizations and free resources.
+        
+        Args:
+            proxy_name: Name of the filter to delete (from list_data)
+            
+        Returns:
+            Dict with status
+        """
+        try:
+            proxy = simple.FindSource(proxy_name)
+            if proxy is None:
+                return {"error": f"Filter '{proxy_name}' not found"}
+            
+            simple.Delete(proxy)
+            self._base_mcp.pipeline_changed()
+            
+            return {
+                "status": "deleted",
+                "proxy_name": proxy_name,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def clear_all_filters(self) -> dict:
+        """
+        Delete all filters, keeping only the original data sources.
+        
+        Use this to reset the pipeline and free OpenGL resources.
+        
+        Returns:
+            Dict with list of deleted filters
+        """
+        deleted = []
+        try:
+            # Get all sources
+            sources = dict(simple.GetSources())
+            
+            # Find readers (data sources) vs filters
+            readers = set()
+            for name, proxy in sources.items():
+                proxy_type = proxy.GetXMLName()
+                if "Reader" in proxy_type or "Source" in proxy_type:
+                    readers.add(name)
+            
+            # Delete filters (non-readers) in reverse dependency order
+            for name, proxy in sources.items():
+                if name not in readers:
+                    try:
+                        simple.Delete(proxy)
+                        deleted.append(name[0])
+                    except:
+                        pass
+            
+            self._base_mcp.pipeline_changed()
+            
+            return {
+                "status": "cleared",
+                "deleted": deleted,
+                "remaining": [n[0] for n in readers],
+            }
+        except Exception as e:
+            return {"error": str(e)}
+    
     def get_mcp(self) -> dict:
         """Return MCP declaration with workflow and refinement tools."""
         return {
@@ -342,6 +409,8 @@ When explaining visualizations, use the ontology to provide:
                 self.save_all_charts,
                 self.save_state,
                 self.set_view,
+                self.delete_filter,
+                self.clear_all_filters,
             ],
             "resources": {},
         }
