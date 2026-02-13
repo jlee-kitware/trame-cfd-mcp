@@ -324,6 +324,8 @@ When explaining visualizations, use the ontology to provide:
                 self._workflows.show_flow_topology,
                 
                 # Refinement tools (from base MCP)
+                self._base_mcp.reset_camera,
+                self._base_mcp.focus_on,
                 self._base_mcp.update_representation,
                 self._base_mcp.update_color,
                 self._base_mcp.update_list_property,
