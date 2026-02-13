@@ -34,6 +34,7 @@ class CFDAnalysis:
     
     def __init__(self):
         self._chart_view_queue = []
+        self._chart_gallery = []  # List of {title, base64_image} for UI display
         self._body_bounds_cache = {}
         self._analysis_log = []  # Track analysis decisions for provenance
     
@@ -58,6 +59,42 @@ class CFDAnalysis:
         """Clear the analysis log. Call at start of each workflow."""
         self._analysis_log = []
     
+    def _capture_chart_to_gallery(self, chart_view, title: str):
+        """Capture a chart view as base64 PNG and add to gallery."""
+        import tempfile
+        import base64
+        import os
+        
+        try:
+            simple.Render(chart_view)
+            
+            # Save to temp file
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+                temp_path = f.name
+            
+            simple.SaveScreenshot(temp_path, chart_view, ImageResolution=[400, 250])
+            
+            # Read as base64
+            with open(temp_path, 'rb') as f:
+                img_data = base64.b64encode(f.read()).decode('utf-8')
+            
+            os.unlink(temp_path)
+            
+            self._chart_gallery.append({
+                'title': title,
+                'image': f'data:image/png;base64,{img_data}'
+            })
+        except Exception as e:
+            print(f"[CHART] Failed to capture chart: {e}")
+    
+    def get_chart_gallery(self) -> list:
+        """Get list of chart thumbnails for UI display."""
+        return self._chart_gallery.copy()
+    
+    def clear_chart_gallery(self):
+        """Clear the chart gallery."""
+        self._chart_gallery = []
+
     def extract_filter_chain(self, proxy) -> list:
         """
         Extract full filter chain by walking ParaView's input chain.
@@ -2365,12 +2402,14 @@ out.GetPointData().AddArray(arr)
             # Create bar chart view
             chart_view = simple.CreateBarChartView()
             chart_view.ViewSize = [800, 400]
-            chart_view.ChartTitle = f'Distribution of {field_name}'
+            chart_title = f'Distribution of {field_name}'
+            chart_view.ChartTitle = chart_title
             
             display = simple.Show(hist, chart_view)
             simple.Render(chart_view)
             
             self._chart_view_queue.append(chart_view)
+            self._capture_chart_to_gallery(chart_view, chart_title)
             
             if merge:
                 simple.Delete(merge)
@@ -2458,7 +2497,8 @@ out.GetPointData().AddArray(arr)
             
             chart_view = simple.CreateXYPlotView()
             chart_view.ViewSize = [800, 400]
-            chart_view.ChartTitle = f'Accumulated {force_name} Distribution'
+            chart_title = f'Accumulated {force_name} Distribution'
+            chart_view.ChartTitle = chart_title
             chart_view.BottomAxisTitle = f'{dist_data["distribution_axis"].upper()} Position'
             chart_view.LeftAxisTitle = f'{force_name}'
             
@@ -2471,6 +2511,7 @@ out.GetPointData().AddArray(arr)
             
             simple.Render(chart_view)
             self._chart_view_queue.append(chart_view)
+            self._capture_chart_to_gallery(chart_view, chart_title)
             
             # Restore active source and view
             if original_source:

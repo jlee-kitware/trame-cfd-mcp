@@ -549,7 +549,8 @@ class CFDWorkflows:
         
         chart_view = simple.CreateXYPlotView()
         chart_view.ViewSize = [600, 500]
-        chart_view.ChartTitle = f'Boundary Layer at x/c={x_over_chord:.2f}, {span_axis}={span_absolute:.3f} ({span_frac*100:.0f}% span)'
+        chart_title = f'Boundary Layer at x/c={x_over_chord:.2f}, {span_axis}={span_absolute:.3f} ({span_frac*100:.0f}% span)'
+        chart_view.ChartTitle = chart_title
         chart_view.BottomAxisTitle = 'u / Ue'
         chart_view.LeftAxisTitle = 'y (distance from wall)'
         chart_view.ShowLegend = 0
@@ -563,6 +564,7 @@ class CFDWorkflows:
         
         simple.Render(chart_view)
         self._mcp._chart_view_queue.append(chart_view)
+        self._mcp._capture_chart_to_gallery(chart_view, chart_title)
         
         if original_view:
             simple.SetActiveView(original_view)

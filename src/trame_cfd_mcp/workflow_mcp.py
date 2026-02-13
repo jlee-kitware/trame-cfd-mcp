@@ -344,6 +344,32 @@ class WorkflowMCP:
             "tip": "Scalar bars hidden. Use update_color to show a specific one."
         }
     
+    def get_chart_gallery(self) -> dict:
+        """
+        Get list of chart thumbnails created during this session.
+        
+        Returns base64-encoded PNG images of charts (histograms, BL profiles, etc.)
+        that can be displayed in a gallery UI.
+        
+        Returns:
+            Dict with list of charts, each with title and base64 image
+        """
+        charts = self._analysis.get_chart_gallery()
+        return {
+            "count": len(charts),
+            "charts": charts
+        }
+    
+    def clear_charts(self) -> dict:
+        """
+        Clear both the chart queue (ParaView views) and chart gallery (thumbnails).
+        
+        Use this to free resources and start fresh.
+        """
+        self._analysis._chart_view_queue = []
+        self._analysis.clear_chart_gallery()
+        return {"status": "cleared"}
+    
     def get_mcp(self) -> dict:
         """Return MCP declaration with workflow and refinement tools."""
         return {
@@ -451,6 +477,8 @@ When explaining visualizations, use the ontology to provide:
                 self.delete_filter,
                 self.clear_all_filters,
                 self.hide_all_scalar_bars,
+                self.get_chart_gallery,
+                self.clear_charts,
             ],
             "resources": {},
         }

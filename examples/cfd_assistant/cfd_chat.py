@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""CFD Chat app based on ptc.Lite with pipeline browser"""
+"""CFD Chat app based on ptc.Lite with pipeline browser and chart gallery"""
 import sys
 import os
 import asyncio
@@ -23,6 +23,7 @@ from paraview import simple
 
 import ptc
 from ptc.apps.lite import Lite
+from trame.widgets import vuetify3 as v3, html
 
 from trame.widgets import llm
 from trame_llm.core import LLMClient, ProgressType
@@ -85,6 +86,8 @@ class CFDChat(Lite):
         super().__init__()
         
         self.state.trame__title = "CFD Analysis Assistant"
+        self.state.chart_drawer_open = False
+        self.state.chart_gallery = []
         
         # Setup LLM
         print("Setting up LLM client...")
@@ -92,18 +95,57 @@ class CFDChat(Lite):
         
         # Build MCP chain: ParaViewMCP -> WorkflowMCP -> CFDChatMCP (adds cost)
         base_mcp = ParaViewMCP(self)
-        workflow_mcp = WorkflowMCP(base_mcp)
-        chat_mcp = CFDChatMCP(workflow_mcp, self.llm_client)
+        self.workflow_mcp = WorkflowMCP(base_mcp)
+        chat_mcp = CFDChatMCP(self.workflow_mcp, self.llm_client)
         
         self.llm_client.register_mcp(chat_mcp)
         print("MCP registered")
         
-        # Add chat widget
-        self._add_chat()
+        # Add UI components
+        self._add_ui()
     
-    def _add_chat(self):
+    def _refresh_charts(self):
+        """Refresh the chart gallery from the workflow MCP."""
+        gallery = self.workflow_mcp.get_chart_gallery()
+        self.state.chart_gallery = gallery.get("charts", [])
+    
+    def _add_ui(self):
         # Force chat to start expanded
         self.state["trame_llm_chat_1_collapsed"] = False
+        
+        # Add chart gallery button to toolbar
+        with self.ui_layout:
+            # Chart gallery drawer on right side
+            with v3.VNavigationDrawer(
+                v_model=("chart_drawer_open", False),
+                location="right",
+                width=320,
+                temporary=True,
+            ):
+                with v3.VCard(flat=True, classes="fill-height"):
+                    v3.VCardTitle(
+                        "Charts",
+                        classes="d-flex justify-space-between align-center",
+                    )
+                    with v3.VCardText(classes="pa-2", style="overflow-y: auto; max-height: calc(100vh - 100px);"):
+                        with html.Div(v_if="chart_gallery.length === 0"):
+                            html.P("No charts yet. Create visualizations with histograms, force distributions, or boundary layer profiles.", classes="text-grey")
+                        
+                        with html.Div(v_for="(chart, i) in chart_gallery", key="i"):
+                            with v3.VCard(classes="ma-1", elevation=2):
+                                v3.VCardSubtitle("{{ chart.title }}", classes="pa-1 text-caption")
+                                v3.VImg(src=("chart.image",), height=150, cover=True)
+        
+        # Add chart button to the view container
+        with self.ui_view_container:
+            v3.VBtn(
+                icon="mdi-chart-line",
+                click=self._on_chart_button,
+                classes="position-absolute",
+                style="top: 1rem; right: 1rem; z-index: 100;",
+                variant="outlined",
+                size="small",
+            )
         
         # Add chat widget to main UI
         with self.ui:
@@ -119,6 +161,11 @@ class CFDChat(Lite):
                 ],
                 llm_client=self.llm_client,
             )
+    
+    def _on_chart_button(self):
+        """Toggle chart drawer and refresh gallery."""
+        self._refresh_charts()
+        self.state.chart_drawer_open = not self.state.chart_drawer_open
 
 
 def main():
@@ -129,6 +176,7 @@ def main():
     
     print(f"Starting CFD Chat with: {data_file}")
     print("Click branch icon in left toolbar for pipeline browser")
+    print("Click chart icon (top-right) to see generated charts")
     print("Chat icon in bottom-right corner")
     print("Keyboard: 'p' = pipeline, 'c' = color, 'r' = reset camera")
     
