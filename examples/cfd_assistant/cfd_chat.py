@@ -39,20 +39,11 @@ class CFDChatMCP:
         self._llm_client = llm_client
     
     def get_session_cost(self) -> dict:
-        """
-        Get current chat session cost and usage statistics.
-        
-        Returns token counts, estimated cost, and model info.
-        Call this to see how much the current session has cost.
-        """
+        """Get current chat session cost and usage statistics."""
         return self._llm_client.get_cost()
     
     def reset_session_cost(self) -> dict:
-        """
-        Reset the cost tracking counters to zero.
-        
-        Use this to start tracking cost for a new task.
-        """
+        """Reset the cost tracking counters to zero."""
         self._llm_client.reset_cost()
         return {"status": "reset", "message": "Cost counters reset to zero"}
     
@@ -60,127 +51,112 @@ class CFDChatMCP:
     def mcp(self) -> dict:
         """Return MCP declaration with cost tools added."""
         base_mcp = self._workflow_mcp.mcp
-        
-        # Add cost tools
         base_mcp["tools"] = list(base_mcp["tools"]) + [
             self.get_session_cost,
             self.reset_session_cost,
         ]
-        
         return base_mcp
 
 
-class CFDChat(Lite):
-    """CFD Chat app extending ParaView Lite with LLM chat."""
+def main():
+    # Load data first
+    data_file = sys.argv[1] if len(sys.argv) > 1 else '/Users/jeff.lee/gitsync/trame-cfd-mcp/examples/cfd_assistant/test.vtm'
     
-    def __init__(self, data_file=None):
-        # Load data first so Lite sees it
-        if data_file and os.path.exists(data_file):
-            reader = simple.OpenDataFile(data_file)
-            simple.UpdatePipeline()
-            simple.Show()
-            simple.ResetCamera()
-            print(f"Loaded: {data_file}")
-        
-        # Initialize Lite (gets view, toolbar with pipeline browser, etc.)
-        super().__init__()
-        
-        self.state.trame__title = "CFD Analysis Assistant"
-        self.state.chart_drawer_open = False
-        self.state.chart_gallery = []
-        
-        # Setup LLM
-        print("Setting up LLM client...")
-        self.llm_client = LLMClient(max_iteractions=15)
-        
-        # Build MCP chain: ParaViewMCP -> WorkflowMCP -> CFDChatMCP (adds cost)
-        base_mcp = ParaViewMCP(self)
-        self.workflow_mcp = WorkflowMCP(base_mcp)
-        chat_mcp = CFDChatMCP(self.workflow_mcp, self.llm_client)
-        
-        self.llm_client.register_mcp(chat_mcp)
-        print("MCP registered")
-        
-        # Add UI components
-        self._add_ui()
+    if os.path.exists(data_file):
+        reader = simple.OpenDataFile(data_file)
+        simple.UpdatePipeline()
+        simple.Show()
+        simple.ResetCamera()
+        print(f"Loaded: {data_file}")
     
-    def _refresh_charts(self):
-        """Refresh the chart gallery from the workflow MCP."""
-        gallery = self.workflow_mcp.get_chart_gallery()
-        self.state.chart_gallery = gallery.get("charts", [])
+    # Create Lite app
+    app = Lite()
+    app.state.trame__title = "CFD Analysis Assistant"
+    app.state.chart_drawer_open = False
+    app.state.chart_gallery = []
     
-    def _add_ui(self):
-        # Force chat to start expanded
-        self.state["trame_llm_chat_1_collapsed"] = False
-        
-        # Add chart gallery button to toolbar
-        with self.ui_layout:
-            # Chart gallery drawer on right side
-            with v3.VNavigationDrawer(
-                v_model=("chart_drawer_open", False),
-                location="right",
-                width=320,
-                temporary=True,
-            ):
-                with v3.VCard(flat=True, classes="fill-height"):
-                    v3.VCardTitle(
-                        "Charts",
-                        classes="d-flex justify-space-between align-center",
+    # Setup LLM
+    print("Setting up LLM client...")
+    llm_client = LLMClient(max_iteractions=15)
+    
+    base_mcp = ParaViewMCP(app)
+    workflow_mcp = WorkflowMCP(base_mcp)
+    chat_mcp = CFDChatMCP(workflow_mcp, llm_client)
+    llm_client.register_mcp(chat_mcp)
+    print("MCP registered")
+    
+    # Function to refresh charts
+    def refresh_charts():
+        gallery = workflow_mcp.get_chart_gallery()
+        app.state.chart_gallery = gallery.get("charts", [])
+    
+    def toggle_chart_drawer():
+        refresh_charts()
+        app.state.chart_drawer_open = not app.state.chart_drawer_open
+    
+    # Add UI components
+    with app.ui:
+        # Chart gallery drawer
+        with v3.VNavigationDrawer(
+            v_model=("chart_drawer_open", False),
+            location="right",
+            width=350,
+            temporary=True,
+        ):
+            with v3.VCard(flat=True, classes="fill-height d-flex flex-column"):
+                with v3.VCardTitle(classes="d-flex justify-space-between align-center flex-shrink-0"):
+                    html.Span("Charts ({{ chart_gallery.length }})")
+                    v3.VBtn(
+                        icon="mdi-refresh",
+                        click=refresh_charts,
+                        variant="text",
+                        size="small",
                     )
-                    with v3.VCardText(classes="pa-2", style="overflow-y: auto; max-height: calc(100vh - 100px);"):
-                        with html.Div(v_if="chart_gallery.length === 0"):
-                            html.P("No charts yet. Create visualizations with histograms, force distributions, or boundary layer profiles.", classes="text-grey")
-                        
-                        with html.Div(v_for="(chart, i) in chart_gallery", key="i"):
-                            with v3.VCard(classes="ma-1", elevation=2):
-                                v3.VCardSubtitle("{{ chart.title }}", classes="pa-1 text-caption")
-                                v3.VImg(src=("chart.image",), height=150, cover=True)
+                
+                # Scrollable chart list
+                with v3.VCardText(
+                    classes="pa-2 flex-grow-1", 
+                    style="overflow-y: auto; max-height: calc(100vh - 80px);"
+                ):
+                    with html.Div(v_if="chart_gallery.length === 0"):
+                        html.P("No charts yet. Ask to show histogram, force distribution, or boundary layer profiles.", 
+                               classes="text-grey text-body-2")
+                    
+                    # Expansion panels for collapsible charts
+                    with v3.VExpansionPanels(multiple=True, variant="accordion"):
+                        with v3.VExpansionPanel(v_for="(chart, i) in chart_gallery", key="i"):
+                            v3.VExpansionPanelTitle("{{ chart.title }}", classes="text-caption py-1")
+                            with v3.VExpansionPanelText(classes="pa-1"):
+                                v3.VImg(src=("chart.image",), aspect_ratio="16/9")
         
-        # Add chart button to the view container
-        with self.ui_view_container:
+        # Chart button - fixed position in top right
+        with html.Div(style="position: fixed; top: 70px; right: 20px; z-index: 1000;"):
             v3.VBtn(
                 icon="mdi-chart-line",
-                click=self._on_chart_button,
-                classes="position-absolute",
-                style="top: 1rem; right: 1rem; z-index: 100;",
-                variant="outlined",
-                size="small",
+                click=toggle_chart_drawer,
+                color="primary",
+                variant="elevated",
             )
         
-        # Add chat widget to main UI
-        with self.ui:
-            llm.Chat(
-                app_name="cfd",
-                enabled_message_types=[
-                    ProgressType.REQUEST,
-                    ProgressType.LLM_RESPONSE,
-                    ProgressType.MCP_SELECTION,
-                    ProgressType.MCP,
-                    ProgressType.MCP_ERROR,
-                    ProgressType.ERROR,
-                ],
-                llm_client=self.llm_client,
-            )
+        # Chat widget
+        llm.Chat(
+            app_name="cfd",
+            enabled_message_types=[
+                ProgressType.REQUEST,
+                ProgressType.LLM_RESPONSE,
+                ProgressType.MCP_SELECTION,
+                ProgressType.MCP,
+                ProgressType.MCP_ERROR,
+                ProgressType.ERROR,
+            ],
+            llm_client=llm_client,
+        )
     
-    def _on_chart_button(self):
-        """Toggle chart drawer and refresh gallery."""
-        self._refresh_charts()
-        self.state.chart_drawer_open = not self.state.chart_drawer_open
-
-
-def main():
-    if len(sys.argv) > 1:
-        data_file = sys.argv[1]
-    else:
-        data_file = '/Users/jeff.lee/gitsync/trame-cfd-mcp/examples/cfd_assistant/test.vtm'
+    print("Starting CFD Chat...")
+    print("  - Pipeline browser: click branch icon in left toolbar (or press 'p')")
+    print("  - Chart gallery: click chart icon in top-right")
+    print("  - Chat: click chat icon in bottom-right")
     
-    print(f"Starting CFD Chat with: {data_file}")
-    print("Click branch icon in left toolbar for pipeline browser")
-    print("Click chart icon (top-right) to see generated charts")
-    print("Chat icon in bottom-right corner")
-    print("Keyboard: 'p' = pipeline, 'c' = color, 'r' = reset camera")
-    
-    app = CFDChat(data_file=data_file)
     app.start(open_browser=True)
 
 
