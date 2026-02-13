@@ -906,11 +906,15 @@ class CFDWorkflows:
             x_center = (x_min + x_max) / 2
             z_center = (z_min + z_max) / 2
             
-            # Distance based on extent (with margin)
-            x_extent = max(x_max - x_min, 0.3)  # Minimum extent
-            distance = x_extent * 0.8
+            # Distance based on extent - need to see full chord
+            x_extent = x_max - x_min
+            z_extent = z_max - z_min
+            extent = max(x_extent, z_extent, 0.4)  # Minimum extent for good framing
             
-            view.CameraPosition = [x_center - distance * 0.3, span_y - distance, z_center + distance * 0.4]
+            # Pull camera back enough to see everything with margin
+            distance = extent * 1.2
+            
+            view.CameraPosition = [x_min - extent * 0.3, span_y - distance, z_center + extent * 0.3]
             view.CameraFocalPoint = [x_center, span_y, z_center]
             view.CameraViewUp = [0, 0, 1]
         
