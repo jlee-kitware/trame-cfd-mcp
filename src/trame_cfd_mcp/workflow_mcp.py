@@ -305,6 +305,34 @@ class WorkflowMCP:
         except Exception as e:
             return {"error": str(e)}
     
+    def hide_all_scalar_bars(self) -> dict:
+        """
+        Hide all scalar bars (color legends) to reduce OpenGL texture usage.
+        
+        Use this if you see texture warnings or rendering issues.
+        
+        Returns:
+            Dict with count of hidden bars
+        """
+        view = simple.GetActiveView()
+        count = 0
+        
+        for name, proxy in simple.GetSources().items():
+            rep = simple.GetRepresentation(proxy=proxy, view=view)
+            if rep:
+                try:
+                    rep.SetScalarBarVisibility(view, False)
+                    count += 1
+                except:
+                    pass
+        
+        simple.Render(view)
+        return {
+            "status": "hidden",
+            "count": count,
+            "tip": "Scalar bars hidden. Use update_color to show a specific one."
+        }
+    
     def get_mcp(self) -> dict:
         """Return MCP declaration with workflow and refinement tools."""
         return {
@@ -411,6 +439,7 @@ When explaining visualizations, use the ontology to provide:
                 self.set_view,
                 self.delete_filter,
                 self.clear_all_filters,
+                self.hide_all_scalar_bars,
             ],
             "resources": {},
         }
