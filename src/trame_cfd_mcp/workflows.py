@@ -928,7 +928,7 @@ class CFDWorkflows:
                 "orange": "transitional (2.0 < H < 3.5)",
                 "blue": "turbulent (H < 2.0)"
             },
-            "tip": "Call save_all_charts() first to save BL profile charts, then save_screenshot() for this 3D view."
+            "tip": "Camera is set to frame all probes. Call save_all_charts() for BL charts, then save_screenshot() directly (do NOT call set_view first)."
         }
 
     def show_flow_topology(self) -> dict:
