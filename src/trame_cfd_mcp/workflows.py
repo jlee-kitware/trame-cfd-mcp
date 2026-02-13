@@ -148,14 +148,13 @@ class CFDWorkflows:
         if "error" in vortex:
             return vortex
         
-        # Create contour on the vortex field proxy
+        # Create contour on the vortex field proxy with descriptive name
         vortex_proxy = simple.FindSource(vortex["proxy_name"])
-        contour = simple.Contour(Input=vortex_proxy)
+        contour_name = f"Vortices_{method}"
+        contour = simple.Contour(Input=vortex_proxy, registrationName=contour_name)
         contour.ContourBy = ['POINTS', vortex["field_name"]]
         contour.Isosurfaces = [vortex["threshold"]]
         simple.UpdatePipeline(proxy=contour)
-        
-        contour_name = self._get_proxy_name(contour)
         
         # Show and color
         display = simple.Show(contour, view)
@@ -226,8 +225,9 @@ class CFDWorkflows:
         if "error" in seed:
             return seed
         
-        # Create StreamTracer
-        stream = simple.StreamTracer(Input=proxy)
+        # Create StreamTracer with descriptive name
+        stream_name = f"Streamlines_wake"
+        stream = simple.StreamTracer(Input=proxy, registrationName=stream_name)
         stream.SeedType = "Point Cloud"
         stream.SeedType.Center = seed["center"]
         stream.SeedType.Radius = seed["radius"]
@@ -235,8 +235,6 @@ class CFDWorkflows:
         stream.MaximumStreamlineLength = seed["max_length"]
         stream.Vectors = ['POINTS', 'Velocity']
         simple.UpdatePipeline(proxy=stream)
-        
-        stream_name = self._get_proxy_name(stream)
         
         # Show and color
         display = simple.Show(stream, view)
@@ -363,14 +361,13 @@ class CFDWorkflows:
         if location.startswith("span"):
             self._mcp.show_data_context(proxy_name=proxy_name, opacity=0.3)
         
-        # Create slice
-        slice_filter = simple.Slice(Input=proxy)
+        # Create slice with descriptive name
+        slice_name = f"Slice_{location}"
+        slice_filter = simple.Slice(Input=proxy, registrationName=slice_name)
         slice_filter.SliceType = 'Plane'
         slice_filter.SliceType.Origin = origin
         slice_filter.SliceType.Normal = normal_vec
         simple.UpdatePipeline(proxy=slice_filter)
-        
-        slice_name = self._get_proxy_name(slice_filter)
         
         # Show with representation
         display = simple.Show(slice_filter, view)

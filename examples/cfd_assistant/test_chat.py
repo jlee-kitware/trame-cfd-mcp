@@ -68,6 +68,9 @@ class TestApp:
         self.update()
     
     def _build_ui(self):
+        # Force chat to start expanded
+        self.state["trame_llm_chat_1_collapsed"] = False
+        
         with SinglePageLayout(self.server) as layout:
             layout.title.set_text("CFD Analysis Assistant")
             
