@@ -2381,10 +2381,19 @@ out.GetPointData().AddArray(arr)
             if original_view:
                 simple.SetActiveView(original_view)
             
+            # Cache full data internally, return lightweight result
+            self._last_histogram_data = hist_data
+            
             return {
                 "status": "created",
                 "chart_type": "histogram",
-                **hist_data
+                "field": hist_data["field"],
+                "num_points": hist_data["num_points"],
+                "num_bins": len(hist_data["counts"]),
+                "min": hist_data["min"],
+                "max": hist_data["max"],
+                "mean": hist_data["mean"],
+                "std": hist_data["std"],
             }
             
         except Exception as e:
@@ -2469,10 +2478,18 @@ out.GetPointData().AddArray(arr)
             if original_view:
                 simple.SetActiveView(original_view)
             
+            # Cache full data internally, return lightweight result
+            self._last_force_data = dist_data
+            
             return {
                 "status": "created",
                 "chart_type": "force_distribution",
-                **dist_data
+                "force_axis": dist_data["force_axis"],
+                "distribution_axis": dist_data["distribution_axis"],
+                "total_force": dist_data["total_force"],
+                "position_range": dist_data["position_range"],
+                "num_bins": dist_data["num_bins"],
+                "num_body_cells": dist_data["num_body_cells"],
             }
             
         except Exception as e:
