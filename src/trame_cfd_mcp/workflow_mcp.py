@@ -126,11 +126,11 @@ class WorkflowMCP:
     def update_display_property(
         self,
         property_name: str,
-        value: float,
+        value,
         proxy_name: str = None
     ) -> dict:
         """
-        Set display/representation property like opacity, line width, or point size.
+        Set display/representation property like opacity, interpolation, or line width.
         
         These are visual properties on how the data is displayed, NOT filter properties.
         Use list_properties() for filter properties, this is for display properties.
@@ -138,9 +138,12 @@ class WorkflowMCP:
         Args:
             property_name: One of:
                 - "Opacity": 0.0 (transparent) to 1.0 (opaque)
+                - "Interpolation": "Flat", "Gouraud", or "PBR"
                 - "LineWidth": line thickness (default 1.0)
                 - "PointSize": point size for Points representation (default 2.0)
-            value: The value to set
+                - "Metallic": 0.0-1.0 for PBR materials
+                - "Roughness": 0.0-1.0 for PBR materials
+            value: The value to set (number or string depending on property)
             proxy_name: Proxy to modify, or active source if None
             
         Returns:
@@ -153,11 +156,19 @@ class WorkflowMCP:
             "line_width": "LineWidth",
             "pointsize": "PointSize",
             "point_size": "PointSize",
+            "interpolation": "Interpolation",
+            "metallic": "Metallic",
+            "roughness": "Roughness",
+            "pbr": "Interpolation",  # Shortcut: "pbr" -> set Interpolation to PBR
         }
         
         # Normalize property name
         prop_key = property_name.lower().replace(" ", "")
         actual_prop = property_map.get(prop_key, property_name)
+        
+        # Handle "pbr" shortcut - set value to "PBR" if using the shortcut
+        if prop_key == "pbr":
+            value = "PBR"
         
         # Get proxy
         if proxy_name:
