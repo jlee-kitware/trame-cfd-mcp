@@ -1,166 +1,140 @@
 #!/usr/bin/env python
-"""
-Interactive CFD Analysis Assistant
-
-A Trame application with chat interface for CFD analysis using
-the WorkflowMCP tools (boundary layer analysis, vortex detection, etc.)
-
-Usage:
-    pvpython cfd_chat.py [data_file.vtm]
-
-Environment variables (in .env file):
-    LLM_PROVIDER=openai
-    LLM_MODEL=gpt-4
-    OPENAI_API_KEY=your-key
-"""
+"""CFD Chat app based on ptc.Lite with pipeline browser"""
 import sys
 import os
 import asyncio
 
-# Python 3.14+ compatibility: ensure event loop exists
 try:
     asyncio.get_event_loop()
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-# Add paths
 sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-cfd-mcp/src')
 sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-llm/src')
 
 from dotenv import load_dotenv
 load_dotenv()
 
-# Prevent ParaView from creating GUI windows
-os.environ.setdefault("PV_ALLOW_BATCH_INTERACTION", "1")
-os.environ.setdefault("DISPLAY", "")
-
 from paraview import simple
 
-# Use offscreen rendering
-simple._DisableFirstRenderCameraReset()
+import ptc
+from ptc.apps.lite import Lite
 
-from trame.app import get_server
-from trame.ui.vuetify3 import SinglePageLayout
-from trame.widgets import vuetify3, paraview, html
 from trame.widgets import llm
-
 from trame_llm.core import LLMClient, ProgressType
 from trame_cfd_mcp import WorkflowMCP
 from trame_llm.paraview import ParaViewMCP
 
 
-class CFDChatApp:
-    def __init__(self, server=None, data_file=None):
-        self.server = server or get_server(client_type="vue3")
-        self.state = self.server.state
-        self.ctrl = self.server.controller
+class CFDChatMCP:
+    """MCP wrapper that adds cost tracking tool to WorkflowMCP."""
+    
+    def __init__(self, workflow_mcp, llm_client):
+        self._workflow_mcp = workflow_mcp
+        self._llm_client = llm_client
+    
+    def get_session_cost(self) -> dict:
+        """
+        Get current chat session cost and usage statistics.
         
-        # Initialize state
-        self.state.trame__title = "CFD Analysis Assistant"
-        self.state.data_file = "No data loaded"
-        self.state.data_loaded = False
+        Returns token counts, estimated cost, and model info.
+        Call this to see how much the current session has cost.
+        """
+        return self._llm_client.get_cost()
+    
+    def reset_session_cost(self) -> dict:
+        """
+        Reset the cost tracking counters to zero.
         
-        # Create view for web rendering (not native window)
-        self.view = simple.CreateRenderView()
-        self.view.ViewSize = [1024, 768]
-        self.view.Background = [0.1, 0.1, 0.12]
-        self.view.EnableRenderOnInteraction = 0
-        self.view.InteractionMode = "3D"
+        Use this to start tracking cost for a new task.
+        """
+        self._llm_client.reset_cost()
+        return {"status": "reset", "message": "Cost counters reset to zero"}
+    
+    @property
+    def mcp(self) -> dict:
+        """Return MCP declaration with cost tools added."""
+        base_mcp = self._workflow_mcp.mcp
         
-        # Load data if provided
+        # Add cost tools
+        base_mcp["tools"] = list(base_mcp["tools"]) + [
+            self.get_session_cost,
+            self.reset_session_cost,
+        ]
+        
+        return base_mcp
+
+
+class CFDChat(Lite):
+    """CFD Chat app extending ParaView Lite with LLM chat."""
+    
+    def __init__(self, data_file=None):
+        # Load data first so Lite sees it
         if data_file and os.path.exists(data_file):
-            self.reader = simple.OpenDataFile(data_file)
+            reader = simple.OpenDataFile(data_file)
             simple.UpdatePipeline()
-            simple.Show(self.reader, self.view)
-            simple.ResetCamera(self.view)
-            self.state.data_loaded = True
-            self.state.data_file = os.path.basename(data_file)
-        else:
-            self.reader = None
+            simple.Show()
+            simple.ResetCamera()
+            print(f"Loaded: {data_file}")
         
-        # Setup LLM client with CFD workflows
+        # Initialize Lite (gets view, pipeline browser, etc.)
+        super().__init__()
+        
+        self.state.trame__title = "CFD Analysis Assistant"
+        
+        # Setup LLM
+        print("Setting up LLM client...")
         self.llm_client = LLMClient(max_iteractions=15)
         
-        # Register MCPs
+        # Build MCP chain: ParaViewMCP -> WorkflowMCP -> CFDChatMCP (adds cost)
         base_mcp = ParaViewMCP(self)
         workflow_mcp = WorkflowMCP(base_mcp)
-        self.llm_client.register_mcp(workflow_mcp)
+        chat_mcp = CFDChatMCP(workflow_mcp, self.llm_client)
         
-        # Build UI
-        self._build_ui()
+        self.llm_client.register_mcp(chat_mcp)
+        print("MCP registered")
+        
+        # Add chat widget and pipeline browser
+        self._add_cfd_widgets()
     
-    def update(self):
-        """Called by MCP when view needs refresh"""
-        self.ctrl.view_update()
-    
-    def reset_camera(self):
-        """Reset camera to fit all visible data"""
-        simple.ResetCamera(self.view)
-        self.update()
-    
-    def _build_ui(self):
-        with SinglePageLayout(self.server) as layout:
-            layout.title.set_text("CFD Analysis Assistant")
+    def _add_cfd_widgets(self):
+        # Force chat to start expanded
+        self.state["trame_llm_chat_1_collapsed"] = False
+        
+        with self.ui:
+            # Add pipeline browser on the left
+            with ptc.Div(
+                style="position: absolute; top: 4rem; left: 1rem; width: 250px; z-index: 100;",
+            ):
+                ptc.PipelineBrowser(width=250)
             
-            with layout.toolbar:
-                vuetify3.VSpacer()
-                html.Span("{{ data_file }}", classes="text-caption mr-4")
-                vuetify3.VIcon(
-                    "mdi-check-circle",
-                    color="green",
-                    v_if="data_loaded",
-                )
-                vuetify3.VIcon(
-                    "mdi-alert-circle", 
-                    color="orange",
-                    v_else=True,
-                )
-            
-            with layout.content:
-                with vuetify3.VContainer(fluid=True, classes="fill-height pa-0"):
-                    with vuetify3.VRow(classes="fill-height ma-0"):
-                        # ParaView render view (left side)
-                        with vuetify3.VCol(cols=8, classes="pa-0"):
-                            view_widget = paraview.VtkRemoteView(
-                                self.view,
-                                interactive_ratio=1,
-                                style="height: 100%; width: 100%;",
-                            )
-                            self.ctrl.view_update = view_widget.update
-                            self.ctrl.view_reset_camera = view_widget.reset_camera
-                        
-                        # Chat panel (right side)
-                        with vuetify3.VCol(cols=4, classes="pa-0", style="overflow-y: auto;"):
-                            llm.Chat(
-                                app_name="cfd_assistant",
-                                enabled_message_types=[
-                                    ProgressType.REQUEST,
-                                    ProgressType.LLM_RESPONSE,
-                                    ProgressType.MCP_SELECTION,
-                                    ProgressType.MCP,
-                                    ProgressType.MCP_ERROR,
-                                    ProgressType.ERROR,
-                                ],
-                                llm_client=self.llm_client,
-                                style="height: 100%;",
-                            )
-    
-    def start(self, **kwargs):
-        self.server.start(open_browser=True, **kwargs)
+            # Add chat widget (bottom-right by default)
+            llm.Chat(
+                app_name="cfd",
+                enabled_message_types=[
+                    ProgressType.REQUEST,
+                    ProgressType.LLM_RESPONSE,
+                    ProgressType.MCP_SELECTION,
+                    ProgressType.MCP,
+                    ProgressType.MCP_ERROR,
+                    ProgressType.ERROR,
+                ],
+                llm_client=self.llm_client,
+            )
 
 
 def main():
-    # Get data file from command line or use default
     if len(sys.argv) > 1:
         data_file = sys.argv[1]
     else:
         data_file = '/Users/jeff.lee/gitsync/trame-cfd-mcp/examples/cfd_assistant/test.vtm'
     
-    print(f"Loading: {data_file}")
-    print("Starting server... Open http://localhost:8080")
+    print(f"Starting CFD Chat with: {data_file}")
+    print("Click the chat icon in the bottom-right corner to open chat")
+    print("Ask 'what is the session cost?' to see usage statistics")
     
-    app = CFDChatApp(data_file=data_file)
-    app.start()
+    app = CFDChat(data_file=data_file)
+    app.start(open_browser=True)
 
 
 if __name__ == "__main__":
