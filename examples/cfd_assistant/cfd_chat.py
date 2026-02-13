@@ -77,7 +77,7 @@ class CFDChat(Lite):
             simple.ResetCamera()
             print(f"Loaded: {data_file}")
         
-        # Initialize Lite (gets view, pipeline browser, etc.)
+        # Initialize Lite (gets view, toolbar with pipeline browser, etc.)
         super().__init__()
         
         self.state.trame__title = "CFD Analysis Assistant"
@@ -94,21 +94,15 @@ class CFDChat(Lite):
         self.llm_client.register_mcp(chat_mcp)
         print("MCP registered")
         
-        # Add chat widget and pipeline browser
-        self._add_cfd_widgets()
+        # Add chat widget
+        self._add_chat()
     
-    def _add_cfd_widgets(self):
+    def _add_chat(self):
         # Force chat to start expanded
         self.state["trame_llm_chat_1_collapsed"] = False
         
+        # Add chat widget to main UI
         with self.ui:
-            # Add pipeline browser on the left
-            with ptc.Div(
-                style="position: absolute; top: 4rem; left: 1rem; width: 250px; z-index: 100;",
-            ):
-                ptc.PipelineBrowser(width=250)
-            
-            # Add chat widget (bottom-right by default)
             llm.Chat(
                 app_name="cfd",
                 enabled_message_types=[
@@ -130,8 +124,9 @@ def main():
         data_file = '/Users/jeff.lee/gitsync/trame-cfd-mcp/examples/cfd_assistant/test.vtm'
     
     print(f"Starting CFD Chat with: {data_file}")
-    print("Click the chat icon in the bottom-right corner to open chat")
-    print("Ask 'what is the session cost?' to see usage statistics")
+    print("Click branch icon in left toolbar for pipeline browser")
+    print("Chat icon in bottom-right corner")
+    print("Keyboard: 'p' = pipeline, 'c' = color, 'r' = reset camera")
     
     app = CFDChat(data_file=data_file)
     app.start(open_browser=True)

@@ -31,7 +31,10 @@ class WorkflowMCP:
         """
         self._base_mcp = base_mcp
         self._analysis = CFDAnalysis()
-        self._workflows = CFDWorkflows(self._analysis)
+        self._workflows = CFDWorkflows(
+            self._analysis, 
+            on_pipeline_changed=self._base_mcp.pipeline_changed
+        )
         self._ontology = CFD_ONTOLOGY
     
     @property

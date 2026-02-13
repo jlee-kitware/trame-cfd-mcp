@@ -12,15 +12,22 @@ from paraview import simple
 class CFDWorkflows:
     """High-level workflow tools for CFD visualization."""
     
-    def __init__(self, cfd_analysis):
+    def __init__(self, cfd_analysis, on_pipeline_changed=None):
         """
         Initialize with reference to CFDAnalysis for internal tool access.
         
         Args:
             cfd_analysis: CFDAnalysis instance
+            on_pipeline_changed: Optional callback to notify when pipeline changes
         """
         self._mcp = cfd_analysis  # Keep as _mcp for minimal code changes
         self._provenance_registry = {}  # proxy_name -> provenance dict
+        self._on_pipeline_changed = on_pipeline_changed
+    
+    def _notify_pipeline_changed(self):
+        """Notify that pipeline has changed (for UI updates like pipeline browser)."""
+        if self._on_pipeline_changed:
+            self._on_pipeline_changed()
     
     def _register_provenance(self, proxy_name: str, provenance: dict):
         """Register provenance for a proxy to enable chaining."""
@@ -180,6 +187,7 @@ class CFDWorkflows:
         
         # Register for chaining
         self._register_provenance(contour_name, provenance)
+        self._notify_pipeline_changed()
         
         return {
             "status": "created",
@@ -259,6 +267,7 @@ class CFDWorkflows:
         }
         
         self._register_provenance(stream_name, provenance)
+        self._notify_pipeline_changed()
         
         return {
             "status": "created",
@@ -409,6 +418,7 @@ class CFDWorkflows:
         }
         
         self._register_provenance(slice_name, provenance)
+        self._notify_pipeline_changed()
         
         return {
             "status": "created",
