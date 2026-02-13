@@ -895,10 +895,24 @@ class CFDWorkflows:
                 "state": state
             })
         
-        # Set camera view
-        view.CameraPosition = [0.0, span_y - 0.4, 0.15]
-        view.CameraFocalPoint = [0.5, span_y, 0.02]
-        view.CameraViewUp = [0, 0, 1]
+        # Compute camera to frame all probes
+        if probe_results:
+            x_coords = [p['surface_point'][0] for p in probe_results]
+            z_coords = [p['surface_point'][2] for p in probe_results]
+            x_min, x_max = min(x_coords), max(x_coords)
+            z_min, z_max = min(z_coords), max(z_coords)
+            
+            # Center of all probes
+            x_center = (x_min + x_max) / 2
+            z_center = (z_min + z_max) / 2
+            
+            # Distance based on extent (with margin)
+            x_extent = max(x_max - x_min, 0.3)  # Minimum extent
+            distance = x_extent * 0.8
+            
+            view.CameraPosition = [x_center - distance * 0.3, span_y - distance, z_center + distance * 0.4]
+            view.CameraFocalPoint = [x_center, span_y, z_center]
+            view.CameraViewUp = [0, 0, 1]
         
         simple.Render(view)
         
