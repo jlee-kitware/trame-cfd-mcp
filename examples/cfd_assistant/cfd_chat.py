@@ -94,6 +94,16 @@ def main():
         refresh_charts()
         app.state.chart_drawer_open = not app.state.chart_drawer_open
     
+    def delete_chart(index):
+        """Delete a chart by index."""
+        workflow_mcp._analysis._chart_gallery.pop(index)
+        refresh_charts()
+    
+    def clear_all_charts():
+        """Clear all charts."""
+        workflow_mcp.clear_charts()
+        refresh_charts()
+    
     # Add UI components
     with app.ui:
         # Chart gallery drawer
@@ -106,12 +116,22 @@ def main():
             with v3.VCard(flat=True, classes="fill-height d-flex flex-column"):
                 with v3.VCardTitle(classes="d-flex justify-space-between align-center flex-shrink-0"):
                     html.Span("Charts ({{ chart_gallery.length }})")
-                    v3.VBtn(
-                        icon="mdi-refresh",
-                        click=refresh_charts,
-                        variant="text",
-                        size="small",
-                    )
+                    with html.Div():
+                        v3.VBtn(
+                            icon="mdi-refresh",
+                            click=refresh_charts,
+                            variant="text",
+                            size="small",
+                            title="Refresh",
+                        )
+                        v3.VBtn(
+                            icon="mdi-delete-sweep",
+                            click=clear_all_charts,
+                            variant="text",
+                            size="small",
+                            title="Clear all",
+                            v_if="chart_gallery.length > 0",
+                        )
                 
                 # Scrollable chart list
                 with v3.VCardText(
@@ -125,7 +145,17 @@ def main():
                     # Expansion panels for collapsible charts
                     with v3.VExpansionPanels(multiple=True, variant="accordion"):
                         with v3.VExpansionPanel(v_for="(chart, i) in chart_gallery", key="i"):
-                            v3.VExpansionPanelTitle("{{ chart.title }}", classes="text-caption py-1")
+                            with v3.VExpansionPanelTitle(classes="text-caption py-1"):
+                                html.Span("{{ chart.title }}", classes="flex-grow-1")
+                                v3.VBtn(
+                                    icon="mdi-close",
+                                    click=(delete_chart, "[i]"),
+                                    variant="text",
+                                    size="x-small",
+                                    color="error",
+                                    title="Delete chart",
+                                    click_stop=True,  # Prevent expansion toggle
+                                )
                             with v3.VExpansionPanelText(classes="pa-1"):
                                 v3.VImg(src=("chart.image",), aspect_ratio="16/9")
         
