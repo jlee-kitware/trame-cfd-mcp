@@ -22,6 +22,15 @@ from .cfd_analysis import CFDAnalysis
 from .workflow_mcp import WorkflowMCP
 from .workflows import CFDWorkflows
 from .cost_tracker import TrackedLLMClient, UsageStats
+from .catalyst_live import CatalystLiveSource, CatalystLiveMCP
 
-__all__ = ["CFDAnalysis", "WorkflowMCP", "CFDWorkflows", "TrackedLLMClient", "UsageStats"]
+__all__ = [
+    "CFDAnalysis", 
+    "WorkflowMCP", 
+    "CFDWorkflows", 
+    "TrackedLLMClient", 
+    "UsageStats",
+    "CatalystLiveSource",
+    "CatalystLiveMCP",
+]
 __version__ = "0.1.0"
