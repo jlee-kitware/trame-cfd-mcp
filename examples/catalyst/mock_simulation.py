@@ -90,10 +90,42 @@ def create_monitor_node(solver):
     """
     Create a Conduit node with monitor data.
     
-    The data is structured as a Blueprint "points" mesh where:
-    - x coordinate = iteration number
-    - y coordinate = primary residual (for easy 2D plotting)
-    - Fields contain all residuals and forces
+    LIGHTWEIGHT MODE: Send only current iteration's values.
+    The pipeline script accumulates history.
+    """
+    node = conduit.Node()
+    
+    n = solver.current_iteration
+    if n == 0:
+        return node
+    
+    # State info
+    node["catalyst/state/timestep"] = solver.current_iteration
+    node["catalyst/state/time"] = solver.get_time()
+    
+    # Monitor channel - just current values (NOT the whole history)
+    monitors = node["catalyst/channels/monitors"]
+    monitors["type"] = "object"  # Not a mesh, just scalar data
+    
+    # Current iteration's values only
+    data = monitors["data"]
+    data["iteration"] = float(n)
+    data["residual_continuity"] = float(solver.residual_continuity[n-1])
+    data["residual_momentum"] = float(solver.residual_momentum[n-1])
+    data["residual_energy"] = float(solver.residual_energy[n-1])
+    data["drag"] = float(solver.drag[n-1])
+    data["lift"] = float(solver.lift[n-1])
+    
+    return node
+
+
+def create_monitor_node_full_history(solver):
+    """
+    Alternative: Send full history as a points mesh.
+    
+    Use this if you want ParaView to have complete history
+    without accumulation in the pipeline script.
+    More bandwidth but simpler pipeline.
     """
     node = conduit.Node()
     
