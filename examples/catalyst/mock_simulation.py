@@ -103,18 +103,24 @@ def create_monitor_node(solver):
     node["catalyst/state/timestep"] = solver.current_iteration
     node["catalyst/state/time"] = solver.get_time()
     
-    # Monitor channel - just current values (NOT the whole history)
+    # Monitor channel as a single-row table with named columns
+    # The pipeline script accumulates rows over time
     monitors = node["catalyst/channels/monitors"]
-    monitors["type"] = "object"  # Not a mesh, just scalar data
+    monitors["type"] = "object"  # Not a mesh, tabular data
     
-    # Current iteration's values only
+    # Table structure: columns with single values
+    # Column names are self-describing - can change during simulation
     data = monitors["data"]
-    data["iteration"] = float(n)
-    data["residual_continuity"] = float(solver.residual_continuity[n-1])
-    data["residual_momentum"] = float(solver.residual_momentum[n-1])
-    data["residual_energy"] = float(solver.residual_energy[n-1])
-    data["drag"] = float(solver.drag[n-1])
-    data["lift"] = float(solver.lift[n-1])
+    data["num_rows"] = 1
+    
+    # Each column is a 1-element array
+    cols = data["columns"]
+    cols["iteration"].set(np.array([float(n)], dtype=np.float32))
+    cols["residual_continuity"].set(np.array([solver.residual_continuity[n-1]], dtype=np.float32))
+    cols["residual_momentum"].set(np.array([solver.residual_momentum[n-1]], dtype=np.float32))
+    cols["residual_energy"].set(np.array([solver.residual_energy[n-1]], dtype=np.float32))
+    cols["drag"].set(np.array([solver.drag[n-1]], dtype=np.float32))
+    cols["lift"].set(np.array([solver.lift[n-1]], dtype=np.float32))
     
     return node
 
