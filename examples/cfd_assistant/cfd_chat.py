@@ -352,15 +352,24 @@ def main():
     parser.add_argument('--port', type=int, default=22222, help='Catalyst port (with --live)')
     args = parser.parse_args()
     
-    # Load static data if provided
-    if args.data_file and os.path.exists(args.data_file):
-        reader = simple.OpenDataFile(args.data_file)
+    # Default to test.vtm if no file specified and not live-only mode
+    data_file = args.data_file
+    if data_file is None and not args.live:
+        # Look for test.vtm in same directory as script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        default_file = os.path.join(script_dir, 'test.vtm')
+        if os.path.exists(default_file):
+            data_file = default_file
+    
+    # Load static data if available
+    if data_file and os.path.exists(data_file):
+        reader = simple.OpenDataFile(data_file)
         simple.UpdatePipeline()
         simple.Show()
         simple.ResetCamera()
-        print(f"Loaded: {args.data_file}")
-    elif args.data_file:
-        print(f"Warning: File not found: {args.data_file}")
+        print(f"Loaded: {data_file}")
+    elif data_file:
+        print(f"Warning: File not found: {data_file}")
     
     # Create Lite app
     app = Lite()
