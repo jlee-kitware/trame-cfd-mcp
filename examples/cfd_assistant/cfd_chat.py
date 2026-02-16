@@ -211,7 +211,35 @@ class CFDChatMCP:
         try:
             simple.UpdatePipeline(proxy=self._monitor_source)
             
-            # Create XY plot
+            # Fetch data to check type and get column names
+            data = simple.servermanager.Fetch(self._monitor_source)
+            data_type = data.GetClassName()
+            
+            # Get column/array names depending on data type
+            available_fields = []
+            if data_type == "vtkTable":
+                # It's a table - get column names
+                for i in range(data.GetNumberOfColumns()):
+                    available_fields.append(data.GetColumn(i).GetName())
+            elif hasattr(data, 'GetPointData'):
+                # It's a mesh with point data
+                pd = data.GetPointData()
+                for i in range(pd.GetNumberOfArrays()):
+                    available_fields.append(pd.GetArrayName(i))
+            
+            # Auto-detect residual fields if not specified
+            if y_fields is None:
+                y_fields = []
+                for name in available_fields:
+                    if name == x_field:
+                        continue
+                    if 'residual' in name.lower() or name in ['continuity', 'momentum', 'energy']:
+                        y_fields.append(name)
+                # If no residuals found, show all numeric fields except x
+                if not y_fields:
+                    y_fields = [f for f in available_fields if f != x_field]
+            
+            # Create XY plot view
             chart = simple.CreateXYPlotView()
             chart.ViewSize = [800, 400]
             chart.ChartTitle = "Residual Convergence"
@@ -219,24 +247,16 @@ class CFDChatMCP:
             chart.LeftAxisTitle = "Residual"
             chart.LeftAxisLogScale = 1 if log_scale else 0
             
-            # Need PlotData filter for point data
-            plot = simple.PlotData(Input=self._monitor_source)
+            # For vtkTable, show directly without PlotData filter
+            # For point data, we need PlotData
+            if data_type == "vtkTable":
+                display = simple.Show(self._monitor_source, chart)
+            else:
+                plot = simple.PlotData(Input=self._monitor_source)
+                display = simple.Show(plot, chart)
             
-            display = simple.Show(plot, chart)
             display.XArrayName = x_field
             display.UseIndexForXAxis = 0
-            
-            # Auto-detect residual fields if not specified
-            if y_fields is None:
-                # Show all fields that look like residuals
-                data = simple.servermanager.Fetch(self._monitor_source)
-                if hasattr(data, 'GetPointData'):
-                    pd = data.GetPointData()
-                    y_fields = []
-                    for i in range(pd.GetNumberOfArrays()):
-                        name = pd.GetArrayName(i)
-                        if 'residual' in name.lower() or name in ['continuity', 'momentum', 'energy']:
-                            y_fields.append(name)
             
             if y_fields:
                 display.SeriesVisibility = y_fields
@@ -247,9 +267,11 @@ class CFDChatMCP:
             
             return {
                 "status": "created",
+                "data_type": data_type,
                 "chart": "Residual Convergence",
                 "x_field": x_field,
-                "y_fields": y_fields or "auto-detected",
+                "y_fields": y_fields,
+                "available_fields": available_fields,
                 "log_scale": log_scale,
                 "tip": "Chart updates when you call update_monitor_chart()"
             }
@@ -281,9 +303,19 @@ class CFDChatMCP:
             data = simple.servermanager.Fetch(self._monitor_source)
             
             result = {"status": "ok", "values": {}}
+            data_type = data.GetClassName()
             
-            # Get the last point's values
-            if hasattr(data, 'GetPointData'):
+            if data_type == "vtkTable":
+                # It's a table - get last row values
+                n_rows = data.GetNumberOfRows()
+                if n_rows > 0:
+                    for i in range(data.GetNumberOfColumns()):
+                        col = data.GetColumn(i)
+                        name = col.GetName()
+                        value = col.GetValue(n_rows - 1)
+                        result["values"][name] = value
+            elif hasattr(data, 'GetPointData'):
+                # It's a mesh with point data - get last point's values
                 pd = data.GetPointData()
                 n_points = data.GetNumberOfPoints()
                 
@@ -291,7 +323,6 @@ class CFDChatMCP:
                     for i in range(pd.GetNumberOfArrays()):
                         arr = pd.GetArray(i)
                         name = arr.GetName()
-                        # Get last value
                         value = arr.GetValue(n_points - 1)
                         result["values"][name] = value
             
