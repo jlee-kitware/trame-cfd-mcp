@@ -96,20 +96,31 @@ class CFDChatMCP:
         if not self._live_enabled:
             return {"error": "Live mode not enabled. Restart with --live flag."}
         
-        from paraview.live import ConnectToCatalyst
+        from paraview import servermanager
         
         host = host or self._live_host
         port = port or self._live_port
         
         try:
-            self._live_link = ConnectToCatalyst(host, port)
+            # Use servermanager directly instead of paraview.live wrapper
+            # This gives us more control over the connection
+            self._live_link = servermanager.ConnectToCatalyst(host, port)
+            
+            # Process any pending events
+            pm = servermanager.vtkProcessModule.GetProcessModule()
+            nam = pm.GetNetworkAccessManager()
+            for _ in range(10):  # Process a few events
+                nam.ProcessEvents(100)  # 100ms timeout
+            
             return {
                 "status": "connected",
                 "host": host,
                 "port": port,
-                "tip": "Use extract_monitors() to get residual data, or list_data() to see available channels."
+                "tip": "Data should appear in pipeline browser. Use list_data() to see sources."
             }
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
     def disconnect_live(self) -> dict:
@@ -438,6 +449,33 @@ def main():
     app.state.live_connected = False
     app.state.live_host = args.host
     app.state.live_port = args.port
+    
+    # Background task for processing Live events
+    live_task = None
+    
+    async def process_live_events():
+        """Background task to process ParaView network events for Catalyst Live."""
+        from paraview import servermanager
+        pm = servermanager.vtkProcessModule.GetProcessModule()
+        nam = pm.GetNetworkAccessManager()
+        
+        while True:
+            try:
+                # Process network events (non-blocking)
+                nam.ProcessEvents(1)  # 1ms timeout
+                await asyncio.sleep(0.1)  # Check every 100ms
+            except Exception as e:
+                print(f"Live event processing error: {e}")
+                await asyncio.sleep(1.0)
+    
+    if args.live:
+        # Start background task when app starts
+        @app.server.controller.add("on_server_ready")
+        def start_live_task(**kwargs):
+            nonlocal live_task
+            loop = asyncio.get_event_loop()
+            live_task = loop.create_task(process_live_events())
+            print("Live event processing started")
     
     # Setup LLM
     print("Setting up LLM client...")
