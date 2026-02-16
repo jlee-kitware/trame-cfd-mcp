@@ -103,14 +103,22 @@ class CFDChatMCP:
         
         try:
             # Use servermanager directly instead of paraview.live wrapper
-            # This gives us more control over the connection
             self._live_link = servermanager.ConnectToCatalyst(host, port)
+            
+            # Initialize the link - this is required!
+            self._live_link.InvokeCommand('Initialize')
             
             # Process any pending events
             pm = servermanager.vtkProcessModule.GetProcessModule()
             nam = pm.GetNetworkAccessManager()
             for _ in range(10):  # Process a few events
                 nam.ProcessEvents(100)  # 100ms timeout
+            
+            # Ensure we have an active view (Catalyst connection can break this)
+            view = simple.GetActiveView()
+            if view is None:
+                view = simple.GetActiveViewOrCreate('RenderView')
+                print(f"[Live] Created new RenderView: {view}")
             
             return {
                 "status": "connected",
@@ -456,13 +464,21 @@ def main():
         pm = servermanager.vtkProcessModule.GetProcessModule()
         nam = pm.GetNetworkAccessManager()
         
+        # Track sources for debugging
+        last_source_count = [0]
+        
         # Use trame's timer to periodically process ParaView network events
         def process_pv_events():
-            nam.ProcessEvents(1)  # 1ms timeout, non-blocking
-        
-        # Register with trame to call this periodically
-        from trame.app import get_server
-        server = get_server()
+            try:
+                nam.ProcessEvents(1)  # 1ms timeout, non-blocking
+                
+                # Debug: check for new sources
+                sources = simple.GetSources()
+                if len(sources) != last_source_count[0]:
+                    print(f"[Live] Sources changed: {list(sources.keys())}")
+                    last_source_count[0] = len(sources)
+            except Exception as e:
+                pass  # Ignore errors during event processing
         
         import asyncio
         async def live_event_loop():
@@ -470,7 +486,7 @@ def main():
                 process_pv_events()
                 await asyncio.sleep(0.1)  # Every 100ms
         
-        @server.controller.add("on_server_ready")
+        @app.server.controller.add("on_server_ready")
         def start_live_loop(**kwargs):
             asyncio.create_task(live_event_loop())
             print("Catalyst Live event processing started")
@@ -514,12 +530,17 @@ def main():
         refresh_charts()
     
     def toggle_live_connection():
+        print(f"[DEBUG] toggle_live_connection called, current state: {app.state.live_connected}")
         if app.state.live_connected:
             chat_mcp.disconnect_live()
             app.state.live_connected = False
+            print("[DEBUG] Disconnected")
         else:
+            print(f"[DEBUG] Calling connect_live({args.host}, {args.port})...")
             result = chat_mcp.connect_live()
+            print(f"[DEBUG] connect_live result: {result}")
             app.state.live_connected = result.get("status") == "connected"
+            print(f"[DEBUG] live_connected now: {app.state.live_connected}")
     
     # Build UI
     with app.ui:
