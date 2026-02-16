@@ -88,10 +88,11 @@ class MockCFDSolver:
 
 def create_monitor_node(solver):
     """
-    Create a Conduit node with monitor data.
+    Create a Conduit node with monitor data as a points mesh.
     
-    LIGHTWEIGHT MODE: Send only current iteration's values.
-    The pipeline script accumulates history.
+    Catalyst Live requires mesh data (not tables/objects).
+    We encode monitor history as a 1D point set where each point
+    is one iteration, with fields for residuals and forces.
     """
     node = conduit.Node()
     
@@ -103,24 +104,48 @@ def create_monitor_node(solver):
     node["catalyst/state/timestep"] = solver.current_iteration
     node["catalyst/state/time"] = solver.get_time()
     
-    # Monitor channel as a single-row table with named columns
-    # The pipeline script accumulates rows over time
+    # Monitor channel as a points mesh (required for Catalyst Live)
     monitors = node["catalyst/channels/monitors"]
-    monitors["type"] = "object"  # Not a mesh, tabular data
+    monitors["type"] = "mesh"
     
-    # Table structure: columns with single values
-    # Column names are self-describing - can change during simulation
-    data = monitors["data"]
-    data["num_rows"] = 1
+    # Coordset: iteration as x coordinate
+    coords = monitors["data/coordsets/coords"]
+    coords["type"] = "explicit"
+    coords["values/x"].set_external(solver.iterations[:n])
+    coords["values/y"].set(np.zeros(n, dtype=np.float32))
+    coords["values/z"].set(np.zeros(n, dtype=np.float32))
     
-    # Each column is a 1-element array
-    cols = data["columns"]
-    cols["iteration"].set(np.array([float(n)], dtype=np.float32))
-    cols["residual_continuity"].set(np.array([solver.residual_continuity[n-1]], dtype=np.float32))
-    cols["residual_momentum"].set(np.array([solver.residual_momentum[n-1]], dtype=np.float32))
-    cols["residual_energy"].set(np.array([solver.residual_energy[n-1]], dtype=np.float32))
-    cols["drag"].set(np.array([solver.drag[n-1]], dtype=np.float32))
-    cols["lift"].set(np.array([solver.lift[n-1]], dtype=np.float32))
+    # Topology: points (one point per iteration)
+    topo = monitors["data/topologies/mesh"]
+    topo["type"] = "points"
+    topo["coordset"] = "coords"
+    
+    # Fields contain the actual data
+    fields = monitors["data/fields"]
+    
+    fields["iteration/association"] = "vertex"
+    fields["iteration/topology"] = "mesh"
+    fields["iteration/values"].set_external(solver.iterations[:n])
+    
+    fields["residual_continuity/association"] = "vertex"
+    fields["residual_continuity/topology"] = "mesh"
+    fields["residual_continuity/values"].set_external(solver.residual_continuity[:n])
+    
+    fields["residual_momentum/association"] = "vertex"
+    fields["residual_momentum/topology"] = "mesh"
+    fields["residual_momentum/values"].set_external(solver.residual_momentum[:n])
+    
+    fields["residual_energy/association"] = "vertex"
+    fields["residual_energy/topology"] = "mesh"
+    fields["residual_energy/values"].set_external(solver.residual_energy[:n])
+    
+    fields["drag/association"] = "vertex"
+    fields["drag/topology"] = "mesh"
+    fields["drag/values"].set_external(solver.drag[:n])
+    
+    fields["lift/association"] = "vertex"
+    fields["lift/topology"] = "mesh"
+    fields["lift/values"].set_external(solver.lift[:n])
     
     return node
 
