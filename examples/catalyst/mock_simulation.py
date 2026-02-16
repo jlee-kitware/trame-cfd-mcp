@@ -22,13 +22,36 @@ import numpy as np
 
 # Try to import Catalyst
 try:
+    # Try standalone catalyst first (for simulations outside ParaView)
     import catalyst
     import catalyst_conduit as conduit
     HAS_CATALYST = True
+    CATALYST_TYPE = "standalone"
 except ImportError:
-    print("Warning: catalyst module not found. Running in demo mode.")
-    print("To use real Catalyst, ensure CATALYST_IMPLEMENTATION_PATHS is set.")
-    HAS_CATALYST = False
+    try:
+        # Try ParaView's catalyst module (for pvpython)
+        from paraview import catalyst
+        from paraview.catalyst import bridge
+        import conduit
+        HAS_CATALYST = True
+        CATALYST_TYPE = "paraview"
+    except ImportError:
+        print("Warning: catalyst module not found. Running in demo mode.")
+        print("To use real Catalyst:")
+        print("  - With pvpython: from paraview import catalyst")
+        print("  - Standalone: export CATALYST_IMPLEMENTATION_PATHS=...")
+        HAS_CATALYST = False
+        CATALYST_TYPE = None
+        # Create dummy conduit for demo mode
+        class DummyNode:
+            def __setitem__(self, k, v): pass
+            def __getitem__(self, k): return DummyNode()
+            def set(self, v): pass
+            def set_external(self, v): pass
+        class DummyConduit:
+            @staticmethod
+            def Node(): return DummyNode()
+        conduit = DummyConduit()
 
 
 class MockCFDSolver:
