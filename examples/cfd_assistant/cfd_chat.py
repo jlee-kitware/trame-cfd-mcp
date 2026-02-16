@@ -168,29 +168,54 @@ class CFDChatMCP:
         if not self._live_link:
             return {"error": "Not connected. Call connect_live() first."}
         
-        from paraview.live import ExtractCatalystData
-        
         try:
-            self._monitor_source = ExtractCatalystData(self._live_link, channel_name)
+            # Find the source by name in the pipeline
+            # ExtractCatalystData has issues with vtkTable, so look for existing source
+            sources = simple.GetSources()
+            
+            # Look for a source matching the channel name
+            for (name, _id), proxy in sources.items():
+                if channel_name.lower() in name.lower():
+                    self._monitor_source = proxy
+                    break
+            
+            # If not found by name, try ExtractCatalystData (may fail for tables)
+            if self._monitor_source is None:
+                from paraview.live import ExtractCatalystData
+                try:
+                    self._monitor_source = ExtractCatalystData(self._live_link, channel_name)
+                except Exception as e:
+                    # ExtractCatalystData failed - check if source exists anyway
+                    sources = simple.GetSources()
+                    for (name, _id), proxy in sources.items():
+                        if channel_name.lower() in name.lower():
+                            self._monitor_source = proxy
+                            break
             
             if self._monitor_source is None:
+                # List available sources for debugging
+                available = [name for (name, _id) in simple.GetSources().keys()]
                 return {
                     "status": "error",
                     "message": f"Channel '{channel_name}' not found.",
-                    "tip": "Check pipeline browser for available channels, or verify simulation is sending monitor data."
+                    "available_sources": available,
+                    "tip": "Check pipeline browser for available channels."
                 }
             
-            simple.UpdatePipeline(proxy=self._monitor_source)
-            
-            # Get info about the data
+            # Don't call UpdatePipeline - it triggers Fetch which fails for tables
+            # Just get info
             info = self._monitor_source.GetDataInformation()
+            data_type = info.GetDataClassName() if info else "unknown"
             
             return {
                 "status": "extracted",
                 "channel": channel_name,
+                "data_type": data_type,
                 "tip": "Use show_monitor_chart() to visualize residuals."
             }
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
     def show_monitor_chart(self, 
@@ -209,9 +234,8 @@ class CFDChatMCP:
             return {"error": "No monitor data. Call extract_monitors() first."}
         
         try:
-            simple.UpdatePipeline(proxy=self._monitor_source)
-            
-            # Get data info from proxy (avoids Fetch which fails for vtkTable)
+            # Don't call UpdatePipeline - it triggers Fetch which fails for vtkTable
+            # Get data info from proxy directly
             info = self._monitor_source.GetDataInformation()
             data_type = info.GetDataClassName()
             
@@ -281,7 +305,7 @@ class CFDChatMCP:
             return {"error": "No monitor data extracted"}
         
         try:
-            simple.UpdatePipeline(proxy=self._monitor_source)
+            # Don't call UpdatePipeline for vtkTable sources
             if self._monitor_chart:
                 simple.Render(self._monitor_chart)
             return {"status": "updated"}
@@ -294,9 +318,8 @@ class CFDChatMCP:
             return {"error": "No monitor data. Call extract_monitors() first."}
         
         try:
-            simple.UpdatePipeline(proxy=self._monitor_source)
-            
-            # Get data info from proxy (avoids Fetch which fails for vtkTable)
+            # Don't call UpdatePipeline - it triggers Fetch which fails for vtkTable
+            # Get data info from proxy directly
             info = self._monitor_source.GetDataInformation()
             data_type = info.GetDataClassName()
             
