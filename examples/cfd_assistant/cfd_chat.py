@@ -450,32 +450,30 @@ def main():
     app.state.live_host = args.host
     app.state.live_port = args.port
     
-    # Background task for processing Live events
-    live_task = None
-    
-    async def process_live_events():
-        """Background task to process ParaView network events for Catalyst Live."""
+    # For Catalyst Live: we need to process network events
+    if args.live:
         from paraview import servermanager
         pm = servermanager.vtkProcessModule.GetProcessModule()
         nam = pm.GetNetworkAccessManager()
         
-        while True:
-            try:
-                # Process network events (non-blocking)
-                nam.ProcessEvents(1)  # 1ms timeout
-                await asyncio.sleep(0.1)  # Check every 100ms
-            except Exception as e:
-                print(f"Live event processing error: {e}")
-                await asyncio.sleep(1.0)
-    
-    if args.live:
-        # Start background task when app starts
-        @app.server.controller.add("on_server_ready")
-        def start_live_task(**kwargs):
-            nonlocal live_task
-            loop = asyncio.get_event_loop()
-            live_task = loop.create_task(process_live_events())
-            print("Live event processing started")
+        # Use trame's timer to periodically process ParaView network events
+        def process_pv_events():
+            nam.ProcessEvents(1)  # 1ms timeout, non-blocking
+        
+        # Register with trame to call this periodically
+        from trame.app import get_server
+        server = get_server()
+        
+        import asyncio
+        async def live_event_loop():
+            while True:
+                process_pv_events()
+                await asyncio.sleep(0.1)  # Every 100ms
+        
+        @server.controller.add("on_server_ready")
+        def start_live_loop(**kwargs):
+            asyncio.create_task(live_event_loop())
+            print("Catalyst Live event processing started")
     
     # Setup LLM
     print("Setting up LLM client...")
