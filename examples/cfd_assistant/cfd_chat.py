@@ -211,21 +211,22 @@ class CFDChatMCP:
         try:
             simple.UpdatePipeline(proxy=self._monitor_source)
             
-            # Fetch data to check type and get column names
-            data = simple.servermanager.Fetch(self._monitor_source)
-            data_type = data.GetClassName()
+            # Get data info from proxy (avoids Fetch which fails for vtkTable)
+            info = self._monitor_source.GetDataInformation()
+            data_type = info.GetDataClassName()
             
-            # Get column/array names depending on data type
+            # Get available fields from data information
             available_fields = []
             if data_type == "vtkTable":
-                # It's a table - get column names
-                for i in range(data.GetNumberOfColumns()):
-                    available_fields.append(data.GetColumn(i).GetName())
-            elif hasattr(data, 'GetPointData'):
-                # It's a mesh with point data
-                pd = data.GetPointData()
-                for i in range(pd.GetNumberOfArrays()):
-                    available_fields.append(pd.GetArrayName(i))
+                # For tables, get row data (columns)
+                row_info = info.GetRowDataInformation()
+                for i in range(row_info.GetNumberOfArrays()):
+                    available_fields.append(row_info.GetArrayInformation(i).GetName())
+            else:
+                # For meshes, get point data
+                point_info = info.GetPointDataInformation()
+                for i in range(point_info.GetNumberOfArrays()):
+                    available_fields.append(point_info.GetArrayInformation(i).GetName())
             
             # Auto-detect residual fields if not specified
             if y_fields is None:
@@ -247,14 +248,8 @@ class CFDChatMCP:
             chart.LeftAxisTitle = "Residual"
             chart.LeftAxisLogScale = 1 if log_scale else 0
             
-            # For vtkTable, show directly without PlotData filter
-            # For point data, we need PlotData
-            if data_type == "vtkTable":
-                display = simple.Show(self._monitor_source, chart)
-            else:
-                plot = simple.PlotData(Input=self._monitor_source)
-                display = simple.Show(plot, chart)
-            
+            # Show directly on chart - no PlotData filter needed for tables
+            display = simple.Show(self._monitor_source, chart)
             display.XArrayName = x_field
             display.UseIndexForXAxis = 0
             
@@ -300,34 +295,41 @@ class CFDChatMCP:
         
         try:
             simple.UpdatePipeline(proxy=self._monitor_source)
-            data = simple.servermanager.Fetch(self._monitor_source)
             
-            result = {"status": "ok", "values": {}}
-            data_type = data.GetClassName()
+            # Get data info from proxy (avoids Fetch which fails for vtkTable)
+            info = self._monitor_source.GetDataInformation()
+            data_type = info.GetDataClassName()
+            
+            result = {"status": "ok", "data_type": data_type, "values": {}}
             
             if data_type == "vtkTable":
-                # It's a table - get last row values
-                n_rows = data.GetNumberOfRows()
-                if n_rows > 0:
-                    for i in range(data.GetNumberOfColumns()):
-                        col = data.GetColumn(i)
-                        name = col.GetName()
-                        value = col.GetValue(n_rows - 1)
-                        result["values"][name] = value
-            elif hasattr(data, 'GetPointData'):
-                # It's a mesh with point data - get last point's values
-                pd = data.GetPointData()
-                n_points = data.GetNumberOfPoints()
+                # For tables, get row data info
+                row_info = info.GetRowDataInformation()
+                n_rows = info.GetNumberOfRows()
+                result["num_rows"] = n_rows
                 
-                if n_points > 0:
-                    for i in range(pd.GetNumberOfArrays()):
-                        arr = pd.GetArray(i)
-                        name = arr.GetName()
-                        value = arr.GetValue(n_points - 1)
-                        result["values"][name] = value
+                for i in range(row_info.GetNumberOfArrays()):
+                    arr_info = row_info.GetArrayInformation(i)
+                    name = arr_info.GetName()
+                    # Get range (min, max) - last value would need Fetch
+                    ranges = arr_info.GetComponentRange(0)
+                    result["values"][name] = {"min": ranges[0], "max": ranges[1]}
+            else:
+                # For meshes, get point data info
+                point_info = info.GetPointDataInformation()
+                n_points = info.GetNumberOfPoints()
+                result["num_points"] = n_points
+                
+                for i in range(point_info.GetNumberOfArrays()):
+                    arr_info = point_info.GetArrayInformation(i)
+                    name = arr_info.GetName()
+                    ranges = arr_info.GetComponentRange(0)
+                    result["values"][name] = {"min": ranges[0], "max": ranges[1]}
             
             return result
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
     @property
