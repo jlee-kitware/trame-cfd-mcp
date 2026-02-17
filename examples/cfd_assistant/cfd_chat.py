@@ -808,7 +808,7 @@ def main():
         # Chart panel - floating card, taller with scroll support
         with v3.VCard(
             v_show="chart_drawer_open",
-            style="position: fixed; top: 60px; left: 50px; z-index: 900; width: 500px; max-height: calc(100vh - 80px); display: flex; flex-direction: column;",
+            style="position: fixed; top: 60px; left: 50px; z-index: 900; width: 520px; height: 500px;",
             elevation=8,
         ):
             with v3.VCardTitle(classes="d-flex justify-space-between align-center py-2 flex-shrink-0"):
@@ -817,9 +817,9 @@ def main():
             
             v3.VDivider()
             
-            with v3.VCardText(classes="pa-2 flex-grow-1 overflow-y-auto", style="min-height: 0;"):
+            with v3.VCardText(classes="pa-2", style="height: calc(100% - 60px); overflow-y: auto;"):
                 if PLOTLY_AVAILABLE:
-                    # Residual convergence chart
+                    # Residual convergence chart - explicit height
                     initial_fig = go.Figure()
                     initial_fig.update_layout(
                         title="Residual Convergence",
@@ -827,14 +827,12 @@ def main():
                         yaxis_title="Residual",
                         yaxis_type="log",
                         margin=dict(l=50, r=20, t=40, b=40),
-                        height=400,
                     )
-                    app.chart_widget = trame_plotly.Figure(initial_fig)
-                    
-                    v3.VDivider(classes="my-3")
-                    
-                    # Placeholder for additional charts (forces, coefficients, etc.)
-                    html.Div("Additional charts can be added here", classes="text-caption text-grey pa-2", v_if="false")
+                    with html.Div(style="width: 100%; height: 380px;"):
+                        app.chart_widget = trame_plotly.Figure(
+                            initial_fig,
+                            style="width: 100%; height: 100%;",
+                        )
                 else:
                     html.P("Install trame-plotly for live charts", classes="text-grey")
                 
