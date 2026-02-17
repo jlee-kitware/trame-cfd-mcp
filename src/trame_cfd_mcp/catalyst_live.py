@@ -571,3 +571,27 @@ class CFDChatMCP:
                 self.show_live_source,
                 self.extract_monitors,
                 self.show_monitor_chart,
+                self.update_monitor_chart,
+                self.get_current_monitors,
+            ])
+            
+            base_mcp["instructions"] += """
+
+== LIVE SIMULATION MONITORING ==
+
+Workflow for visualizing live data:
+1. connect_live() - Connect to simulation
+2. pause_simulation() - Pause for detailed analysis
+3. extract_live_data("grid") - Extract data to local session
+4. show_live_source("grid", color_by="pressure") - Display with coloring
+
+The extract step is REQUIRED when paused - it copies data from simulation memory.
+
+Other tools:
+- resume_simulation() - Continue after analysis
+- extract_monitors("monitors") - Get residual data
+- show_monitor_chart() - Visualize convergence
+"""
+        
+        base_mcp["tools"] = tools
+        return base_mcp
