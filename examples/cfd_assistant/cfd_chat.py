@@ -14,7 +14,7 @@ Usage:
 
 UI Features:
     - Pipeline browser: click branch icon (left toolbar) or press 'p'
-    - Live chart: click chart icon (left toolbar) to see residual convergence
+    - Live chart: click chart icon (top-right) - opens on LEFT side
     - Live connection: click broadcast icon (top-right, only with --live)
     - Chat: click chat icon (bottom-right)
 
@@ -805,11 +805,13 @@ def main():
             app.state.live_connected = result.get("status") == "connected"
     
     with app.ui:
+        # Chart drawer - on LEFT side to avoid conflict with chat
         with v3.VNavigationDrawer(
             v_model=("chart_drawer_open", False),
-            location="right",
-            width=450,
+            location="left",
+            width=420,
             temporary=True,
+            style="margin-left: 40px;",  # Account for toolbar
         ):
             with v3.VCard(flat=True, classes="fill-height d-flex flex-column"):
                 with v3.VCardTitle(classes="d-flex justify-space-between align-center flex-shrink-0"):
@@ -838,7 +840,18 @@ def main():
                     with html.Div(classes="mt-4"):
                         html.P("{{ live_chart_status }}", classes="text-caption text-grey")
         
+        # Buttons in top-right corner
         with html.Div(style="position: fixed; top: 70px; right: 20px; z-index: 1000; display: flex; gap: 8px;"):
+            # Chart button
+            v3.VBtn(
+                icon="mdi-chart-line",
+                click=toggle_chart_drawer,
+                color=("chart_drawer_open ? 'primary' : ''",),
+                variant="elevated",
+                title="Live Residual Chart",
+            )
+            
+            # Live connection button
             with html.Div(v_if="live_enabled"):
                 v3.VBtn(
                     icon=("live_connected ? 'mdi-broadcast' : 'mdi-broadcast-off'",),
@@ -847,17 +860,6 @@ def main():
                     variant="elevated",
                     title=("live_connected ? 'Connected' : 'Click to connect'",),
                 )
-        
-        # Chart button in left toolbar area
-        with html.Div(style="position: fixed; top: 220px; left: 4px; z-index: 100;"):
-            v3.VBtn(
-                icon="mdi-chart-line",
-                click=toggle_chart_drawer,
-                color=("chart_drawer_open ? 'primary' : ''",),
-                variant="text",
-                density="comfortable",
-                title="Live Residual Chart (r)",
-            )
         
         llm.Chat(
             app_name="cfd",
@@ -874,7 +876,7 @@ def main():
     
     print("\nStarting CFD Analysis Assistant...")
     print("  - Pipeline browser: click branch icon (left toolbar) or press 'p'")
-    print("  - Live chart: click chart icon (left toolbar)")
+    print("  - Live chart: click chart icon (top-right)")
     if args.live:
         print(f"  - Live connection: click broadcast icon (top-right, {args.host}:{args.port})")
     print("  - Chat: click chat icon (bottom-right)")
