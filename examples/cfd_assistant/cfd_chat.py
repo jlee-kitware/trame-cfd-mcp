@@ -254,9 +254,10 @@ def main():
     
     with app.ui:
         # Chart panel - floating card, positioned to avoid pipeline (left) and chat (bottom-right)
+        # z-index 10000 to stay above chat widget
         with v3.VCard(
             v_show="chart_drawer_open",
-            style="position: fixed; top: 50px; right: 80px; z-index: 900; width: 460px; max-height: calc(100vh - 150px);",
+            style="position: fixed; top: 50px; right: 80px; z-index: 10000; width: 460px; max-height: calc(100vh - 150px);",
             elevation=8,
         ):
             with v3.VCardTitle(classes="d-flex justify-space-between align-center py-1 flex-shrink-0"):
@@ -291,8 +292,8 @@ def main():
                 # Status info at bottom - more padding
                 html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-3 mb-2")
         
-        # Buttons in top-right corner - higher position to avoid chat overlap
-        with html.Div(style="position: fixed; top: 12px; right: 80px; z-index: 1001; display: flex; gap: 8px;"):
+        # Buttons in top-right corner - z-index 10001 to stay above chat and chart panel
+        with html.Div(style="position: fixed; top: 12px; right: 80px; z-index: 10001; display: flex; gap: 8px;"):
             # Chart button
             v3.VBtn(
                 icon="mdi-chart-line",
