@@ -252,45 +252,108 @@ def main():
             result = chat_mcp.connect_live()
             app.state.live_connected = result.get("status") == "connected"
     
+    # State for chart panel position and collapse
+    app.state.setdefault("chart_collapsed", False)
+    app.state.setdefault("chart_pos_x", None)  # None = use default position
+    app.state.setdefault("chart_pos_y", 50)
+    
     with app.ui:
-        # Chart panel - floating card, positioned to avoid pipeline (left) and chat (bottom-right)
-        # z-index 10000 to stay above chat widget
+        # JavaScript for dragging
+        html.Script("""
+            window.initDraggable = function(el) {
+                if (!el || el._dragInitialized) return;
+                el._dragInitialized = true;
+                
+                const header = el.querySelector('.drag-handle');
+                if (!header) return;
+                
+                let isDragging = false;
+                let startX, startY, startLeft, startTop;
+                
+                header.style.cursor = 'move';
+                
+                header.addEventListener('mousedown', function(e) {
+                    if (e.target.closest('button')) return; // Don't drag when clicking buttons
+                    isDragging = true;
+                    startX = e.clientX;
+                    startY = e.clientY;
+                    const rect = el.getBoundingClientRect();
+                    startLeft = rect.left;
+                    startTop = rect.top;
+                    e.preventDefault();
+                });
+                
+                document.addEventListener('mousemove', function(e) {
+                    if (!isDragging) return;
+                    const dx = e.clientX - startX;
+                    const dy = e.clientY - startY;
+                    el.style.left = (startLeft + dx) + 'px';
+                    el.style.top = (startTop + dy) + 'px';
+                    el.style.right = 'auto';
+                });
+                
+                document.addEventListener('mouseup', function() {
+                    isDragging = false;
+                });
+            };
+        """)
+        
+        # Chart panel - floating card, draggable and collapsible
         with v3.VCard(
             v_show="chart_drawer_open",
-            style="position: fixed; top: 50px; right: 80px; z-index: 10000; width: 460px; max-height: calc(100vh - 150px);",
+            style="position: fixed; top: 50px; right: 80px; z-index: 10000; width: 460px;",
             elevation=8,
+            ref="chartPanel",
+            __events=["mounted"],
+            mounted="window.initDraggable($refs.chartPanel.$el)",
         ):
-            with v3.VCardTitle(classes="d-flex justify-space-between align-center py-1 flex-shrink-0"):
-                html.Span("Live Residuals", classes="text-subtitle-2")
+            # Header with drag handle, collapse, and close buttons
+            with v3.VCardTitle(
+                classes="drag-handle d-flex justify-space-between align-center py-1 flex-shrink-0",
+                style="user-select: none;",
+            ):
+                with html.Div(classes="d-flex align-center"):
+                    v3.VBtn(
+                        icon=("chart_collapsed ? 'mdi-chevron-right' : 'mdi-chevron-down'",),
+                        click="chart_collapsed = !chart_collapsed",
+                        variant="text",
+                        size="x-small",
+                        density="compact",
+                        title="Collapse/Expand",
+                    )
+                    html.Span("Live Residuals", classes="text-subtitle-2 ml-1")
                 v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="x-small", density="compact")
             
             v3.VDivider()
             
-            with v3.VCardText(classes="pa-2", style="overflow-y: auto;"):
-                if PLOTLY_AVAILABLE:
-                    # Show message when no data, chart when monitoring
-                    with html.Div(v_if="!monitoring_active", classes="d-flex align-center justify-center", style="height: 380px;"):
-                        html.P("Connect to a simulation and extract monitors to see residual data", classes="text-grey text-center")
-                    
-                    # Residual convergence chart - only visible when monitoring
-                    with html.Div(v_show="monitoring_active", style="width: 100%; height: 400px;"):
-                        initial_fig = go.Figure()
-                        initial_fig.update_layout(
-                            title="Residual Convergence",
-                            xaxis_title="Iteration",
-                            yaxis_title="Residual",
-                            yaxis_type="log",
-                            margin=dict(l=50, r=20, t=40, b=40),
-                        )
-                        app.chart_widget = trame_plotly.Figure(
-                            initial_fig,
-                            style="width: 100%; height: 100%;",
-                        )
-                else:
-                    html.P("Install trame-plotly for live charts", classes="text-grey")
-                
-                # Status info at bottom - more padding
-                html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-3 mb-2")
+            # Collapsible content
+            with v3.VExpandTransition():
+                with html.Div(v_show="!chart_collapsed"):
+                    with v3.VCardText(classes="pa-2", style="overflow-y: auto; max-height: calc(100vh - 200px);"):
+                        if PLOTLY_AVAILABLE:
+                            # Show message when no data, chart when monitoring
+                            with html.Div(v_if="!monitoring_active", classes="d-flex align-center justify-center", style="height: 380px;"):
+                                html.P("Connect to a simulation and extract monitors to see residual data", classes="text-grey text-center")
+                            
+                            # Residual convergence chart - only visible when monitoring
+                            with html.Div(v_show="monitoring_active", style="width: 100%; height: 400px;"):
+                                initial_fig = go.Figure()
+                                initial_fig.update_layout(
+                                    title="Residual Convergence",
+                                    xaxis_title="Iteration",
+                                    yaxis_title="Residual",
+                                    yaxis_type="log",
+                                    margin=dict(l=50, r=20, t=40, b=40),
+                                )
+                                app.chart_widget = trame_plotly.Figure(
+                                    initial_fig,
+                                    style="width: 100%; height: 100%;",
+                                )
+                        else:
+                            html.P("Install trame-plotly for live charts", classes="text-grey")
+                        
+                        # Status info at bottom
+                        html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-3 mb-2")
         
         # Buttons in top-right corner - z-index 10001 to stay above chat and chart panel
         with html.Div(style="position: fixed; top: 12px; right: 80px; z-index: 10001; display: flex; gap: 8px;"):
