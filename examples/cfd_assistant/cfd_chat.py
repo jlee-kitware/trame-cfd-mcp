@@ -14,7 +14,7 @@ Usage:
 
 UI Features:
     - Pipeline browser: click branch icon (left toolbar) or press 'p'
-    - Live chart: click chart icon (top-right) to see residual convergence
+    - Live chart: click chart icon (left toolbar) to see residual convergence
     - Live connection: click broadcast icon (top-right, only with --live)
     - Chat: click chat icon (bottom-right)
 
@@ -847,12 +847,16 @@ def main():
                     variant="elevated",
                     title=("live_connected ? 'Connected' : 'Click to connect'",),
                 )
-            
+        
+        # Chart button in left toolbar area
+        with html.Div(style="position: fixed; top: 220px; left: 4px; z-index: 100;"):
             v3.VBtn(
                 icon="mdi-chart-line",
                 click=toggle_chart_drawer,
-                color="primary",
-                variant="elevated",
+                color=("chart_drawer_open ? 'primary' : ''",),
+                variant="text",
+                density="comfortable",
+                title="Live Residual Chart (r)",
             )
         
         llm.Chat(
@@ -869,10 +873,10 @@ def main():
         )
     
     print("\nStarting CFD Analysis Assistant...")
-    print("  - Pipeline browser: click branch icon or press 'p'")
-    print("  - Live chart: click chart icon (top-right)")
+    print("  - Pipeline browser: click branch icon (left toolbar) or press 'p'")
+    print("  - Live chart: click chart icon (left toolbar)")
     if args.live:
-        print(f"  - Live: click broadcast icon ({args.host}:{args.port})")
+        print(f"  - Live connection: click broadcast icon (top-right, {args.host}:{args.port})")
     print("  - Chat: click chat icon (bottom-right)")
     
     if args.live:
