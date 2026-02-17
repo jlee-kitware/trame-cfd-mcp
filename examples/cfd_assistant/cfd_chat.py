@@ -667,6 +667,7 @@ def main():
     app.state.live_chart_visible = False
     app.state.live_chart_status = "Not connected"
     app.state.live_port = args.port
+    app.state.monitoring_active = False
     
     if args.live:
         from paraview import servermanager
@@ -688,6 +689,10 @@ def main():
         def update_live_charts():
             """Update Plotly chart if monitoring is active."""
             try:
+                # Sync monitoring_active state with chat_mcp
+                if app.state.monitoring_active != chat_mcp._monitoring_active:
+                    app.state.monitoring_active = chat_mcp._monitoring_active
+                
                 if chat_mcp._monitoring_active:
                     # Check if simulation is running (not paused)
                     paused = False
@@ -819,16 +824,20 @@ def main():
             
             with v3.VCardText(classes="pa-2", style="height: calc(100% - 60px); overflow-y: auto;"):
                 if PLOTLY_AVAILABLE:
-                    # Residual convergence chart - explicit height
-                    initial_fig = go.Figure()
-                    initial_fig.update_layout(
-                        title="Residual Convergence",
-                        xaxis_title="Iteration",
-                        yaxis_title="Residual",
-                        yaxis_type="log",
-                        margin=dict(l=50, r=20, t=40, b=40),
-                    )
-                    with html.Div(style="width: 100%; height: 380px;"):
+                    # Show message when no data, chart when monitoring
+                    with html.Div(v_if="!monitoring_active", classes="d-flex align-center justify-center", style="height: 380px;"):
+                        html.P("Connect to a simulation and extract monitors to see residual data", classes="text-grey text-center")
+                    
+                    # Residual convergence chart - only visible when monitoring
+                    with html.Div(v_show="monitoring_active", style="width: 100%; height: 380px;"):
+                        initial_fig = go.Figure()
+                        initial_fig.update_layout(
+                            title="Residual Convergence",
+                            xaxis_title="Iteration",
+                            yaxis_title="Residual",
+                            yaxis_type="log",
+                            margin=dict(l=50, r=20, t=40, b=40),
+                        )
                         app.chart_widget = trame_plotly.Figure(
                             initial_fig,
                             style="width: 100%; height: 100%;",
