@@ -253,19 +253,19 @@ def main():
             app.state.live_connected = result.get("status") == "connected"
     
     with app.ui:
-        # Chart panel - floating card
+        # Chart panel - floating card, positioned to avoid pipeline (left) and chat (bottom-right)
         with v3.VCard(
             v_show="chart_drawer_open",
-            style="position: fixed; top: 60px; left: 50px; z-index: 900; width: 520px; height: 550px;",
+            style="position: fixed; top: 50px; right: 80px; z-index: 900; width: 460px; max-height: calc(100vh - 150px);",
             elevation=8,
         ):
-            with v3.VCardTitle(classes="d-flex justify-space-between align-center py-2 flex-shrink-0"):
-                html.Span("Live Residuals", classes="text-subtitle-1")
-                v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="small", density="compact")
+            with v3.VCardTitle(classes="d-flex justify-space-between align-center py-1 flex-shrink-0"):
+                html.Span("Live Residuals", classes="text-subtitle-2")
+                v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="x-small", density="compact")
             
             v3.VDivider()
             
-            with v3.VCardText(classes="pa-2", style="height: calc(100% - 50px); overflow-y: auto;"):
+            with v3.VCardText(classes="pa-2", style="overflow-y: auto;"):
                 if PLOTLY_AVAILABLE:
                     # Show message when no data, chart when monitoring
                     with html.Div(v_if="!monitoring_active", classes="d-flex align-center justify-center", style="height: 380px;"):
