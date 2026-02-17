@@ -188,8 +188,20 @@ class CFDChatMCP:
             self._live_link = None
             self._display_session = None
             self._monitor_source = None
+            self._monitoring_active = False
             self._extracted_sources = {}
         return {"status": "disconnected"}
+    
+    def is_connection_alive(self) -> bool:
+        """Check if the live connection is still active."""
+        if not self._live_link:
+            return False
+        try:
+            # Try to get a property - will fail if connection dropped
+            self._live_link.GetProperty('SimulationPaused')
+            return True
+        except:
+            return False
     
     def get_live_status(self) -> dict:
         """Get current timestep and time from the live simulation."""
@@ -689,6 +701,17 @@ def main():
         def update_live_charts():
             """Update Plotly chart if monitoring is active."""
             try:
+                # Check if connection dropped
+                if app.state.live_connected and not chat_mcp.is_connection_alive():
+                    # Connection was lost - update state
+                    with app.state:
+                        app.state.live_connected = False
+                        app.state.monitoring_active = False
+                        app.state.live_chart_status = "Simulation ended"
+                    chat_mcp._monitoring_active = False
+                    print("[Live] Connection to simulation dropped")
+                    return
+                
                 # Sync monitoring_active state with chat_mcp
                 if app.state.monitoring_active != chat_mcp._monitoring_active:
                     app.state.monitoring_active = chat_mcp._monitoring_active
