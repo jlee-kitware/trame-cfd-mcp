@@ -47,7 +47,7 @@ class CFDChatMCP:
     @property
     def _app(self):
         """Get the trame app from the base MCP."""
-        return self._workflow_mcp._base_mcp._app
+        return self._workflow_mcp._base_mcp.app
     
     def _capture_chart_to_gallery(self, chart_view, title: str):
         """Capture a chart view as base64 PNG and add to workflow's gallery."""
