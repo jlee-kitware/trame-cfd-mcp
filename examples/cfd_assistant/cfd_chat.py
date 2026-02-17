@@ -805,40 +805,38 @@ def main():
             app.state.live_connected = result.get("status") == "connected"
     
     with app.ui:
-        # Chart drawer - on LEFT side to avoid conflict with chat
-        with v3.VNavigationDrawer(
-            v_model=("chart_drawer_open", False),
-            location="left",
-            width=420,
-            temporary=True,
-            style="margin-left: 40px;",  # Account for toolbar
+        # Chart panel - floating card in top-left area (below toolbar)
+        with v3.VCard(
+            v_show="chart_drawer_open",
+            style="position: fixed; top: 60px; left: 50px; z-index: 900; width: 450px;",
+            elevation=8,
         ):
-            with v3.VCard(flat=True, classes="fill-height d-flex flex-column"):
-                with v3.VCardTitle(classes="d-flex justify-space-between align-center flex-shrink-0"):
-                    html.Span("Live Residuals")
-                    v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="small")
-                
-                with v3.VCardText(classes="pa-2 flex-grow-1"):
-                    if PLOTLY_AVAILABLE:
-                        # Create initial empty figure
-                        initial_fig = go.Figure()
-                        initial_fig.update_layout(
-                            title="Residual Convergence",
-                            xaxis_title="Iteration",
-                            yaxis_title="Residual",
-                            yaxis_type="log",
-                            margin=dict(l=50, r=20, t=40, b=40),
-                            height=400,
-                        )
-                        
-                        # Store the widget reference for updates
-                        app.chart_widget = trame_plotly.Figure(initial_fig)
-                    else:
-                        html.P("Install trame-plotly for live charts", classes="text-grey")
+            with v3.VCardTitle(classes="d-flex justify-space-between align-center py-2"):
+                html.Span("Live Residuals", classes="text-subtitle-1")
+                v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="small", density="compact")
+            
+            v3.VDivider()
+            
+            with v3.VCardText(classes="pa-2"):
+                if PLOTLY_AVAILABLE:
+                    # Create initial empty figure
+                    initial_fig = go.Figure()
+                    initial_fig.update_layout(
+                        title="Residual Convergence",
+                        xaxis_title="Iteration",
+                        yaxis_title="Residual",
+                        yaxis_type="log",
+                        margin=dict(l=50, r=20, t=40, b=40),
+                        height=350,
+                    )
                     
-                    # Status info
-                    with html.Div(classes="mt-4"):
-                        html.P("{{ live_chart_status }}", classes="text-caption text-grey")
+                    # Store the widget reference for updates
+                    app.chart_widget = trame_plotly.Figure(initial_fig)
+                else:
+                    html.P("Install trame-plotly for live charts", classes="text-grey")
+                
+                # Status info
+                html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-2 mb-0")
         
         # Buttons in top-right corner
         with html.Div(style="position: fixed; top: 70px; right: 20px; z-index: 1000; display: flex; gap: 8px;"):
