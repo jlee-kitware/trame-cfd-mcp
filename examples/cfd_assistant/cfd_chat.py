@@ -14,14 +14,17 @@ Usage:
 
 UI Features:
     - Pipeline browser: click branch icon (left toolbar) or press 'p'
-    - Chart gallery: click chart icon (top-right)
+    - Live chart: click chart icon (top-right) to see residual convergence
     - Live connection: click broadcast icon (top-right, only with --live)
     - Chat: click chat icon (bottom-right)
 
-Live Monitor Example:
-    You: Connect to the simulation
-    You: Show the residual chart
-    You: What's the current drag coefficient?
+Live Workflow Example:
+    1. Start simulation: pvpython fedriver_monitors.py catalyst_pipeline_monitors.py
+    2. Start app: pvpython cfd_chat.py --live
+    3. Click broadcast icon to connect
+    4. Chat: "extract monitors" - starts monitoring
+    5. Click chart icon to see live residual convergence
+    6. Chat: "extract grid" then "show grid" to see mesh
 """
 import sys
 import os
@@ -48,6 +51,14 @@ import ptc
 from ptc.apps.lite import Lite
 from trame.widgets import vuetify3 as v3, html
 
+try:
+    from trame.widgets import plotly as trame_plotly
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    print("Warning: trame-plotly not available, live charts disabled")
+
 from trame.widgets import llm
 from trame_llm.core import LLMClient, ProgressType
 from trame_cfd_mcp import WorkflowMCP
@@ -64,9 +75,39 @@ class CFDChatMCP:
         self._live_host = live_host
         self._live_port = live_port
         self._live_link = None
+        self._display_session = None
         self._monitor_source = None
-        self._monitor_history = []  # Accumulated monitor data
-        self._monitor_chart = None
+        self._monitoring_active = False
+        self._extracted_sources = {}
+        self._chart_config = None
+        # Client-side accumulation of monitor history
+        self._monitor_history = {
+            'iteration': [],
+            'continuity': [],
+            'momentum_x': [],
+            'momentum_y': [],
+            'momentum_z': [],
+            'energy': [],
+        }
+        self._last_iteration = -1
+    
+    @property
+    def _app(self):
+        """Get the trame app from the base MCP."""
+        return self._workflow_mcp._base_mcp._app
+    
+    def _capture_chart_to_gallery(self, chart_view, title: str):
+        """Capture a chart view as base64 PNG and add to workflow's gallery."""
+        self._workflow_mcp._analysis._capture_chart_to_gallery(chart_view, title)
+    
+    def _update_gallery_chart(self, chart_view, title: str):
+        """Update existing chart in gallery or add new one."""
+        gallery = self._workflow_mcp._analysis._chart_gallery
+        for i, entry in enumerate(gallery):
+            if entry.get('title') == title:
+                gallery.pop(i)
+                break
+        self._capture_chart_to_gallery(chart_view, title)
     
     # =========================================================================
     # Cost tracking tools
@@ -97,24 +138,34 @@ class CFDChatMCP:
             return {"error": "Live mode not enabled. Restart with --live flag."}
         
         from paraview import servermanager
+        from paraview.simple import SetActiveConnection
         
         host = host or self._live_host
         port = port or self._live_port
         
         try:
-            # Use servermanager directly instead of paraview.live wrapper
+            # IMPORTANT: Save the display session before connecting to Catalyst
+            # This is what ParaView GUI does - we need to restore it after connecting
+            self._display_session = servermanager.ActiveConnection.Session
+            
+            # Connect to Catalyst - this changes the active connection
             self._live_link = servermanager.ConnectToCatalyst(host, port)
             
-            # Initialize the link - this is required!
-            self._live_link.InvokeCommand('Initialize')
-            
-            # Process any pending events
+            # Process pending notifications (like ParaView's ProcessServerNotifications)
             pm = servermanager.vtkProcessModule.GetProcessModule()
             nam = pm.GetNetworkAccessManager()
-            for _ in range(10):  # Process a few events
-                nam.ProcessEvents(100)  # 100ms timeout
+            while nam.ProcessEvents(1) == 1:
+                pass
             
-            # Ensure we have an active view (Catalyst connection can break this)
+            # Initialize the link
+            self._live_link.InvokeCommand('Initialize')
+            
+            # CRITICAL: Restore the active connection to the display session
+            # Without this, all subsequent operations try to work on the Catalyst
+            # session instead of the local rendering session
+            SetActiveConnection(servermanager.GetConnectionFromSession(self._display_session))
+            
+            # Ensure we have an active view
             view = simple.GetActiveView()
             if view is None:
                 view = simple.GetActiveViewOrCreate('RenderView')
@@ -124,7 +175,7 @@ class CFDChatMCP:
                 "status": "connected",
                 "host": host,
                 "port": port,
-                "tip": "Data should appear in pipeline browser. Use list_data() to see sources."
+                "tip": "Use 'pause simulation' then 'show grid' to visualize."
             }
         except Exception as e:
             import traceback
@@ -135,7 +186,9 @@ class CFDChatMCP:
         """Disconnect from the simulation."""
         if self._live_link:
             self._live_link = None
+            self._display_session = None
             self._monitor_source = None
+            self._extracted_sources = {}
         return {"status": "disconnected"}
     
     def get_live_status(self) -> dict:
@@ -144,7 +197,6 @@ class CFDChatMCP:
             return {"status": "not_connected"}
         
         try:
-            # Get current time from animation
             time = simple.GetAnimationScene().TimeKeeper.Time
             return {"status": "connected", "time": time}
         except Exception as e:
@@ -155,11 +207,16 @@ class CFDChatMCP:
         if not self._live_link:
             return {"error": "Not connected to live simulation"}
         
-        from paraview.live import PauseCatalyst
         try:
-            PauseCatalyst(self._live_link, True)
+            # Use same logic as paraview.live.PauseCatalyst
+            current_state = self._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
+            if not current_state:
+                self._live_link.GetProperty('SimulationPaused').SetElement(0, 1)
+                self._live_link.UpdateVTKObjects()
             return {"status": "paused"}
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
     def resume_simulation(self) -> dict:
@@ -167,151 +224,238 @@ class CFDChatMCP:
         if not self._live_link:
             return {"error": "Not connected to live simulation"}
         
-        from paraview.live import PauseCatalyst
         try:
-            PauseCatalyst(self._live_link, False)
+            current_state = self._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
+            if current_state:
+                self._live_link.GetProperty('SimulationPaused').SetElement(0, 0)
+                self._live_link.UpdateVTKObjects()
+                self._live_link.InvokeCommand('LiveChanged')
             return {"status": "resumed"}
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
-    def extract_monitors(self, channel_name: str = "monitors") -> dict:
+    def extract_live_data(self, source_name: str) -> dict:
         """
-        Extract monitor data channel from the live simulation.
+        Extract data from the live simulation to local ParaView session.
         
-        The simulation should provide a channel with residuals/forces.
-        Call this after connect_live() to access monitor data.
+        This uses the same mechanism as ParaView GUI's extract button.
+        The data is copied from the simulation to the local session.
         
         Args:
-            channel_name: Name of the monitor channel (default: "monitors")
+            source_name: Name of the source to extract (e.g., "grid")
         """
         if not self._live_link:
-            return {"error": "Not connected. Call connect_live() first."}
+            return {"error": "Not connected to live simulation"}
+        
+        if not self._display_session:
+            return {"error": "Display session not available"}
+        
+        from paraview import servermanager
         
         try:
-            # Find the source by name in the pipeline
-            # ExtractCatalystData has issues with vtkTable, so look for existing source
-            sources = simple.GetSources()
+            # This is what paraview.live.ExtractCatalystData does:
+            # 1. Create an extract from the link
+            # 2. Register it in the display session
+            proxy = self._live_link.CreateExtract('sources', source_name, 0)
+            self._display_session.GetSessionProxyManager().RegisterProxy('sources', source_name, proxy)
             
-            # Look for a source matching the channel name
-            for (name, _id), proxy in sources.items():
-                if channel_name.lower() in name.lower():
-                    self._monitor_source = proxy
-                    break
+            # Find it as a regular source
+            extracted = simple.FindSource(source_name)
             
-            # If not found by name, try ExtractCatalystData (may fail for tables)
-            if self._monitor_source is None:
-                from paraview.live import ExtractCatalystData
-                try:
-                    self._monitor_source = ExtractCatalystData(self._live_link, channel_name)
-                except Exception as e:
-                    # ExtractCatalystData failed - check if source exists anyway
-                    sources = simple.GetSources()
-                    for (name, _id), proxy in sources.items():
-                        if channel_name.lower() in name.lower():
-                            self._monitor_source = proxy
-                            break
-            
-            if self._monitor_source is None:
-                # List available sources for debugging
-                available = [name for (name, _id) in simple.GetSources().keys()]
+            if extracted:
+                self._extracted_sources[source_name] = extracted
+                
+                # Get info without triggering full update
+                info = extracted.GetDataInformation()
+                n_points = info.GetNumberOfPoints()
+                n_cells = info.GetNumberOfCells()
+                
+                # Update trame app to refresh pipeline browser
+                if self._app:
+                    self._app.update()
+                
                 return {
-                    "status": "error",
-                    "message": f"Channel '{channel_name}' not found.",
-                    "available_sources": available,
-                    "tip": "Check pipeline browser for available channels."
+                    "status": "extracted",
+                    "source": source_name,
+                    "points": n_points,
+                    "cells": n_cells,
+                    "tip": "Data extracted. Use 'show grid' to visualize."
                 }
+            else:
+                return {"status": "error", "message": f"Failed to extract '{source_name}'"}
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+    
+    def show_live_source(self, source_name: str, color_by: str = None) -> dict:
+        """
+        Show a live source in the render view.
+        
+        Automatically extracts the data first if not already extracted.
+        
+        Args:
+            source_name: Name of the source to show (e.g., "grid")
+            color_by: Optional field name to color by
+        """
+        # Extract first if needed
+        if source_name not in self._extracted_sources:
+            if self._live_link:
+                result = self.extract_live_data(source_name)
+                if result.get("status") == "error":
+                    return result
+        
+        # Get the source (either extracted or regular)
+        source = self._extracted_sources.get(source_name) or simple.FindSource(source_name)
+        
+        if not source:
+            available = [name for (name, _id) in simple.GetSources().keys()]
+            return {"error": f"Source '{source_name}' not found. Available: {available}"}
+        
+        try:
+            simple.SetActiveSource(source)
+            rep = simple.Show(source)
             
-            # Don't call UpdatePipeline - it triggers Fetch which fails for tables
-            # Just get info
-            info = self._monitor_source.GetDataInformation()
-            data_type = info.GetDataClassName() if info else "unknown"
+            if color_by:
+                # Use proxy's PointData/CellData interface for field lookup
+                point_fields = list(source.PointData.keys())
+                cell_fields = list(source.CellData.keys())
+                
+                location = None
+                actual_name = color_by
+                
+                # Check point data
+                for name in point_fields:
+                    if name.lower() == color_by.lower():
+                        location = "POINTS"
+                        actual_name = name
+                        break
+                
+                # Check cell data if not found in points
+                if not location:
+                    for name in cell_fields:
+                        if name.lower() == color_by.lower():
+                            location = "CELLS"
+                            actual_name = name
+                            break
+                
+                if location:
+                    simple.ColorBy(rep, (location, actual_name))
+                    rep.RescaleTransferFunctionToDataRange(True, False)
+            
+            view = simple.GetActiveView()
+            simple.ResetCamera(view)
+            simple.Render(view)
+            
+            # Update the trame app to refresh pipeline browser
+            if self._app:
+                self._app.update()
             
             return {
-                "status": "extracted",
-                "channel": channel_name,
-                "data_type": data_type,
-                "tip": "Use show_monitor_chart() to visualize residuals."
+                "status": "shown",
+                "source": source_name,
+                "color_by": color_by,
             }
         except Exception as e:
             import traceback
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
+    def extract_monitors(self, channel_name: str = "monitors") -> dict:
+        """
+        Start monitoring residuals from the live simulation.
+        
+        Extracts once and then accumulates data on client side.
+        """
+        if not self._live_link:
+            return {"error": "Not connected. Call connect_live() first."}
+        
+        try:
+            from paraview.live import ExtractCatalystData, ProcessServerNotifications
+            
+            ProcessServerNotifications()
+            extracted = ExtractCatalystData(self._live_link, channel_name)
+            ProcessServerNotifications()
+            
+            if extracted:
+                extracted.UpdatePipeline()
+                self._monitor_source = extracted
+                self._extracted_sources[channel_name] = extracted
+                self._monitoring_active = True
+                
+                # Reset client-side history
+                self._monitor_history = {
+                    'iteration': [],
+                    'continuity': [],
+                    'momentum_x': [],
+                    'momentum_y': [],
+                    'momentum_z': [],
+                    'energy': [],
+                }
+                self._last_iteration = -1
+                
+                info = extracted.GetDataInformation()
+                n_points = info.GetNumberOfPoints()
+                fields = list(extracted.PointData.keys())
+                
+                return {
+                    "status": "monitoring",
+                    "channel": channel_name,
+                    "history_points": n_points,
+                    "fields": fields,
+                    "tip": "Open chart panel (top-right) to see live residuals."
+                }
+            else:
+                available = [name for (name, _id) in simple.GetSources().keys()]
+                return {
+                    "status": "error", 
+                    "message": f"Channel '{channel_name}' not found.",
+                    "available_sources": available,
+                }
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
+    
+    def stop_monitoring(self) -> dict:
+        """Stop monitoring residual values."""
+        self._monitoring_active = False
+        return {"status": "stopped"}
+    
     def show_monitor_chart(self, 
                            x_field: str = "iteration",
-                           y_fields: list = None,
+                           y_fields: list | None = None,
                            log_scale: bool = True) -> dict:
         """
-        Create a convergence chart from the extracted monitor data.
+        Start showing the live residual chart.
         
-        Args:
-            x_field: Field for x-axis (default: "iteration")
-            y_fields: Fields to plot (default: all residual_* fields)
-            log_scale: Use log scale for y-axis (default: True)
+        The chart appears in the right drawer panel and updates automatically.
         """
         if not self._monitor_source:
             return {"error": "No monitor data. Call extract_monitors() first."}
         
         try:
-            # Don't call UpdatePipeline - it triggers Fetch which fails for vtkTable
-            # Get data info from proxy directly
+            self._monitor_source.UpdatePipeline()
+            available_fields = list(self._monitor_source.PointData.keys())
+            
             info = self._monitor_source.GetDataInformation()
-            data_type = info.GetDataClassName()
+            n_points = info.GetNumberOfPoints()
             
-            # Get available fields from data information
-            available_fields = []
-            if data_type == "vtkTable":
-                # For tables, get row data (columns)
-                row_info = info.GetRowDataInformation()
-                for i in range(row_info.GetNumberOfArrays()):
-                    available_fields.append(row_info.GetArrayInformation(i).GetName())
-            else:
-                # For meshes, get point data
-                point_info = info.GetPointDataInformation()
-                for i in range(point_info.GetNumberOfArrays()):
-                    available_fields.append(point_info.GetArrayInformation(i).GetName())
-            
-            # Auto-detect residual fields if not specified
-            if y_fields is None:
-                y_fields = []
-                for name in available_fields:
-                    if name == x_field:
-                        continue
-                    if 'residual' in name.lower() or name in ['continuity', 'momentum', 'energy']:
-                        y_fields.append(name)
-                # If no residuals found, show all numeric fields except x
-                if not y_fields:
-                    y_fields = [f for f in available_fields if f != x_field]
-            
-            # Create XY plot view
-            chart = simple.CreateXYPlotView()
-            chart.ViewSize = [800, 400]
-            chart.ChartTitle = "Residual Convergence"
-            chart.BottomAxisTitle = x_field
-            chart.LeftAxisTitle = "Residual"
-            chart.LeftAxisLogScale = 1 if log_scale else 0
-            
-            # Show directly on chart - no PlotData filter needed for tables
-            display = simple.Show(self._monitor_source, chart)
-            display.XArrayName = x_field
-            display.UseIndexForXAxis = 0
-            
-            if y_fields:
-                display.SeriesVisibility = y_fields
-            
-            simple.Render(chart)
-            
-            self._monitor_chart = chart
+            # Store config (used by get_monitor_data)
+            self._chart_config = {
+                'x_field': x_field,
+                'y_fields': y_fields or [f for f in available_fields if f not in ['iteration', 'time']],
+                'log_scale': log_scale
+            }
             
             return {
-                "status": "created",
-                "data_type": data_type,
-                "chart": "Residual Convergence",
-                "x_field": x_field,
-                "y_fields": y_fields,
-                "available_fields": available_fields,
-                "log_scale": log_scale,
-                "tip": "Chart updates when you call update_monitor_chart()"
+                "status": "chart_ready",
+                "message": "Open the chart panel (top-right icon) to see live residuals",
+                "history_points": n_points,
+                "fields": available_fields,
             }
         except Exception as e:
             import traceback
@@ -319,48 +463,109 @@ class CFDChatMCP:
             return {"status": "error", "message": str(e)}
     
     def update_monitor_chart(self) -> dict:
-        """Update the monitor chart with latest data from simulation."""
-        if not self._monitor_source:
-            return {"error": "No monitor data extracted"}
+        """Update the monitor chart with latest data from simulation.
+        
+        Note: The Plotly chart updates automatically. This method is kept
+        for compatibility but is not needed with the live Plotly chart.
+        """
+        if not self._monitoring_active:
+            return {"error": "Monitoring not active"}
+        
+        return {"status": "ok", "message": "Chart updates automatically"}
+    
+    def get_monitor_data(self) -> dict:
+        """
+        Get monitor data, accumulating new points from simulation.
+        
+        Extracts latest data and appends any new iterations to client-side history.
+        """
+        if not self._live_link or not self._monitoring_active:
+            return {"error": "Not monitoring"}
         
         try:
-            # Don't call UpdatePipeline for vtkTable sources
-            if self._monitor_chart:
-                simple.Render(self._monitor_chart)
-            return {"status": "updated"}
+            from paraview.live import ExtractCatalystData, ProcessServerNotifications
+            from paraview import servermanager
+            
+            # Process events to sync with simulation
+            ProcessServerNotifications()
+            
+            # Extract current data from simulation
+            extracted = ExtractCatalystData(self._live_link, "monitors")
+            if not extracted:
+                return {"iteration": self._monitor_history['iteration'], 
+                        "residuals": {k: v for k, v in self._monitor_history.items() if k != 'iteration'}}
+            
+            extracted.UpdatePipeline()
+            data = servermanager.Fetch(extracted)
+            
+            # Unwrap composite/partitioned datasets
+            while data is not None:
+                if hasattr(data, 'GetPartition') and data.GetNumberOfPartitions() > 0:
+                    data = data.GetPartition(0)
+                elif hasattr(data, 'GetBlock') and data.GetNumberOfBlocks() > 0:
+                    data = data.GetBlock(0)
+                elif hasattr(data, 'GetNumberOfPoints'):
+                    break  # We have a proper dataset
+                else:
+                    print(f"[Monitor] Unknown data type: {type(data)}")
+                    data = None
+                    break
+            
+            if data and hasattr(data, 'GetNumberOfPoints') and data.GetNumberOfPoints() > 0:
+                pd = data.GetPointData()
+                
+                # Get all iterations from this extract
+                iter_arr = pd.GetArray('iteration')
+                if iter_arr:
+                    for i in range(iter_arr.GetNumberOfTuples()):
+                        iteration = iter_arr.GetValue(i)
+                        
+                        # Only add if we haven't seen this iteration
+                        if iteration > self._last_iteration:
+                            self._monitor_history['iteration'].append(iteration)
+                            
+                            for name in ['continuity', 'momentum_x', 'momentum_y', 'momentum_z', 'energy']:
+                                arr = pd.GetArray(name)
+                                if arr and i < arr.GetNumberOfTuples():
+                                    self._monitor_history[name].append(arr.GetValue(i))
+                            
+                            self._last_iteration = iteration
+            
+            # Clean up the extracted source to avoid accumulating proxies
+            simple.Delete(extracted)
+            
+            return {
+                "iteration": self._monitor_history['iteration'],
+                "residuals": {k: v for k, v in self._monitor_history.items() if k != 'iteration'}
+            }
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e)}
     
     def get_current_monitors(self) -> dict:
-        """Get the latest monitor values (residuals, forces, etc.)."""
+        """Get the latest monitor values."""
         if not self._monitor_source:
             return {"error": "No monitor data. Call extract_monitors() first."}
         
         try:
-            # Don't call UpdatePipeline - it triggers Fetch which fails for vtkTable
-            # Get data info from proxy directly
             info = self._monitor_source.GetDataInformation()
             data_type = info.GetDataClassName()
             
             result = {"status": "ok", "data_type": data_type, "values": {}}
             
             if data_type == "vtkTable":
-                # For tables, get row data info
                 row_info = info.GetRowDataInformation()
-                n_rows = info.GetNumberOfRows()
-                result["num_rows"] = n_rows
+                result["num_rows"] = info.GetNumberOfRows()
                 
                 for i in range(row_info.GetNumberOfArrays()):
                     arr_info = row_info.GetArrayInformation(i)
                     name = arr_info.GetName()
-                    # Get range (min, max) - last value would need Fetch
                     ranges = arr_info.GetComponentRange(0)
                     result["values"][name] = {"min": ranges[0], "max": ranges[1]}
             else:
-                # For meshes, get point data info
                 point_info = info.GetPointDataInformation()
-                n_points = info.GetNumberOfPoints()
-                result["num_points"] = n_points
+                result["num_points"] = info.GetNumberOfPoints()
                 
                 for i in range(point_info.GetNumberOfArrays()):
                     arr_info = point_info.GetArrayInformation(i)
@@ -379,13 +584,11 @@ class CFDChatMCP:
         """Return MCP declaration with all tools."""
         base_mcp = self._workflow_mcp.mcp
         
-        # Always add cost tools
         tools = list(base_mcp["tools"]) + [
             self.get_session_cost,
             self.reset_session_cost,
         ]
         
-        # Add live tools if enabled
         if self._live_enabled:
             tools.extend([
                 self.connect_live,
@@ -393,6 +596,8 @@ class CFDChatMCP:
                 self.get_live_status,
                 self.pause_simulation,
                 self.resume_simulation,
+                self.extract_live_data,
+                self.show_live_source,
                 self.extract_monitors,
                 self.show_monitor_chart,
                 self.update_monitor_chart,
@@ -403,16 +608,18 @@ class CFDChatMCP:
 
 == LIVE SIMULATION MONITORING ==
 
-Connect to running Catalyst-enabled simulations:
-1. connect_live(host, port) - Connect to simulation
-2. extract_monitors("monitors") - Get the monitor data channel
-3. show_monitor_chart() - Create residual convergence chart
-4. get_current_monitors() - Get latest values (Cd, Cl, residuals)
+Workflow for visualizing live data:
+1. connect_live() - Connect to simulation
+2. pause_simulation() - Pause for detailed analysis
+3. extract_live_data("grid") - Extract data to local session
+4. show_live_source("grid", color_by="pressure") - Display with coloring
 
-Other live tools:
-- pause_simulation() / resume_simulation() - Control simulation
-- update_monitor_chart() - Refresh chart with new data
-- get_live_status() - Check connection and current timestep
+The extract step is REQUIRED when paused - it copies data from simulation memory.
+
+Other tools:
+- resume_simulation() - Continue after analysis
+- extract_monitors("monitors") - Get residual data
+- show_monitor_chart() - Visualize convergence
 """
         
         base_mcp["tools"] = tools
@@ -421,22 +628,19 @@ Other live tools:
 
 def main():
     parser = argparse.ArgumentParser(description='CFD Analysis Chat')
-    parser.add_argument('data_file', nargs='?', default=None, help='Data file to load (.vtm, .vtu, etc.)')
-    parser.add_argument('--live', action='store_true', help='Enable Catalyst Live connection')
-    parser.add_argument('--host', default='localhost', help='Catalyst host (with --live)')
-    parser.add_argument('--port', type=int, default=22222, help='Catalyst port (with --live)')
+    parser.add_argument('data_file', nargs='?', default=None, help='Data file to load')
+    parser.add_argument('--live', action='store_true', help='Enable Catalyst Live')
+    parser.add_argument('--host', default='localhost', help='Catalyst host')
+    parser.add_argument('--port', type=int, default=22222, help='Catalyst port')
     args = parser.parse_args()
     
-    # Default to test.vtm if no file specified and not live-only mode
     data_file = args.data_file
     if data_file is None and not args.live:
-        # Look for test.vtm in same directory as script
         script_dir = os.path.dirname(os.path.abspath(__file__))
         default_file = os.path.join(script_dir, 'test.vtm')
         if os.path.exists(default_file):
             data_file = default_file
     
-    # Load static data if available
     if data_file and os.path.exists(data_file):
         reader = simple.OpenDataFile(data_file)
         simple.UpdatePipeline()
@@ -446,52 +650,110 @@ def main():
     elif data_file:
         print(f"Warning: File not found: {data_file}")
     
-    # Create Lite app
     app = Lite()
+    ctrl = app.server.controller
     app.state.trame__title = "CFD Analysis Assistant"
     app.state.chart_drawer_open = False
     app.state.chart_gallery = []
-    
-    # Live state (only used if --live)
     app.state.live_enabled = args.live
     app.state.live_connected = False
     app.state.live_host = args.host
+    app.state.live_chart_visible = False
+    app.state.live_chart_status = "Not connected"
     app.state.live_port = args.port
     
-    # For Catalyst Live: we need to process network events
     if args.live:
         from paraview import servermanager
         pm = servermanager.vtkProcessModule.GetProcessModule()
         nam = pm.GetNetworkAccessManager()
         
-        # Track sources for debugging
         last_source_count = [0]
+        last_monitor_update = [0]
         
-        # Use trame's timer to periodically process ParaView network events
         def process_pv_events():
             try:
-                nam.ProcessEvents(1)  # 1ms timeout, non-blocking
-                
-                # Debug: check for new sources
+                nam.ProcessEvents(1)
+                # Track source count silently (don't print every change)
                 sources = simple.GetSources()
-                if len(sources) != last_source_count[0]:
-                    print(f"[Live] Sources changed: {list(sources.keys())}")
-                    last_source_count[0] = len(sources)
-            except Exception as e:
-                pass  # Ignore errors during event processing
+                last_source_count[0] = len(sources)
+            except:
+                pass
         
-        import asyncio
+        def update_live_charts():
+            """Update Plotly chart if monitoring is active."""
+            try:
+                if chat_mcp._monitoring_active:
+                    # Check if simulation is running (not paused)
+                    paused = False
+                    if chat_mcp._live_link:
+                        try:
+                            paused = chat_mcp._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
+                        except:
+                            pass
+                    
+                    if not paused:
+                        # Get data and update Plotly figure
+                        data = chat_mcp.get_monitor_data()
+                        if "iteration" in data and data["iteration"]:
+                            iterations = data["iteration"]
+                            residuals = data.get("residuals", {})
+                            
+                            # Build Plotly figure
+                            if PLOTLY_AVAILABLE:
+                                fig = go.Figure()
+                                for name, values in residuals.items():
+                                    fig.add_trace(go.Scatter(
+                                        x=iterations,
+                                        y=values,
+                                        mode='lines',
+                                        name=name,
+                                    ))
+                                fig.update_layout(
+                                    title="Residual Convergence",
+                                    xaxis_title="Iteration",
+                                    yaxis_title="Residual",
+                                    yaxis_type="log",
+                                    margin=dict(l=50, r=20, t=40, b=40),
+                                    height=400,
+                                    showlegend=True,
+                                )
+                                
+                                # Update chart via state with context manager
+                                if hasattr(app, 'chart_widget') and app.chart_widget:
+                                    app.chart_widget.update(fig)
+                                
+                                with app.state:
+                                    app.state.live_chart_status = f"Monitoring: {len(iterations)} iterations"
+                                    app.state.flush()
+                    else:
+                        with app.state:
+                            app.state.live_chart_status = "Simulation paused"
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                with app.state:
+                    app.state.live_chart_status = f"Error: {e}"
+        
         async def live_event_loop():
+            update_counter = [0]
             while True:
                 process_pv_events()
-                await asyncio.sleep(0.1)  # Every 100ms
+                
+                # Update charts every 5 iterations (0.5 seconds)
+                update_counter[0] += 1
+                if update_counter[0] >= 5:
+                    update_live_charts()
+                    update_counter[0] = 0
+                
+                # Push updated view to browser
+                app.update()
+                await asyncio.sleep(0.1)
         
         @app.server.controller.add("on_server_ready")
         def start_live_loop(**kwargs):
             asyncio.create_task(live_event_loop())
             print("Catalyst Live event processing started")
     
-    # Setup LLM
     print("Setting up LLM client...")
     llm_client = LLMClient(max_iteractions=15)
     
@@ -508,11 +770,10 @@ def main():
     llm_client.register_mcp(chat_mcp)
     
     if args.live:
-        print(f"MCP registered (Live enabled: {args.host}:{args.port})")
+        print(f"MCP registered (Live: {args.host}:{args.port})")
     else:
         print("MCP registered")
     
-    # Helper functions for UI
     def refresh_charts():
         gallery = workflow_mcp.get_chart_gallery()
         app.state.chart_gallery = gallery.get("charts", [])
@@ -530,61 +791,57 @@ def main():
         refresh_charts()
     
     def toggle_live_connection():
-        print(f"[DEBUG] toggle_live_connection called, current state: {app.state.live_connected}")
         if app.state.live_connected:
             chat_mcp.disconnect_live()
             app.state.live_connected = False
-            print("[DEBUG] Disconnected")
         else:
-            print(f"[DEBUG] Calling connect_live({args.host}, {args.port})...")
             result = chat_mcp.connect_live()
-            print(f"[DEBUG] connect_live result: {result}")
             app.state.live_connected = result.get("status") == "connected"
-            print(f"[DEBUG] live_connected now: {app.state.live_connected}")
     
-    # Build UI
     with app.ui:
-        # Chart gallery drawer
         with v3.VNavigationDrawer(
             v_model=("chart_drawer_open", False),
             location="right",
-            width=350,
+            width=450,
             temporary=True,
         ):
             with v3.VCard(flat=True, classes="fill-height d-flex flex-column"):
                 with v3.VCardTitle(classes="d-flex justify-space-between align-center flex-shrink-0"):
-                    html.Span("Charts ({{ chart_gallery.length }})")
-                    with html.Div():
-                        v3.VBtn(icon="mdi-refresh", click=refresh_charts, variant="text", size="small")
-                        v3.VBtn(icon="mdi-delete-sweep", click=clear_all_charts, variant="text", size="small",
-                                v_if="chart_gallery.length > 0")
+                    html.Span("Live Residuals")
+                    v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="small")
                 
-                with v3.VCardText(classes="pa-2 flex-grow-1", style="overflow-y: auto; max-height: calc(100vh - 80px);"):
-                    with html.Div(v_if="chart_gallery.length === 0"):
-                        html.P("No charts yet.", classes="text-grey text-body-2")
+                with v3.VCardText(classes="pa-2 flex-grow-1"):
+                    if PLOTLY_AVAILABLE:
+                        # Create initial empty figure
+                        initial_fig = go.Figure()
+                        initial_fig.update_layout(
+                            title="Residual Convergence",
+                            xaxis_title="Iteration",
+                            yaxis_title="Residual",
+                            yaxis_type="log",
+                            margin=dict(l=50, r=20, t=40, b=40),
+                            height=400,
+                        )
+                        
+                        # Store the widget reference for updates
+                        app.chart_widget = trame_plotly.Figure(initial_fig)
+                    else:
+                        html.P("Install trame-plotly for live charts", classes="text-grey")
                     
-                    with v3.VExpansionPanels(multiple=True, variant="accordion"):
-                        with v3.VExpansionPanel(v_for="(chart, i) in chart_gallery", key="i"):
-                            with v3.VExpansionPanelTitle(classes="text-caption py-1"):
-                                html.Span("{{ chart.title }}", classes="flex-grow-1")
-                                v3.VBtn(icon="mdi-close", click=(delete_chart, "[i]"), variant="text",
-                                        size="x-small", color="error", click_stop=True)
-                            with v3.VExpansionPanelText(classes="pa-1"):
-                                v3.VImg(src=("chart.image",), aspect_ratio="16/9")
+                    # Status info
+                    with html.Div(classes="mt-4"):
+                        html.P("{{ live_chart_status }}", classes="text-caption text-grey")
         
-        # Top toolbar buttons
         with html.Div(style="position: fixed; top: 70px; right: 20px; z-index: 1000; display: flex; gap: 8px;"):
-            # Live connection button (only shown if --live)
             with html.Div(v_if="live_enabled"):
                 v3.VBtn(
                     icon=("live_connected ? 'mdi-broadcast' : 'mdi-broadcast-off'",),
                     click=toggle_live_connection,
                     color=("live_connected ? 'success' : 'grey'",),
                     variant="elevated",
-                    title=("live_connected ? 'Connected to ' + live_host + ':' + live_port : 'Click to connect'",),
+                    title=("live_connected ? 'Connected' : 'Click to connect'",),
                 )
             
-            # Chart button
             v3.VBtn(
                 icon="mdi-chart-line",
                 click=toggle_chart_drawer,
@@ -592,7 +849,6 @@ def main():
                 variant="elevated",
             )
         
-        # Chat widget
         llm.Chat(
             app_name="cfd",
             enabled_message_types=[
@@ -606,20 +862,19 @@ def main():
             llm_client=llm_client,
         )
     
-    # Print startup info
     print("\nStarting CFD Analysis Assistant...")
     print("  - Pipeline browser: click branch icon or press 'p'")
-    print("  - Chart gallery: click chart icon (top-right)")
+    print("  - Live chart: click chart icon (top-right)")
     if args.live:
-        print(f"  - Live connection: click broadcast icon ({args.host}:{args.port})")
+        print(f"  - Live: click broadcast icon ({args.host}:{args.port})")
     print("  - Chat: click chat icon (bottom-right)")
     
     if args.live:
         print("\nLive workflow:")
-        print("  1. Start your simulation with Catalyst")
-        print("  2. Click broadcast icon (or ask: 'connect to the simulation')")
-        print("  3. Ask: 'extract monitors' to get residual data")
-        print("  4. Ask: 'show monitor chart' to visualize convergence")
+        print("  1. Start simulation, click broadcast to connect")
+        print("  2. 'extract monitors' to start monitoring")
+        print("  3. Click chart icon to see residual convergence")
+        print("  4. 'extract grid' then 'show grid' to visualize")
     
     app.start(open_browser=True)
 
