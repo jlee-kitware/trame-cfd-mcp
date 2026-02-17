@@ -275,6 +275,9 @@ class CFDChatMCP:
                 # Update trame app to refresh pipeline browser
                 if self._app:
                     self._app.update()
+                    # Trigger pipeline browser refresh
+                    if hasattr(self._app.server.controller, 'on_data_change'):
+                        self._app.server.controller.on_data_change()
                 
                 return {
                     "status": "extracted",
@@ -353,6 +356,9 @@ class CFDChatMCP:
             # Update the trame app to refresh pipeline browser
             if self._app:
                 self._app.update()
+                # Trigger pipeline browser refresh
+                if hasattr(self._app.server.controller, 'on_data_change'):
+                    self._app.server.controller.on_data_change()
             
             return {
                 "status": "shown",
