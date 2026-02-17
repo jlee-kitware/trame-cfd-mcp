@@ -131,6 +131,48 @@ pvpython --venv .venv test_boundary_layer.py
 pvpython --venv .venv test_ontology.py
 ```
 
+## Catalyst Live Monitoring
+
+Connect to running simulations for real-time visualization and residual monitoring:
+
+```bash
+# Start the app with live mode enabled
+pvpython cfd_chat.py --live --host localhost --port 22222
+```
+
+### Live UI Features
+
+- **Connection button** (broadcast icon, top-right) - Connect/disconnect from simulation
+- **Chart panel** (chart icon, top-right) - Live residual convergence plot
+- **Pipeline browser** - Shows extracted data from simulation
+
+### Live Workflow
+
+1. Start your Catalyst-enabled simulation (must expose Live connection on port 22222)
+2. Launch app with `--live` flag
+3. Click broadcast icon to connect
+4. Chat: `"extract monitors"` - starts residual tracking, open chart panel to view
+5. Chat: `"extract grid"` then `"show grid colored by pressure"` - visualize mesh
+6. Chat: `"pause simulation"` - freeze for detailed analysis
+7. Chat: `"resume simulation"` - continue
+
+### Live Tools
+
+| Tool | Description |
+|------|-------------|
+| `connect_live(host, port)` | Connect to Catalyst simulation |
+| `disconnect_live()` | Disconnect from simulation |
+| `pause_simulation()` | Pause for detailed analysis |
+| `resume_simulation()` | Continue simulation |
+| `extract_live_data(name)` | Extract data channel (e.g., "grid") |
+| `show_live_source(name, color_by)` | Display extracted data |
+| `extract_monitors(channel)` | Start residual monitoring |
+| `get_live_status()` | Get simulation time/state |
+
+### Example Simulation
+
+See `examples/catalyst/` for example Catalyst pipelines and mock simulations that work with live mode.
+
 ## Architecture
 
 ```
@@ -291,16 +333,23 @@ src/trame_cfd_mcp/
 ├── workflows.py         # Workflow implementations
 ├── cfd_analysis.py      # CFD analysis functions
 ├── line_samplers.py     # Modular line sampling strategies
+├── catalyst_live.py     # Catalyst Live MCP (CFDChatMCP class)
+├── cost_tracker.py      # Token usage and cost tracking
 └── ontology.json        # CFD domain knowledge
 
 examples/cfd_assistant/
-├── cfd_chat.py          # Interactive chat application
+├── cfd_chat.py          # Interactive chat application (supports --live)
 ├── test_workflows.py    # LLM integration tests
 ├── test_workflows_basic.py  # Unit tests (no LLM)
 ├── test_boundary_layer.py   # BL analysis tests
 ├── test_ontology.py     # Ontology explanation tests
 ├── .env.example         # API key template
 └── test.vtm             # Sample CFD dataset
+
+examples/catalyst/
+├── catalyst_pipeline_monitors.py  # Pipeline with residual monitoring
+├── mock_simulation.py             # Mock simulation for testing
+└── README.md                      # Catalyst examples documentation
 ```
 
 ## License
