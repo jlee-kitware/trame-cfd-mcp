@@ -805,21 +805,21 @@ def main():
             app.state.live_connected = result.get("status") == "connected"
     
     with app.ui:
-        # Chart panel - floating card in top-left area (below toolbar)
+        # Chart panel - floating card, taller with scroll support
         with v3.VCard(
             v_show="chart_drawer_open",
-            style="position: fixed; top: 60px; left: 50px; z-index: 900; width: 450px;",
+            style="position: fixed; top: 60px; left: 50px; z-index: 900; width: 500px; max-height: calc(100vh - 80px); display: flex; flex-direction: column;",
             elevation=8,
         ):
-            with v3.VCardTitle(classes="d-flex justify-space-between align-center py-2"):
+            with v3.VCardTitle(classes="d-flex justify-space-between align-center py-2 flex-shrink-0"):
                 html.Span("Live Residuals", classes="text-subtitle-1")
                 v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="small", density="compact")
             
             v3.VDivider()
             
-            with v3.VCardText(classes="pa-2"):
+            with v3.VCardText(classes="pa-2 flex-grow-1 overflow-y-auto", style="min-height: 0;"):
                 if PLOTLY_AVAILABLE:
-                    # Create initial empty figure
+                    # Residual convergence chart
                     initial_fig = go.Figure()
                     initial_fig.update_layout(
                         title="Residual Convergence",
@@ -827,15 +827,18 @@ def main():
                         yaxis_title="Residual",
                         yaxis_type="log",
                         margin=dict(l=50, r=20, t=40, b=40),
-                        height=350,
+                        height=400,
                     )
-                    
-                    # Store the widget reference for updates
                     app.chart_widget = trame_plotly.Figure(initial_fig)
+                    
+                    v3.VDivider(classes="my-3")
+                    
+                    # Placeholder for additional charts (forces, coefficients, etc.)
+                    html.Div("Additional charts can be added here", classes="text-caption text-grey pa-2", v_if="false")
                 else:
                     html.P("Install trame-plotly for live charts", classes="text-grey")
                 
-                # Status info
+                # Status info at bottom
                 html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-2 mb-0")
         
         # Buttons in top-right corner
