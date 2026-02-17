@@ -14,7 +14,13 @@ Usage:
 
 from abc import ABC, abstractmethod
 import numpy as np
-from paraview import simple
+
+# Optional ParaView import - only needed for create_probe_line()
+try:
+    from paraview import simple
+    PARAVIEW_AVAILABLE = True
+except ImportError:
+    PARAVIEW_AVAILABLE = False
 
 
 class LineSampler(ABC):
@@ -39,6 +45,8 @@ class LineSampler(ABC):
         """
         Sample a field along a line using this sampler's distribution.
         
+        Requires ParaView.
+        
         Args:
             data_proxy: ParaView data proxy to sample from
             start_point: Starting point (3D coordinates)
@@ -50,6 +58,9 @@ class LineSampler(ABC):
             Dict with 'y' (arc lengths), 'values' (sampled field values),
             'points' (3D coordinates of sample points)
         """
+        if not PARAVIEW_AVAILABLE:
+            return {"error": "ParaView not available"}
+        
         from vtk.util.numpy_support import vtk_to_numpy
         import vtk
         
