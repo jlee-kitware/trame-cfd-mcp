@@ -810,10 +810,10 @@ def main():
             app.state.live_connected = result.get("status") == "connected"
     
     with app.ui:
-        # Chart panel - floating card, taller with scroll support
+        # Chart panel - floating card
         with v3.VCard(
             v_show="chart_drawer_open",
-            style="position: fixed; top: 60px; left: 50px; z-index: 900; width: 520px; height: 500px;",
+            style="position: fixed; top: 60px; left: 50px; z-index: 900; width: 520px; height: 550px;",
             elevation=8,
         ):
             with v3.VCardTitle(classes="d-flex justify-space-between align-center py-2 flex-shrink-0"):
@@ -822,14 +822,14 @@ def main():
             
             v3.VDivider()
             
-            with v3.VCardText(classes="pa-2", style="height: calc(100% - 60px); overflow-y: auto;"):
+            with v3.VCardText(classes="pa-2", style="height: calc(100% - 50px); overflow-y: auto;"):
                 if PLOTLY_AVAILABLE:
                     # Show message when no data, chart when monitoring
                     with html.Div(v_if="!monitoring_active", classes="d-flex align-center justify-center", style="height: 380px;"):
                         html.P("Connect to a simulation and extract monitors to see residual data", classes="text-grey text-center")
                     
                     # Residual convergence chart - only visible when monitoring
-                    with html.Div(v_show="monitoring_active", style="width: 100%; height: 380px;"):
+                    with html.Div(v_show="monitoring_active", style="width: 100%; height: 400px;"):
                         initial_fig = go.Figure()
                         initial_fig.update_layout(
                             title="Residual Convergence",
@@ -845,17 +845,18 @@ def main():
                 else:
                     html.P("Install trame-plotly for live charts", classes="text-grey")
                 
-                # Status info at bottom
-                html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-2 mb-0")
+                # Status info at bottom - more padding
+                html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-3 mb-2")
         
-        # Buttons in top-right corner
-        with html.Div(style="position: fixed; top: 70px; right: 20px; z-index: 1000; display: flex; gap: 8px;"):
+        # Buttons in top-right corner - higher position to avoid chat overlap
+        with html.Div(style="position: fixed; top: 12px; right: 80px; z-index: 1001; display: flex; gap: 8px;"):
             # Chart button
             v3.VBtn(
                 icon="mdi-chart-line",
                 click=toggle_chart_drawer,
                 color=("chart_drawer_open ? 'primary' : ''",),
                 variant="elevated",
+                size="small",
                 title="Live Residual Chart",
             )
             
@@ -866,6 +867,7 @@ def main():
                     click=toggle_live_connection,
                     color=("live_connected ? 'success' : 'grey'",),
                     variant="elevated",
+                    size="small",
                     title=("live_connected ? 'Connected' : 'Click to connect'",),
                 )
         
