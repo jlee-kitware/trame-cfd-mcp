@@ -4,8 +4,6 @@ Catalyst Live integration for trame-cfd-mcp.
 Provides MCP tools for connecting to and monitoring live Catalyst simulations,
 including residual convergence tracking and data extraction.
 
-This module contains the working CFDChatMCP class extracted from cfd_chat.py.
-
 Usage:
     from trame_cfd_mcp import CFDChatMCP
     
@@ -27,12 +25,13 @@ class CFDChatMCP:
         self._live_enabled = live_enabled
         self._live_host = live_host
         self._live_port = live_port
+        # Note: _app is a property that gets app from workflow_mcp._base_mcp.app
         self._live_link = None
         self._display_session = None
         self._monitor_source = None
         self._monitoring_active = False
         self._extracted_sources = {}
-        self._chart_config = None
+        self._pause_on_connect = False  # Flag to auto-pause when simulation connects
         # Client-side accumulation of monitor history
         self._monitor_history = {
             'iteration': [],
@@ -48,19 +47,6 @@ class CFDChatMCP:
     def _app(self):
         """Get the trame app from the base MCP."""
         return self._workflow_mcp._base_mcp.app
-    
-    def _capture_chart_to_gallery(self, chart_view, title: str):
-        """Capture a chart view as base64 PNG and add to workflow's gallery."""
-        self._workflow_mcp._analysis._capture_chart_to_gallery(chart_view, title)
-    
-    def _update_gallery_chart(self, chart_view, title: str):
-        """Update existing chart in gallery or add new one."""
-        gallery = self._workflow_mcp._analysis._chart_gallery
-        for i, entry in enumerate(gallery):
-            if entry.get('title') == title:
-                gallery.pop(i)
-                break
-        self._capture_chart_to_gallery(chart_view, title)
     
     # =========================================================================
     # Cost tracking tools
@@ -79,13 +65,14 @@ class CFDChatMCP:
     # Live connection tools (only available if --live flag used)
     # =========================================================================
     
-    def connect_live(self, host: str = None, port: int = None) -> dict:
+    def connect_live(self, host: str = None, port: int = None, pause: bool = None) -> dict:
         """
         Connect to a running Catalyst-enabled simulation.
         
         Args:
             host: Hostname (default from --host arg)
             port: Port number (default from --port arg)
+            pause: If True, immediately pause simulation after connecting
         """
         if not self._live_enabled:
             return {"error": "Live mode not enabled. Restart with --live flag."}
@@ -95,6 +82,9 @@ class CFDChatMCP:
         
         host = host or self._live_host
         port = port or self._live_port
+        
+        # Use pause_on_connect flag if pause not explicitly specified
+        should_pause = pause if pause is not None else self._pause_on_connect
         
         try:
             # IMPORTANT: Save the display session before connecting to Catalyst
@@ -124,16 +114,46 @@ class CFDChatMCP:
                 view = simple.GetActiveViewOrCreate('RenderView')
                 print(f"[Live] Created new RenderView: {view}")
             
-            return {
+            result = {
                 "status": "connected",
                 "host": host,
                 "port": port,
-                "tip": "Use 'pause simulation' then 'show grid' to visualize."
             }
+            
+            # Auto-pause if requested
+            if should_pause:
+                self._live_link.GetProperty('SimulationPaused').SetElement(0, 1)
+                self._live_link.UpdateVTKObjects()
+                result["paused"] = True
+                result["tip"] = "Simulation paused. Use 'extract surface' or 'extract volume' to get data."
+            else:
+                result["tip"] = "Use 'pause simulation' then extract data to visualize."
+            
+            # Clear the flag after use
+            self._pause_on_connect = False
+            
+            return result
         except Exception as e:
             import traceback
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
+    
+    def set_pause_on_connect(self, enabled: bool = True) -> dict:
+        """
+        Set flag to automatically pause simulation when it connects.
+        
+        Call this before starting the simulation. When the simulation
+        connects, it will be immediately paused.
+        
+        Args:
+            enabled: True to pause on connect, False to disable
+        """
+        self._pause_on_connect = enabled
+        return {
+            "status": "ok",
+            "pause_on_connect": enabled,
+            "tip": "Now start the simulation. It will pause automatically when it connects."
+        }
     
     def disconnect_live(self) -> dict:
         """Disconnect from the simulation."""
@@ -209,50 +229,138 @@ class CFDChatMCP:
         The data is copied from the simulation to the local session.
         
         Args:
-            source_name: Name of the source to extract (e.g., "grid")
+            source_name: Name of the source to extract (e.g., "surface", "volume", "grid")
         """
         if not self._live_link:
             return {"error": "Not connected to live simulation"}
         
-        if not self._display_session:
-            return {"error": "Display session not available"}
+        from paraview.live import ExtractCatalystData, ProcessServerNotifications
         
-        from paraview import servermanager
+        # Check if already extracted - just update the existing source
+        if source_name in self._extracted_sources:
+            existing = self._extracted_sources[source_name]
+            existing.UpdatePipeline()
+            info = existing.GetDataInformation()
+            return {
+                "status": "updated",
+                "source": source_name,
+                "data_type": info.GetDataClassName(),
+                "points": info.GetNumberOfPoints(),
+                "cells": info.GetNumberOfCells(),
+                "note": "Using existing extraction, data updated"
+            }
         
         try:
-            # This is what paraview.live.ExtractCatalystData does:
-            # 1. Create an extract from the link
-            # 2. Register it in the display session
-            proxy = self._live_link.CreateExtract('sources', source_name, 0)
-            self._display_session.GetSessionProxyManager().RegisterProxy('sources', source_name, proxy)
+            # Process any pending notifications first
+            ProcessServerNotifications()
             
-            # Find it as a regular source
-            extracted = simple.FindSource(source_name)
+            print(f"[extract_live_data] Extracting '{source_name}'")
+            
+            # Use ExtractCatalystData like extract_monitors does
+            extracted = ExtractCatalystData(self._live_link, source_name)
+            
+            # Process notifications after extraction
+            ProcessServerNotifications()
             
             if extracted:
+                # Force pipeline update
+                extracted.UpdatePipeline()
+                
                 self._extracted_sources[source_name] = extracted
                 
-                # Get info without triggering full update
+                # Get info after update
                 info = extracted.GetDataInformation()
+                data_type = info.GetDataClassName()
+                
+                # Debug: print basic info
+                print(f"[extract_live_data] DataClassName: {data_type}")
+                print(f"[extract_live_data] IsCompositeDataSet: {info.IsCompositeDataSet()}")
+                print(f"[extract_live_data] GetNumberOfPoints (direct): {info.GetNumberOfPoints()}")
+                print(f"[extract_live_data] GetNumberOfCells (direct): {info.GetNumberOfCells()}")
+                
                 n_points = info.GetNumberOfPoints()
                 n_cells = info.GetNumberOfCells()
+                
+                # For composite/partitioned datasets, Fetch to get actual counts
+                if info.IsCompositeDataSet() or n_points == 0:
+                    from paraview import servermanager
+                    try:
+                        fetched = servermanager.Fetch(extracted)
+                        if fetched:
+                            print(f"[extract_live_data] Fetched type: {fetched.GetClassName()}")
+                            
+                            # Handle vtkPartitionedDataSet
+                            if hasattr(fetched, 'GetNumberOfPartitions'):
+                                num_parts = fetched.GetNumberOfPartitions()
+                                print(f"[extract_live_data] Number of partitions: {num_parts}")
+                                n_points = 0
+                                n_cells = 0
+                                for p in range(num_parts):
+                                    part = fetched.GetPartition(p)
+                                    if part:
+                                        pts = part.GetNumberOfPoints()
+                                        cells = part.GetNumberOfCells()
+                                        n_points += pts
+                                        n_cells += cells
+                                        if p < 4:  # Only print first few
+                                            print(f"[extract_live_data]   Partition {p}: {pts} pts, {cells} cells")
+                            # Handle vtkMultiBlockDataSet
+                            elif hasattr(fetched, 'GetNumberOfBlocks'):
+                                num_blocks = fetched.GetNumberOfBlocks()
+                                print(f"[extract_live_data] Number of blocks: {num_blocks}")
+                                n_points = 0
+                                n_cells = 0
+                                for b in range(num_blocks):
+                                    block = fetched.GetBlock(b)
+                                    if block:
+                                        pts = block.GetNumberOfPoints()
+                                        cells = block.GetNumberOfCells()
+                                        n_points += pts
+                                        n_cells += cells
+                                        if b < 4:
+                                            print(f"[extract_live_data]   Block {b}: {pts} pts, {cells} cells")
+                            # Simple dataset
+                            elif hasattr(fetched, 'GetNumberOfPoints'):
+                                n_points = fetched.GetNumberOfPoints()
+                                n_cells = fetched.GetNumberOfCells()
+                                print(f"[extract_live_data] Simple dataset: {n_points} pts, {n_cells} cells")
+                    except Exception as e:
+                        print(f"[extract_live_data] Fetch failed: {e}")
+                
+                # Get field names
+                point_fields = list(extracted.PointData.keys()) if hasattr(extracted, 'PointData') else []
+                cell_fields = list(extracted.CellData.keys()) if hasattr(extracted, 'CellData') else []
+                
+                print(f"[extract_live_data] Final: {n_points} points, {n_cells} cells")
+                print(f"[extract_live_data] Point fields: {point_fields}")
+                print(f"[extract_live_data] Cell fields: {cell_fields}")
                 
                 # Update trame app to refresh pipeline browser
                 if self._app:
                     self._app.update()
-                    # Trigger pipeline browser refresh
                     if hasattr(self._app.server.controller, 'on_data_change'):
                         self._app.server.controller.on_data_change()
                 
-                return {
+                result = {
                     "status": "extracted",
                     "source": source_name,
+                    "data_type": data_type,
                     "points": n_points,
                     "cells": n_cells,
-                    "tip": "Data extracted. Use 'show grid' to visualize."
+                    "point_fields": point_fields,
+                    "cell_fields": cell_fields,
+                    "tip": "Data extracted. Use show_live_source() to visualize."
                 }
+                
+                return result
             else:
-                return {"status": "error", "message": f"Failed to extract '{source_name}'"}
+                # List what sources are available
+                available = [name for (name, _id) in simple.GetSources().keys()]
+                return {
+                    "status": "error", 
+                    "message": f"Failed to extract '{source_name}'",
+                    "available_sources": available
+                }
                 
         except Exception as e:
             import traceback
@@ -344,8 +452,25 @@ class CFDChatMCP:
         if not self._live_link:
             return {"error": "Not connected. Call connect_live() first."}
         
+        # Check if already extracted
+        if channel_name in self._extracted_sources and self._monitor_source:
+            # Just update the existing source
+            self._monitor_source.UpdatePipeline()
+            self._monitoring_active = True  # Ensure monitoring is active
+            # Reset analysis chart flag to allow live updates
+            if self._app and hasattr(self._app, 'state'):
+                self._app.state.analysis_chart_active = False
+            return {
+                "status": "monitoring",
+                "channel": channel_name,
+                "history_points": len(self._monitor_history['iteration']),
+                "fields": list(self._monitor_source.PointData.keys()),
+                "note": "Using existing extraction"
+            }
+        
         try:
             from paraview.live import ExtractCatalystData, ProcessServerNotifications
+            from paraview import servermanager
             
             ProcessServerNotifications()
             extracted = ExtractCatalystData(self._live_link, channel_name)
@@ -356,6 +481,10 @@ class CFDChatMCP:
                 self._monitor_source = extracted
                 self._extracted_sources[channel_name] = extracted
                 self._monitoring_active = True
+                
+                # Reset analysis chart flag to allow live updates
+                if self._app and hasattr(self._app, 'state'):
+                    self._app.state.analysis_chart_active = False
                 
                 # Reset client-side history
                 self._monitor_history = {
@@ -368,6 +497,44 @@ class CFDChatMCP:
                 }
                 self._last_iteration = -1
                 
+                # Immediately fetch and populate initial data
+                try:
+                    data = servermanager.Fetch(extracted)
+                    
+                    # Unwrap composite/partitioned datasets
+                    while data is not None:
+                        if hasattr(data, 'GetPartition') and data.GetNumberOfPartitions() > 0:
+                            data = data.GetPartition(0)
+                        elif hasattr(data, 'GetBlock') and data.GetNumberOfBlocks() > 0:
+                            data = data.GetBlock(0)
+                        elif hasattr(data, 'GetNumberOfPoints'):
+                            break
+                        else:
+                            data = None
+                            break
+                    
+                    if data and hasattr(data, 'GetNumberOfPoints') and data.GetNumberOfPoints() > 0:
+                        pd = data.GetPointData()
+                        iter_arr = pd.GetArray('iteration')
+                        if iter_arr:
+                            for i in range(iter_arr.GetNumberOfTuples()):
+                                iteration = iter_arr.GetValue(i)
+                                if iteration > self._last_iteration:
+                                    self._monitor_history['iteration'].append(iteration)
+                                    for name in ['continuity', 'momentum_x', 'momentum_y', 'momentum_z', 'energy']:
+                                        arr = pd.GetArray(name)
+                                        if arr and i < arr.GetNumberOfTuples():
+                                            self._monitor_history[name].append(arr.GetValue(i))
+                                    self._last_iteration = iteration
+                except Exception as e:
+                    print(f"[extract_monitors] Initial fetch failed: {e}")
+                
+                # Trigger pipeline browser refresh
+                if self._app:
+                    self._app.update()
+                    if hasattr(self._app.server.controller, 'on_data_change'):
+                        self._app.server.controller.on_data_change()
+                
                 info = extracted.GetDataInformation()
                 n_points = info.GetNumberOfPoints()
                 fields = list(extracted.PointData.keys())
@@ -375,7 +542,7 @@ class CFDChatMCP:
                 return {
                     "status": "monitoring",
                     "channel": channel_name,
-                    "history_points": n_points,
+                    "history_points": len(self._monitor_history['iteration']),
                     "fields": fields,
                     "tip": "Open chart panel (top-right) to see live residuals."
                 }
@@ -432,17 +599,6 @@ class CFDChatMCP:
             import traceback
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
-    
-    def update_monitor_chart(self) -> dict:
-        """Update the monitor chart with latest data from simulation.
-        
-        Note: The Plotly chart updates automatically. This method is kept
-        for compatibility but is not needed with the live Plotly chart.
-        """
-        if not self._monitoring_active:
-            return {"error": "Monitoring not active"}
-        
-        return {"status": "ok", "message": "Chart updates automatically"}
     
     def get_monitor_data(self) -> dict:
         """
@@ -565,13 +721,13 @@ class CFDChatMCP:
                 self.connect_live,
                 self.disconnect_live,
                 self.get_live_status,
+                self.set_pause_on_connect,
                 self.pause_simulation,
                 self.resume_simulation,
                 self.extract_live_data,
                 self.show_live_source,
                 self.extract_monitors,
                 self.show_monitor_chart,
-                self.update_monitor_chart,
                 self.get_current_monitors,
             ])
             
@@ -580,10 +736,12 @@ class CFDChatMCP:
 == LIVE SIMULATION MONITORING ==
 
 Workflow for visualizing live data:
-1. connect_live() - Connect to simulation
-2. pause_simulation() - Pause for detailed analysis
-3. extract_live_data("grid") - Extract data to local session
-4. show_live_source("grid", color_by="pressure") - Display with coloring
+1. connect_live() - Connect to simulation (optionally with pause=True)
+2. pause_simulation() - Pause for detailed analysis  
+3. extract_live_data("surface") or extract_live_data("volume") - Extract data
+4. show_live_source("surface", color_by="p") - Display with coloring
+
+Alternative: Call set_pause_on_connect() before starting simulation to auto-pause on connect.
 
 The extract step is REQUIRED when paused - it copies data from simulation memory.
 

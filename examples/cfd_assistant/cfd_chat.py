@@ -92,7 +92,6 @@ def main():
     ctrl = app.server.controller
     app.state.trame__title = "CFD Analysis Assistant"
     app.state.chart_drawer_open = False
-    app.state.chart_gallery = []
     app.state.live_enabled = args.live
     app.state.live_connected = False
     app.state.live_host = args.host
@@ -100,7 +99,235 @@ def main():
     app.state.live_chart_status = "Not connected"
     app.state.live_port = args.port
     app.state.monitoring_active = False
+    app.state.analysis_chart_active = False  # True when showing analysis chart (not live)
     
+    # Store chart figures directly - we'll create multiple widget slots
+    app.chart_figures = []  # List of Plotly figure objects for analysis charts
+    app.chart_widgets = []  # Will be populated with analysis chart widget references
+    app.live_chart_widget = None  # Dedicated widget for live residual chart
+    MAX_CHARTS = 10
+    
+    def build_chart_figure(chart_data: dict):
+        """Build a Plotly figure from chart data."""
+        chart_type = chart_data.get("chart_type")
+        title = chart_data.get("title", "Chart")
+        x_label = chart_data.get("x_label", "")
+        y_label = chart_data.get("y_label", "")
+        data = chart_data.get("data", {})
+        
+        fig = go.Figure()
+        
+        if chart_type == "histogram":
+            fig.add_trace(go.Bar(
+                x=data.get("x", []),
+                y=data.get("y", []),
+                name=chart_data.get("field", "Value"),
+            ))
+        elif chart_type == "force_distribution":
+            x = data.get("x", [])
+            series = data.get("series", {})
+            for name, values in series.items():
+                fig.add_trace(go.Scatter(x=x, y=values, mode='lines', name=name))
+        elif chart_type == "boundary_layer":
+            fig.add_trace(go.Scatter(
+                x=data.get("x", []),
+                y=data.get("y", []),
+                mode='lines',
+                name='BL Profile',
+                line=dict(color='blue', width=2),
+            ))
+        elif chart_type == "section_debug":
+            section = data.get("section", {})
+            probes = data.get("probes", [])
+            markers = data.get("markers", {})
+            fig.add_trace(go.Scatter(
+                x=section.get("x", []), y=section.get("y", []),
+                mode='lines', name='Section', line=dict(color='black', width=2),
+            ))
+            colors = ['red', 'green', 'blue', 'orange', 'purple', 'cyan']
+            for j, probe in enumerate(probes):
+                fig.add_trace(go.Scatter(
+                    x=probe.get("x", []), y=probe.get("y", []),
+                    mode='lines', line=dict(color=colors[j % len(colors)], width=2),
+                    showlegend=False,
+                ))
+            fig.add_trace(go.Scatter(
+                x=markers.get("x", []), y=markers.get("y", []),
+                mode='markers', name='Probe Points', marker=dict(color='red', size=8),
+            ))
+            fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        else:
+            # Generic
+            x = data.get("x", [])
+            series = data.get("series", data.get("y", {}))
+            if isinstance(series, dict):
+                for name, values in series.items():
+                    fig.add_trace(go.Scatter(x=x, y=values, mode='lines', name=name))
+            else:
+                fig.add_trace(go.Scatter(x=x, y=series, mode='lines'))
+        
+        fig.update_layout(
+            title=dict(text=title, y=0.92, x=0.5, xanchor='center', yanchor='top', font=dict(size=14)),
+            xaxis_title=x_label,
+            yaxis_title=y_label,
+            margin=dict(l=50, r=20, t=70, b=40),
+            height=320,
+            showlegend=True,
+        )
+        
+        return fig
+    
+    def update_all_chart_widgets():
+        """Update all chart widgets with current figures."""
+        for i in range(MAX_CHARTS):
+            if i < len(app.chart_figures) and i < len(app.chart_widgets):
+                app.chart_widgets[i].update(app.chart_figures[i])
+        
+        # Update visibility state
+        with app.state:
+            app.state.chart_visibility = [i < len(app.chart_figures) for i in range(MAX_CHARTS)]
+    
+    # Initialize visibility state
+    app.state.chart_visibility = [False] * MAX_CHARTS
+    
+    # Function to render chart from ParaView proxy (vtkTable)
+    def render_chart_from_proxy(proxy_name: str):
+        """Render a chart by reading data from a ParaView table proxy."""
+        from paraview import servermanager
+        from vtk.util.numpy_support import vtk_to_numpy
+        
+        print(f"[render_chart_from_proxy] Fetching proxy_name={proxy_name}")
+        if not PLOTLY_AVAILABLE:
+            print("[render_chart_from_proxy] Plotly not available")
+            return
+        
+        # Get the proxy
+        proxy = simple.FindSource(proxy_name)
+        if proxy is None:
+            print(f"[render_chart_from_proxy] Proxy {proxy_name} not found")
+            return
+        
+        # Fetch the data
+        data = servermanager.Fetch(proxy)
+        if data is None:
+            print(f"[render_chart_from_proxy] Failed to fetch data from {proxy_name}")
+            return
+        
+        # Get chart metadata from field data
+        field_data = data.GetFieldData()
+        
+        def get_string_field(name):
+            arr = field_data.GetAbstractArray(name)
+            if arr and arr.GetNumberOfTuples() > 0:
+                return arr.GetValue(0)
+            return ""
+        
+        chart_type = get_string_field("chart_type")
+        title = get_string_field("chart_title")
+        x_label = get_string_field("x_label")
+        y_label = get_string_field("y_label")
+        
+        print(f"[render_chart_from_proxy] chart_type={chart_type}, title={title}")
+        
+        # Build chart data from table columns
+        chart_data = {
+            "chart_type": chart_type,
+            "title": title,
+            "x_label": x_label,
+            "y_label": y_label,
+            "data": {},
+        }
+        
+        if chart_type == "boundary_layer":
+            x_arr = data.GetColumnByName("u_Ue")
+            y_arr = data.GetColumnByName("y_wall")
+            if x_arr and y_arr:
+                chart_data["data"]["x"] = vtk_to_numpy(x_arr).tolist()
+                chart_data["data"]["y"] = vtk_to_numpy(y_arr).tolist()
+        elif chart_type == "histogram":
+            x_arr = data.GetColumnByName("bin_center")
+            y_arr = data.GetColumnByName("count")
+            if x_arr and y_arr:
+                chart_data["data"]["x"] = vtk_to_numpy(x_arr).tolist()
+                chart_data["data"]["y"] = vtk_to_numpy(y_arr).tolist()
+        elif chart_type == "force_distribution":
+            x_arr = data.GetColumnByName("section")
+            if x_arr:
+                chart_data["data"]["x"] = vtk_to_numpy(x_arr).tolist()
+            chart_data["data"]["series"] = {}
+            for i in range(data.GetNumberOfColumns()):
+                col_name = data.GetColumnName(i)
+                if col_name not in ["section", "x"]:
+                    arr = data.GetColumn(i)
+                    chart_data["data"]["series"][col_name] = vtk_to_numpy(arr).tolist()
+        else:
+            # Generic x/y
+            x_arr = data.GetColumnByName("x")
+            y_arr = data.GetColumnByName("y")
+            if x_arr and y_arr:
+                chart_data["data"]["x"] = vtk_to_numpy(x_arr).tolist()
+                chart_data["data"]["y"] = vtk_to_numpy(y_arr).tolist()
+        
+        # Build figure and add to list
+        fig = build_chart_figure(chart_data)
+        
+        if len(app.chart_figures) < MAX_CHARTS:
+            app.chart_figures.append(fig)
+        else:
+            app.chart_figures.pop(0)
+            app.chart_figures.append(fig)
+        
+        with app.state:
+            app.state.chart_drawer_open = True
+            app.state.analysis_chart_active = True
+            app.state.live_chart_status = f"Showing {len(app.chart_figures)} chart(s)"
+        
+        update_all_chart_widgets()
+        print(f"[render_chart_from_proxy] Added chart from {proxy_name}, total: {len(app.chart_figures)}")
+    
+    # Legacy function for direct chart data (still useful for some cases)
+    def render_analysis_chart(chart_data: dict):
+        """Add a chart to the analysis charts."""
+        print(f"[render_analysis_chart] Called with chart_type={chart_data.get('chart_type')}")
+        if not PLOTLY_AVAILABLE:
+            print("[render_analysis_chart] Plotly not available")
+            return
+        
+        # Build figure and add to list
+        fig = build_chart_figure(chart_data)
+        
+        if len(app.chart_figures) < MAX_CHARTS:
+            app.chart_figures.append(fig)
+        else:
+            # Remove oldest, add new
+            app.chart_figures.pop(0)
+            app.chart_figures.append(fig)
+        
+        with app.state:
+            app.state.chart_drawer_open = True
+            app.state.analysis_chart_active = True
+            app.state.live_chart_status = f"Showing {len(app.chart_figures)} chart(s)"
+        
+        update_all_chart_widgets()
+        print(f"[render_analysis_chart] Added chart, total: {len(app.chart_figures)}")
+    
+    def clear_analysis_charts():
+        """Clear all analysis charts."""
+        app.chart_figures = []
+        with app.state:
+            app.state.chart_visibility = [False] * MAX_CHARTS
+            app.state.analysis_chart_active = False
+            app.state.live_chart_status = "Charts cleared"
+        # Clear all widgets
+        empty_fig = go.Figure()
+        empty_fig.update_layout(height=100)
+        for w in app.chart_widgets:
+            w.update(empty_fig)
+    
+    app.render_chart_from_proxy = render_chart_from_proxy
+    app.render_analysis_chart = render_analysis_chart
+    app.clear_analysis_charts = clear_analysis_charts
+
     if args.live:
         from paraview import servermanager
         pm = servermanager.vtkProcessModule.GetProcessModule()
@@ -136,6 +363,11 @@ def main():
                 if app.state.monitoring_active != chat_mcp._monitoring_active:
                     app.state.monitoring_active = chat_mcp._monitoring_active
                 
+                # Skip live chart updates if showing an analysis chart
+                if app.state.analysis_chart_active:
+                    # Debug: only print occasionally to avoid spam
+                    return
+                
                 if chat_mcp._monitoring_active:
                     # Check if simulation is running (not paused)
                     paused = False
@@ -145,43 +377,43 @@ def main():
                         except:
                             pass
                     
-                    if not paused:
-                        # Get data and update Plotly figure
-                        data = chat_mcp.get_monitor_data()
-                        if "iteration" in data and data["iteration"]:
-                            iterations = data["iteration"]
-                            residuals = data.get("residuals", {})
+                    # Always update chart - whether paused or running
+                    # Get data and update Plotly figure
+                    data = chat_mcp.get_monitor_data()
+                    if "iteration" in data and data["iteration"]:
+                        iterations = data["iteration"]
+                        residuals = data.get("residuals", {})
+                        
+                        # Build Plotly figure
+                        if PLOTLY_AVAILABLE:
+                            fig = go.Figure()
+                            for name, values in residuals.items():
+                                fig.add_trace(go.Scatter(
+                                    x=iterations,
+                                    y=values,
+                                    mode='lines',
+                                    name=name,
+                                ))
+                            fig.update_layout(
+                                title="Residual Convergence",
+                                xaxis_title="Iteration",
+                                yaxis_title="Residual",
+                                yaxis_type="log",
+                                margin=dict(l=50, r=20, t=40, b=40),
+                                height=400,
+                                showlegend=True,
+                            )
                             
-                            # Build Plotly figure
-                            if PLOTLY_AVAILABLE:
-                                fig = go.Figure()
-                                for name, values in residuals.items():
-                                    fig.add_trace(go.Scatter(
-                                        x=iterations,
-                                        y=values,
-                                        mode='lines',
-                                        name=name,
-                                    ))
-                                fig.update_layout(
-                                    title="Residual Convergence",
-                                    xaxis_title="Iteration",
-                                    yaxis_title="Residual",
-                                    yaxis_type="log",
-                                    margin=dict(l=50, r=20, t=40, b=40),
-                                    height=400,
-                                    showlegend=True,
-                                )
-                                
-                                # Update chart via state with context manager
-                                if hasattr(app, 'chart_widget') and app.chart_widget:
-                                    app.chart_widget.update(fig)
-                                
-                                with app.state:
-                                    app.state.live_chart_status = f"Monitoring: {len(iterations)} iterations"
-                                    app.state.flush()
-                    else:
-                        with app.state:
-                            app.state.live_chart_status = "Simulation paused"
+                            # Update dedicated live chart widget
+                            if app.live_chart_widget:
+                                app.live_chart_widget.update(fig)
+                            
+                            status = f"Monitoring: {len(iterations)} iterations"
+                            if paused:
+                                status += " (paused)"
+                            with app.state:
+                                app.state.live_chart_status = status
+                                app.state.flush()
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -212,7 +444,7 @@ def main():
     llm_client = LLMClient(max_iteractions=15)
     
     base_mcp = ParaViewMCP(app)
-    workflow_mcp = WorkflowMCP(base_mcp)
+    workflow_mcp = WorkflowMCP(base_mcp, app=app)
     chat_mcp = CFDChatMCP(
         workflow_mcp, 
         llm_client,
@@ -228,21 +460,8 @@ def main():
     else:
         print("MCP registered")
     
-    def refresh_charts():
-        gallery = workflow_mcp.get_chart_gallery()
-        app.state.chart_gallery = gallery.get("charts", [])
-    
     def toggle_chart_drawer():
-        refresh_charts()
         app.state.chart_drawer_open = not app.state.chart_drawer_open
-    
-    def delete_chart(index):
-        workflow_mcp._analysis._chart_gallery.pop(index)
-        refresh_charts()
-    
-    def clear_all_charts():
-        workflow_mcp.clear_charts()
-        refresh_charts()
     
     def toggle_live_connection():
         if app.state.live_connected:
@@ -301,7 +520,7 @@ def main():
         # Chart panel - floating card, draggable and collapsible
         with v3.VCard(
             v_show="chart_drawer_open",
-            style="position: fixed; top: 50px; right: 80px; z-index: 10000; width: 460px;",
+            style="position: fixed; top: 50px; right: 80px; z-index: 10000; width: 520px; max-height: calc(100vh - 60px);",
             elevation=8,
             ref="chartPanel",
             __events=["mounted"],
@@ -321,39 +540,56 @@ def main():
                         density="compact",
                         title="Collapse/Expand",
                     )
-                    html.Span("Live Residuals", classes="text-subtitle-2 ml-1")
-                v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="x-small", density="compact")
+                    html.Span("Charts", classes="text-subtitle-2 ml-1")
+                with html.Div(classes="d-flex"):
+                    v3.VBtn(
+                        icon="mdi-delete-outline",
+                        click=(clear_analysis_charts,),
+                        variant="text",
+                        size="x-small",
+                        density="compact",
+                        title="Clear Charts",
+                    )
+                    v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="x-small", density="compact")
             
             v3.VDivider()
             
-            # Collapsible content
+            # Scrollable content with multiple chart slots
             with v3.VExpandTransition():
                 with html.Div(v_show="!chart_collapsed"):
-                    with v3.VCardText(classes="pa-2", style="overflow-y: auto; max-height: calc(100vh - 200px);"):
+                    with v3.VCardText(classes="pa-2", style="overflow-y: auto; max-height: calc(100vh - 120px);"):
                         if PLOTLY_AVAILABLE:
-                            # Show message when no data, chart when monitoring
-                            with html.Div(v_if="!monitoring_active", classes="d-flex align-center justify-center", style="height: 380px;"):
-                                html.P("Connect to a simulation and extract monitors to see residual data", classes="text-grey text-center")
-                            
-                            # Residual convergence chart - only visible when monitoring
-                            with html.Div(v_show="monitoring_active", style="width: 100%; height: 400px;"):
-                                initial_fig = go.Figure()
-                                initial_fig.update_layout(
+                            # Dedicated live residual chart (shown when monitoring)
+                            with html.Div(
+                                v_show="monitoring_active",
+                                style="width: 100%; margin-bottom: 8px;",
+                            ):
+                                live_fig = go.Figure()
+                                live_fig.update_layout(
                                     title="Residual Convergence",
-                                    xaxis_title="Iteration",
-                                    yaxis_title="Residual",
-                                    yaxis_type="log",
-                                    margin=dict(l=50, r=20, t=40, b=40),
+                                    height=320,
+                                    margin=dict(l=50, r=20, t=70, b=40)
                                 )
-                                app.chart_widget = trame_plotly.Figure(
-                                    initial_fig,
-                                    style="width: 100%; height: 100%;",
+                                app.live_chart_widget = trame_plotly.Figure(
+                                    live_fig,
+                                    style="width: 100%; height: 320px;"
                                 )
+                            
+                            # Analysis chart widget slots
+                            for i in range(MAX_CHARTS):
+                                with html.Div(
+                                    v_show=f"chart_visibility[{i}]",
+                                    style="width: 100%; margin-bottom: 8px;",
+                                ):
+                                    initial_fig = go.Figure()
+                                    initial_fig.update_layout(title=f"Chart {i+1}", height=320, margin=dict(l=50, r=20, t=70, b=40))
+                                    widget = trame_plotly.Figure(initial_fig, style="width: 100%; height: 320px;")
+                                    app.chart_widgets.append(widget)
                         else:
-                            html.P("Install trame-plotly for live charts", classes="text-grey")
+                            html.P("Install trame-plotly for charts", classes="text-grey")
                         
                         # Status info at bottom
-                        html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-3 mb-2")
+                        html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-1")
         
         # Buttons in top-right corner - z-index 10001 to stay above chat and chart panel
         with html.Div(style="position: fixed; top: 12px; right: 80px; z-index: 10001; display: flex; gap: 8px;"):

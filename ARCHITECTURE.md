@@ -123,11 +123,12 @@ The LLM can use this to:
 
 ### WorkflowMCP
 
-High-level interface exposed to LLM. 11 tools:
+High-level interface exposed to LLM. Key tool categories:
 - Discovery: `list_data`, `get_fields`, `analyze_data`
-- Visualization: `show_vortices`, `show_streamlines`, `show_slice`, `show_histogram`, `show_forces`
+- Visualization: `show_vortices`, `show_streamlines`, `show_slice`, `show_histogram`, `show_forces`, `show_boundary_layer`, `show_flow_topology`
+- Refinement: `update_representation`, `update_color`, `update_display_property`, `show_or_hide`
 - Knowledge: `get_ontology`
-- Utilities: `save_screenshot`, `set_view`
+- Utilities: `save_screenshot`, `set_view`, `delete_filter`, `clear_all_filters`
 
 ### CFDWorkflows
 
@@ -139,7 +140,7 @@ Implementation of workflow tools. Each method:
 
 ### CFDAnalysis
 
-40+ CFD analysis tools. Two categories:
+CFD analysis tools in two categories:
 
 **Compute tools** (return data, no visualization):
 - `compute_vortex_field` → Q-criterion, vorticity, or lambda2 field

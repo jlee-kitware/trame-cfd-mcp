@@ -12,22 +12,185 @@ from paraview import simple
 class CFDWorkflows:
     """High-level workflow tools for CFD visualization."""
     
-    def __init__(self, cfd_analysis, on_pipeline_changed=None):
+    def __init__(self, cfd_analysis, on_pipeline_changed=None, app=None):
         """
         Initialize with reference to CFDAnalysis for internal tool access.
         
         Args:
             cfd_analysis: CFDAnalysis instance
             on_pipeline_changed: Optional callback to notify when pipeline changes
+            app: Optional trame app for rendering charts
         """
         self._mcp = cfd_analysis  # Keep as _mcp for minimal code changes
         self._provenance_registry = {}  # proxy_name -> provenance dict
         self._on_pipeline_changed = on_pipeline_changed
+        self._app = app
+        self._chart_counter = 0
     
     def _notify_pipeline_changed(self):
         """Notify that pipeline has changed (for UI updates like pipeline browser)."""
+        # Use trame's controller if available (this is what ptc's PipelineBrowser listens to)
+        if self._app and hasattr(self._app, 'ctrl'):
+            if self._app.ctrl.on_data_change.exists():
+                print(f"[_notify_pipeline_changed] Calling app.ctrl.on_data_change()")
+                self._app.ctrl.on_data_change()
+            # Also try view_update which triggers render
+            if self._app.ctrl.view_update.exists():
+                self._app.ctrl.view_update()
+        else:
+            print(f"[_notify_pipeline_changed] No ctrl - app={self._app is not None}")
+        # Also call legacy callback if provided
         if self._on_pipeline_changed:
             self._on_pipeline_changed()
+    
+    def _create_chart_table(self, chart_type: str, title: str, data: dict, metadata: dict = None) -> str:
+        """
+        Create a vtkTable proxy for chart data.
+        
+        Returns the proxy name which can be used to retrieve data for plotting.
+        """
+        import vtk
+        from paraview import servermanager
+        
+        self._chart_counter += 1
+        proxy_name = f"Chart_{self._chart_counter}_{chart_type}"
+        
+        # Create vtkTable
+        table = vtk.vtkTable()
+        
+        # Add columns based on chart type
+        if chart_type == "boundary_layer":
+            x_arr = vtk.vtkFloatArray()
+            x_arr.SetName("u_Ue")  # normalized velocity
+            y_arr = vtk.vtkFloatArray()
+            y_arr.SetName("y_wall")  # wall distance
+            
+            x_data = data.get("x", [])
+            y_data = data.get("y", [])
+            
+            for x, y in zip(x_data, y_data):
+                x_arr.InsertNextValue(float(x))
+                y_arr.InsertNextValue(float(y))
+            
+            table.AddColumn(x_arr)
+            table.AddColumn(y_arr)
+            
+        elif chart_type == "histogram":
+            x_arr = vtk.vtkFloatArray()
+            x_arr.SetName("bin_center")
+            y_arr = vtk.vtkFloatArray()
+            y_arr.SetName("count")
+            
+            for x, y in zip(data.get("x", []), data.get("y", [])):
+                x_arr.InsertNextValue(float(x))
+                y_arr.InsertNextValue(float(y))
+            
+            table.AddColumn(x_arr)
+            table.AddColumn(y_arr)
+            
+        elif chart_type == "force_distribution":
+            x_arr = vtk.vtkFloatArray()
+            x_arr.SetName("section")
+            x_data = data.get("x", [])
+            for x in x_data:
+                x_arr.InsertNextValue(float(x))
+            table.AddColumn(x_arr)
+            
+            # Add each series as a column
+            for series_name, values in data.get("series", {}).items():
+                arr = vtk.vtkFloatArray()
+                arr.SetName(series_name)
+                for v in values:
+                    arr.InsertNextValue(float(v))
+                table.AddColumn(arr)
+        else:
+            # Generic: x and y columns
+            x_arr = vtk.vtkFloatArray()
+            x_arr.SetName("x")
+            y_arr = vtk.vtkFloatArray()
+            y_arr.SetName("y")
+            
+            for x, y in zip(data.get("x", []), data.get("y", [])):
+                x_arr.InsertNextValue(float(x))
+                y_arr.InsertNextValue(float(y))
+            
+            table.AddColumn(x_arr)
+            table.AddColumn(y_arr)
+        
+        # Store metadata as field data
+        if metadata:
+            for key, value in metadata.items():
+                if isinstance(value, (int, float)):
+                    arr = vtk.vtkFloatArray()
+                    arr.SetName(f"meta_{key}")
+                    arr.InsertNextValue(float(value))
+                    table.GetFieldData().AddArray(arr)
+                elif isinstance(value, str):
+                    arr = vtk.vtkStringArray()
+                    arr.SetName(f"meta_{key}")
+                    arr.InsertNextValue(value)
+                    table.GetFieldData().AddArray(arr)
+        
+        # Store chart_type and title as field data
+        type_arr = vtk.vtkStringArray()
+        type_arr.SetName("chart_type")
+        type_arr.InsertNextValue(chart_type)
+        table.GetFieldData().AddArray(type_arr)
+        
+        title_arr = vtk.vtkStringArray()
+        title_arr.SetName("chart_title")
+        title_arr.InsertNextValue(title)
+        table.GetFieldData().AddArray(title_arr)
+        
+        # Store axis labels
+        if "x_label" in data:
+            arr = vtk.vtkStringArray()
+            arr.SetName("x_label")
+            arr.InsertNextValue(data["x_label"])
+            table.GetFieldData().AddArray(arr)
+        if "y_label" in data:
+            arr = vtk.vtkStringArray()
+            arr.SetName("y_label")
+            arr.InsertNextValue(data["y_label"])
+            table.GetFieldData().AddArray(arr)
+        
+        # Create TrivialProducer to hold the table
+        producer = simple.TrivialProducer(registrationName=proxy_name)
+        producer.GetClientSideObject().SetOutput(table)
+        producer.UpdatePipeline()
+        
+        print(f"[_create_chart_table] Created proxy '{proxy_name}', ID={producer.GetGlobalIDAsString()}")
+        
+        # Register as internal proxy so it doesn't show visibility toggle in pipeline browser
+        # (vtkTable has no 3D representation)
+        if self._app and hasattr(self._app, 'ctrl') and self._app.ctrl.register_internal_proxy.exists():
+            self._app.ctrl.register_internal_proxy(producer)
+            print(f"[_create_chart_table] Registered as internal proxy")
+        
+        self._notify_pipeline_changed()
+        
+        return proxy_name
+    
+    def get_chart_proxy(self, proxy_name: str):
+        """Get a chart data proxy by name."""
+        return simple.FindSource(proxy_name)
+    
+    def _render_chart(self, proxy_name: str):
+        """Render a chart by proxy name if app is available."""
+        print(f"[_render_chart] proxy_name={proxy_name}, app={self._app is not None}")
+        if self._app and hasattr(self._app, 'render_chart_from_proxy'):
+            print(f"[_render_chart] Calling render_chart_from_proxy")
+            self._app.render_chart_from_proxy(proxy_name)
+        else:
+            print(f"[_render_chart] Cannot render - app or render_chart_from_proxy not available")
+    
+    def _render_chart_direct(self, chart_data: dict):
+        """Render a chart directly from data dict (for complex charts that don't fit vtkTable)."""
+        print(f"[_render_chart_direct] chart_type={chart_data.get('chart_type')}, app={self._app is not None}")
+        if self._app and hasattr(self._app, 'render_analysis_chart'):
+            self._app.render_analysis_chart(chart_data)
+        else:
+            print(f"[_render_chart_direct] Cannot render - app or render_analysis_chart not available")
     
     def _register_provenance(self, proxy_name: str, provenance: dict):
         """Register provenance for a proxy to enable chaining."""
@@ -39,15 +202,39 @@ class CFDWorkflows:
         return self._provenance_registry.get(proxy_name)
     
     def _get_data_reader(self):
-        """Get the original data reader (not CSV/temporary readers)."""
+        """Get the original data reader or Live-extracted source."""
         # Skip temporary readers like CSVReader created by charts
         skip_types = ['CSVReader', 'DelimitedTextReader']
         
+        # Debug: list all sources
+        print(f"[_get_data_reader] Available sources:")
+        for name, proxy in simple.GetSources().items():
+            source_name = name[0] if isinstance(name, tuple) else name
+            xml_name = proxy.GetXMLName()
+            print(f"[_get_data_reader]   '{source_name}' -> {xml_name}")
+        
+        # First, look for traditional file readers
         for name, proxy in simple.GetSources().items():
             xml_name = proxy.GetXMLName()
             if 'Reader' in xml_name and xml_name not in skip_types:
+                print(f"[_get_data_reader] Found reader: {name[0]} ({xml_name})")
                 return proxy
-        return simple.GetActiveSource()
+        
+        # For Live data, look for TrivialProducer sources named "volume" or "surface"
+        # Prefer "volume" over "surface"
+        for preferred in ['volume', 'surface']:
+            for name, proxy in simple.GetSources().items():
+                source_name = name[0] if isinstance(name, tuple) else name
+                xml_name = proxy.GetXMLName()
+                # Check both TrivialProducer and PVTrivialProducer
+                if 'TrivialProducer' in xml_name and source_name == preferred:
+                    print(f"[_get_data_reader] Found Live source: {source_name}")
+                    return proxy
+        
+        # Fall back to active source
+        active = simple.GetActiveSource()
+        print(f"[_get_data_reader] Falling back to active source: {active.GetXMLName() if active else None}")
+        return active
     
     def _get_proxy_name(self, proxy):
         """Get name of a proxy."""
@@ -378,6 +565,10 @@ class CFDWorkflows:
         slice_filter.SliceType.Normal = normal_vec
         simple.UpdatePipeline(proxy=slice_filter)
         
+        # Debug: verify parent relationship
+        print(f"[show_slice] Created {slice_name}, Input={slice_filter.Input}, Input ID={slice_filter.Input.GetGlobalIDAsString() if slice_filter.Input else None}")
+        print(f"[show_slice] Parent proxy: {self._get_proxy_name(proxy)}, ID={proxy.GetGlobalIDAsString()}")
+        
         # Show with representation
         display = simple.Show(slice_filter, view)
         
@@ -459,20 +650,45 @@ class CFDWorkflows:
         
         result = self._mcp.create_histogram_chart(field=field, num_bins=num_bins, proxy_name=proxy_name)
         
-        # Add provenance
-        if "error" not in result:
-            result["provenance"] = {
-                "dataset": self._get_dataset_filename(proxy),
-                "filter_chain": ["Histogram"],
-                "arrays_used": [result.get("field", field)],
-                "parameters": {
-                    "field": result.get("field", field),
-                    "num_bins": num_bins
-                }
-            }
-            result["tip"] = "Chart created. Use save_screenshot() for single chart or save_all_charts() for multiple."
+        if "error" in result:
+            return result
         
-        return result
+        # Create chart data proxy (vtkTable)
+        chart_proxy_name = self._create_chart_table(
+            chart_type="histogram",
+            title=result.get("title", f"Distribution of {field}"),
+            data={
+                "x": result["data"]["x"],
+                "y": result["data"]["y"],
+                "x_label": result.get("x_label", field),
+                "y_label": result.get("y_label", "Count"),
+            },
+            metadata={
+                "field": result.get("field", field),
+                "num_bins": result.get("num_bins", num_bins),
+                "min": result.get("min"),
+                "max": result.get("max"),
+                "mean": result.get("mean"),
+                "std": result.get("std"),
+            }
+        )
+        
+        # Render the chart from proxy
+        self._render_chart(chart_proxy_name)
+        
+        # Return summary with proxy reference (no raw data)
+        return {
+            "status": "created",
+            "chart_proxy": chart_proxy_name,
+            "title": result.get("title"),
+            "field": result.get("field", field),
+            "num_bins": result.get("num_bins", num_bins),
+            "num_points": result.get("num_points"),
+            "min": round(result.get("min", 0), 6),
+            "max": round(result.get("max", 0), 6),
+            "mean": round(result.get("mean", 0), 6),
+            "std": round(result.get("std", 0), 6),
+        }
 
     def show_boundary_layer(self, x_over_chord: float = 0.5, span_fraction: float = 0.5, 
                             probe_length: float = None) -> dict:
@@ -492,8 +708,6 @@ class CFDWorkflows:
             Dict with boundary layer profile data including delta, delta*, theta, H
         """
         import numpy as np
-        import tempfile
-        import os
         
         proxy = self._get_data_reader()
         if proxy is None:
@@ -527,51 +741,14 @@ class CFDWorkflows:
         plot_limit = min(3 * delta, y[u_edge_idx]) if delta > 0 else y[u_edge_idx]
         plot_mask = y <= plot_limit
         
-        # Write CSV for BL profile chart
-        csv_path = os.path.join(tempfile.gettempdir(), 'boundary_layer.csv')
-        with open(csv_path, 'w') as f:
-            f.write('y,u,u_over_Ue\n')
-            for i in np.where(plot_mask)[0]:
-                f.write(f'{y[i]:.6f},{u[i]:.6f},{u_normalized[i]:.6f}\n')
-        
-        original_view = simple.GetActiveView()
-        
         # Get geometry info for labels
         geom = bl_data["geometry"]
         span_axis = geom["span_axis"]
-        x_over_chord = bl_data["x_over_chord"]
+        x_over_chord_val = bl_data["x_over_chord"]
         span_absolute = bl_data["span_absolute"]
         span_frac = bl_data["span_fraction"]
         
-        # ===== BL profile chart =====
-        table = simple.CSVReader(FileName=[csv_path])
-        simple.UpdatePipeline(proxy=table)
-        
-        chart_view = simple.CreateXYPlotView()
-        chart_view.ViewSize = [600, 500]
-        chart_title = f'Boundary Layer at x/c={x_over_chord:.2f}, {span_axis}={span_absolute:.3f} ({span_frac*100:.0f}% span)'
-        chart_view.ChartTitle = chart_title
-        chart_view.BottomAxisTitle = 'u / Ue'
-        chart_view.LeftAxisTitle = 'y (distance from wall)'
-        chart_view.ShowLegend = 0
-        
-        display = simple.Show(table, chart_view)
-        display.XArrayName = 'u_over_Ue'
-        display.UseIndexForXAxis = 0
-        display.SeriesVisibility = ['y']
-        display.SeriesColor = ['y', '0', '0', '0.8']
-        display.SeriesLineThickness = ['y', '2']
-        
-        simple.Render(chart_view)
-        self._mcp._chart_view_queue.append(chart_view)
-        self._mcp._capture_chart_to_gallery(chart_view, chart_title)
-        
-        if original_view:
-            simple.SetActiveView(original_view)
-        
-        # Build result with provenance
-        # Build result - keep lightweight for LLM, store full data internally
-        # Full data stored in _last_bl_results for debug chart and context visualization
+        # Store full data for context visualization
         self._last_bl_results = getattr(self, '_last_bl_results', [])
         full_result = {
             "y": y.tolist(),
@@ -589,27 +766,49 @@ class CFDWorkflows:
         }
         self._last_bl_results.append(full_result)
         
-        result = {
-            "status": "created",
-            "type": "boundary_layer_profile",
-            "surface": bl_data["surface"],
-            "x_over_chord": bl_data["x_over_chord"],
-            "span_fraction": bl_data["span_fraction"],
-            "section_chord": bl_data["section"]["chord"],
-            "num_points": len(y),
-            "u_edge": bl_data["u_edge"],
-            "delta": bl_data["delta"],
-            "delta_star": bl_data["delta_star"],
-            "theta": bl_data["theta"],
-            "shape_factor": bl_data["shape_factor"],
-            "provenance": {
-                "filter_chain": ["MergeBlocks", "ExtractSurface", "Clip", "Slice", "ResampleWithDataset"],
-                "arrays_used": ["Velocity"],
-            },
-            "tip": "BL profile chart created. After all BL calls: save_all_charts() for charts, show_boundary_layer_context() for 3D visualization."
-        }
+        # Create chart data proxy (vtkTable)
+        chart_title = f'Boundary Layer at x/c={x_over_chord_val:.2f}, {span_axis}={span_absolute:.3f} ({span_frac*100:.0f}% span)'
         
-        return result
+        proxy_name = self._create_chart_table(
+            chart_type="boundary_layer",
+            title=chart_title,
+            data={
+                "x": u_normalized[plot_mask].tolist(),
+                "y": y[plot_mask].tolist(),
+                "x_label": "u / Ue",
+                "y_label": "y (distance from wall)",
+            },
+            metadata={
+                "surface": bl_data["surface"],
+                "x_over_chord": bl_data["x_over_chord"],
+                "span_fraction": bl_data["span_fraction"],
+                "u_edge": bl_data["u_edge"],
+                "delta": bl_data["delta"],
+                "delta_star": bl_data["delta_star"],
+                "theta": bl_data["theta"],
+                "shape_factor": bl_data["shape_factor"],
+            }
+        )
+        
+        # Render the chart from proxy
+        self._render_chart(proxy_name)
+        
+        # Return summary with proxy reference (no raw data)
+        return {
+            "status": "created",
+            "chart_proxy": proxy_name,
+            "title": chart_title,
+            "surface": bl_data["surface"],
+            "x_over_chord": round(bl_data["x_over_chord"], 4),
+            "span_fraction": round(bl_data["span_fraction"], 4),
+            "num_points": int(plot_mask.sum()),
+            # Key BL metrics
+            "u_edge": round(bl_data["u_edge"], 4),
+            "delta_mm": round(bl_data["delta"] * 1000, 3),
+            "delta_star_mm": round(bl_data["delta_star"] * 1000, 3),
+            "theta_mm": round(bl_data["theta"] * 1000, 3),
+            "shape_factor": round(bl_data["shape_factor"], 3),
+        }
 
     def create_section_debug_chart(self, bl_results: list = None, title: str = None) -> dict:
         """
@@ -620,11 +819,8 @@ class CFDWorkflows:
             title: Optional chart title
             
         Returns:
-            Dict with chart info
+            Dict with Plotly-compatible chart data
         """
-        import tempfile
-        import os
-        
         # Use internal cache if no results provided
         if bl_results is None:
             bl_results = getattr(self, '_last_bl_results', [])
@@ -647,26 +843,23 @@ class CFDWorkflows:
         le_x = section_data['le'][stream_idx]
         chord = section_data['chord']
         
-        # Write section contour CSV
+        # Build section contour data
         suction = section_data['suction_contour']
         pressure = section_data['pressure_contour']
         
-        section_csv = os.path.join(tempfile.gettempdir(), 'debug_section.csv')
-        with open(section_csv, 'w') as f:
-            f.write('x_over_c,z_over_c\n')
-            for pt in suction:
-                xc = (pt[0] - le_x) / chord
-                zc = pt[1] / chord
-                f.write(f'{xc:.6f},{zc:.6f}\n')
-            for pt in pressure:
-                xc = (pt[0] - le_x) / chord
-                zc = pt[1] / chord
-                f.write(f'{xc:.6f},{zc:.6f}\n')
+        section_x = []
+        section_y = []
+        for pt in suction:
+            section_x.append((pt[0] - le_x) / chord)
+            section_y.append(pt[1] / chord)
+        for pt in pressure:
+            section_x.append((pt[0] - le_x) / chord)
+            section_y.append(pt[1] / chord)
         
-        # Write probe lines and sample points
+        # Build probe lines and markers
         probe_lines = []
-        surface_markers = []
-        all_sample_points = []  # All sample points along all probes
+        surface_markers_x = []
+        surface_markers_y = []
         
         for r in bl_results:
             if 'error' in r:
@@ -683,111 +876,37 @@ class CFDWorkflows:
             xc_end = (end_x - le_x) / chord
             zc_end = end_z / chord
             
-            probe_lines.append({'xc': xc, 'zc': zc, 'xc_end': xc_end, 'zc_end': zc_end})
-            surface_markers.append({'xc': xc, 'zc': zc})
-            
-            # Compute sample point positions along the probe
-            if 'y' in r:
-                y_vals = r['y']  # arc_length values
-                for y_dist in y_vals:
-                    sample_x = pt[stream_idx] + y_dist * norm[stream_idx]
-                    sample_z = pt[vert_idx] + y_dist * norm[vert_idx]
-                    sample_xc = (sample_x - le_x) / chord
-                    sample_zc = sample_z / chord
-                    all_sample_points.append({'xc': sample_xc, 'zc': sample_zc})
+            probe_lines.append({
+                'x': [xc, xc_end],
+                'y': [zc, zc_end]
+            })
+            surface_markers_x.append(xc)
+            surface_markers_y.append(zc)
         
-        # Write probe lines (each as separate file for different colors)
-        for i, p in enumerate(probe_lines):
-            probe_file = os.path.join(tempfile.gettempdir(), f'probe_line_{i}.csv')
-            with open(probe_file, 'w') as f:
-                f.write('x_over_c,z_over_c\n')
-                f.write(f'{p["xc"]:.6f},{p["zc"]:.6f}\n')
-                f.write(f'{p["xc_end"]:.6f},{p["zc_end"]:.6f}\n')
+        chart_data = {
+            "status": "created",
+            "chart_type": "section_debug",
+            "title": title or "Airfoil Section with Probe Locations",
+            "x_label": "x/c",
+            "y_label": "z/c",
+            "data": {
+                "section": {"x": section_x, "y": section_y},
+                "probes": probe_lines,
+                "markers": {"x": surface_markers_x, "y": surface_markers_y},
+            },
+            "num_probes": len(probe_lines),
+            "section_chord": chord,
+        }
         
-        # Write surface markers
-        markers_csv = os.path.join(tempfile.gettempdir(), 'probe_markers.csv')
-        with open(markers_csv, 'w') as f:
-            f.write('x_over_c,z_over_c\n')
-            for m in surface_markers:
-                f.write(f'{m["xc"]:.6f},{m["zc"]:.6f}\n')
-        
-        # Write all sample points
-        samples_csv = os.path.join(tempfile.gettempdir(), 'sample_points.csv')
-        with open(samples_csv, 'w') as f:
-            f.write('x_over_c,z_over_c\n')
-            for sp in all_sample_points:
-                f.write(f'{sp["xc"]:.6f},{sp["zc"]:.6f}\n')
-        
-        # Create chart
-        section_table = simple.CSVReader(FileName=[section_csv])
-        simple.UpdatePipeline(proxy=section_table)
-        
-        markers_table = simple.CSVReader(FileName=[markers_csv])
-        simple.UpdatePipeline(proxy=markers_table)
-        
-        chart = simple.CreateXYPlotView()
-        chart.ViewSize = [800, 500]
-        chart.ChartTitle = title or 'Airfoil Section with Probe Locations'
-        chart.BottomAxisTitle = 'x/c'
-        chart.LeftAxisTitle = 'z/c'
-        chart.ShowLegend = 0
-        
-        # Section contour (black)
-        section_display = simple.Show(section_table, chart)
-        section_display.XArrayName = 'x_over_c'
-        section_display.UseIndexForXAxis = 0
-        section_display.SeriesVisibility = ['z_over_c']
-        section_display.SeriesColor = ['z_over_c', '0', '0', '0']
-        section_display.SeriesLineThickness = ['z_over_c', '2']
-        
-        # Probe lines (colored)
-        colors = ['0.8,0,0', '0,0.6,0', '0,0,0.8', '0.8,0.4,0', '0.5,0,0.8', '0,0.6,0.6', '0.6,0,0.6']
-        for i in range(len(probe_lines)):
-            probe_file = os.path.join(tempfile.gettempdir(), f'probe_line_{i}.csv')
-            probe_table = simple.CSVReader(FileName=[probe_file])
-            simple.UpdatePipeline(proxy=probe_table)
-            
-            probe_display = simple.Show(probe_table, chart)
-            probe_display.XArrayName = 'x_over_c'
-            probe_display.UseIndexForXAxis = 0
-            probe_display.SeriesVisibility = ['z_over_c']
-            c = colors[i % len(colors)].split(',')
-            probe_display.SeriesColor = ['z_over_c', c[0], c[1], c[2]]
-            probe_display.SeriesLineThickness = ['z_over_c', '2']
-        
-        # Surface markers (red circles)
-        markers_display = simple.Show(markers_table, chart)
-        markers_display.XArrayName = 'x_over_c'
-        markers_display.UseIndexForXAxis = 0
-        markers_display.SeriesVisibility = ['z_over_c']
-        markers_display.SeriesColor = ['z_over_c', '1', '0', '0']
-        markers_display.SeriesLineStyle = ['z_over_c', '0']  # No line
-        markers_display.SeriesMarkerStyle = ['z_over_c', '4']  # Filled circle
-        markers_display.SeriesMarkerSize = ['z_over_c', '12']
-        
-        # Sample points along probes (small blue dots)
-        if all_sample_points:
-            samples_table = simple.CSVReader(FileName=[samples_csv])
-            simple.UpdatePipeline(proxy=samples_table)
-            
-            samples_display = simple.Show(samples_table, chart)
-            samples_display.XArrayName = 'x_over_c'
-            samples_display.UseIndexForXAxis = 0
-            samples_display.SeriesVisibility = ['z_over_c']
-            samples_display.SeriesColor = ['z_over_c', '0', '0', '0.8']
-            samples_display.SeriesLineStyle = ['z_over_c', '0']  # No line
-            samples_display.SeriesMarkerStyle = ['z_over_c', '4']  # Filled circle
-            samples_display.SeriesMarkerSize = ['z_over_c', '3']
-        
-        simple.Render(chart)
-        self._mcp._chart_view_queue.append(chart)
+        # Render the chart directly (complex nested structure doesn't fit vtkTable)
+        self._render_chart_direct(chart_data)
         
         return {
             "status": "created",
-            "type": "section_debug_chart",
+            "chart_type": "section_debug",
+            "title": chart_data["title"],
             "num_probes": len(probe_lines),
-            "num_sample_points": len(all_sample_points),
-            "section_chord": chord
+            "section_chord": round(chord, 4),
         }
 
     def show_boundary_layer_context(self, span_fraction: float = 0.5) -> dict:
@@ -1028,17 +1147,40 @@ class CFDWorkflows:
         
         result = self._mcp.create_force_distribution_chart(proxy_name=proxy_name)
         
-        # Add provenance
-        if "error" not in result:
-            result["provenance"] = {
-                "dataset": self._get_dataset_filename(proxy),
-                "filter_chain": ["ExtractSurface", "Calculator", "PlotOverLine"],
-                "arrays_used": ["p", "Normals"],
-                "parameters": {}
-            }
-            result["tip"] = "Chart created. Use save_screenshot() for single chart or save_all_charts() for multiple."
+        if "error" in result:
+            return result
         
-        return result
+        # Create chart data proxy (vtkTable)
+        chart_proxy_name = self._create_chart_table(
+            chart_type="force_distribution",
+            title=result.get("title", "Force Distribution"),
+            data={
+                "x": result["data"]["x"],
+                "series": result["data"]["series"],
+                "x_label": result.get("x_label", "Position"),
+                "y_label": result.get("y_label", "Force"),
+            },
+            metadata={
+                "force_axis": result.get("force_axis"),
+                "distribution_axis": result.get("distribution_axis"),
+                "total_force": result.get("total_force"),
+            }
+        )
+        
+        # Render the chart from proxy
+        self._render_chart(chart_proxy_name)
+        
+        # Return summary with proxy reference (no raw data)
+        return {
+            "status": "created",
+            "chart_proxy": chart_proxy_name,
+            "title": result.get("title"),
+            "force_axis": result.get("force_axis"),
+            "distribution_axis": result.get("distribution_axis"),
+            "total_force": round(result.get("total_force", 0), 6),
+            "num_bins": result.get("num_bins"),
+            "num_body_cells": result.get("num_body_cells"),
+        }
 
     def analyze_data(self) -> dict:
         """

@@ -22,20 +22,24 @@ with open(_ONTOLOGY_PATH) as f:
 class WorkflowMCP:
     """MCP with workflow tools and refinement capabilities."""
     
-    def __init__(self, base_mcp):
+    def __init__(self, base_mcp, app=None):
         """
         Initialize workflow MCP.
         
         Args:
             base_mcp: ParaViewMCP instance from trame-llm
+            app: Optional trame app for rendering charts
         """
         self._base_mcp = base_mcp
+        self._app = app
         self._analysis = CFDAnalysis()
         self._workflows = CFDWorkflows(
             self._analysis, 
-            on_pipeline_changed=self._base_mcp.pipeline_changed
+            on_pipeline_changed=self._base_mcp.pipeline_changed,
+            app=app
         )
         self._ontology = CFD_ONTOLOGY
+        print(f"[WorkflowMCP] Initialized with app={app is not None}, has_render={hasattr(app, 'render_analysis_chart') if app else False}")
     
     @property
     def mcp(self) -> dict:
@@ -249,6 +253,179 @@ class WorkflowMCP:
         """
         return self._ontology
     
+    def set_filter_property(self, proxy_name: str, properties: dict = None) -> dict:
+        """
+        Modify properties of an existing filter.
+        
+        Use this to adjust filter parameters without recreating.
+        
+        Args:
+            proxy_name: Name of the filter to modify
+            properties: Dict of property name-value pairs to set (REQUIRED)
+            
+        Examples:
+            set_filter_property("Streamlines_wake", {"SeedType.NumberOfPoints": 50})
+            set_filter_property("Contour1", {"Isosurfaces": [0.5, 1.0, 1.5]})
+            set_filter_property("Slice1", {"SliceType.Origin": [0,0,0]})
+            
+        Returns:
+            Dict with status and updated properties
+        """
+        if properties is None or not properties:
+            return {"error": "properties argument is required. Example: set_filter_property('Streamlines_wake', {'SeedType.NumberOfPoints': 50})"}
+        try:
+            proxy = simple.FindSource(proxy_name)
+            if proxy is None:
+                return {"error": f"Filter '{proxy_name}' not found"}
+            
+            updated = {}
+            errors = []
+            
+            for prop_name, value in properties.items():
+                try:
+                    # Handle nested properties like SeedType.NumberOfPoints
+                    if "." in prop_name:
+                        parts = prop_name.split(".")
+                        obj = proxy
+                        for part in parts[:-1]:
+                            obj = getattr(obj, part)
+                        setattr(obj, parts[-1], value)
+                    else:
+                        setattr(proxy, prop_name, value)
+                    updated[prop_name] = value
+                except Exception as e:
+                    errors.append(f"{prop_name}: {e}")
+            
+            # Update pipeline
+            simple.UpdatePipeline(proxy=proxy)
+            simple.Render()
+            self._base_mcp.pipeline_changed()
+            
+            result = {
+                "status": "modified",
+                "proxy_name": proxy_name,
+                "updated": updated,
+            }
+            if errors:
+                result["errors"] = errors
+            
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def get_filter_properties(self, proxy_name: str) -> dict:
+        """
+        Get current properties of a filter.
+        
+        Use this to inspect filter settings before modifying.
+        
+        Args:
+            proxy_name: Name of the filter
+            
+        Returns:
+            Dict with filter type and properties
+        """
+        try:
+            proxy = simple.FindSource(proxy_name)
+            if proxy is None:
+                return {"error": f"Filter '{proxy_name}' not found"}
+            
+            def get_prop_value(prop):
+                """Extract serializable value from a property."""
+                data = None
+                
+                # Try GetData first
+                if hasattr(prop, 'GetData'):
+                    try:
+                        data = prop.GetData()
+                    except:
+                        pass
+                
+                # If that didn't work or returned non-serializable, try other methods
+                if data is None or hasattr(data, 'GetClassName'):
+                    # Try to get elements for vector/array properties
+                    if hasattr(prop, 'GetNumberOfElements'):
+                        n = prop.GetNumberOfElements()
+                        if n > 0 and n < 100:  # Limit to reasonable size
+                            try:
+                                data = [prop.GetElement(i) for i in range(n)]
+                                if len(data) == 1:
+                                    data = data[0]
+                            except:
+                                pass
+                
+                # Convert to Python types if needed
+                if data is not None:
+                    if hasattr(data, '__iter__') and not isinstance(data, (str, list)):
+                        try:
+                            data = list(data)
+                        except:
+                            data = str(data)
+                    # Skip if still not serializable
+                    if not isinstance(data, (str, int, float, bool, list, type(None))):
+                        data = str(data)
+                
+                return data
+            
+            props = {}
+            # Get commonly useful properties
+            prop_names = proxy.ListProperties()
+            for name in prop_names:
+                try:
+                    prop = proxy.GetProperty(name)
+                    if prop is not None:
+                        data = get_prop_value(prop)
+                        if data is not None:
+                            props[name] = data
+                except:
+                    pass
+            
+            # For StreamTracer, also get SeedType properties
+            if proxy.GetXMLName() == 'StreamTracer' and hasattr(proxy, 'SeedType'):
+                try:
+                    seed = proxy.SeedType
+                    seed_props = {}
+                    for attr in ['Center', 'Radius', 'NumberOfPoints', 'Point1', 'Point2', 'Resolution']:
+                        if hasattr(seed, attr):
+                            try:
+                                val = getattr(seed, attr)
+                                # Convert VectorProperty or other ParaView types
+                                if hasattr(val, 'GetData'):
+                                    val = val.GetData()
+                                if hasattr(val, '__iter__') and not isinstance(val, str):
+                                    val = [float(x) if isinstance(x, (int, float)) else str(x) for x in val]
+                                elif isinstance(val, (int, float)):
+                                    val = float(val) if isinstance(val, float) else int(val)
+                                else:
+                                    val = str(val) if val is not None else None
+                                if val is not None:
+                                    seed_props[attr] = val
+                            except:
+                                pass
+                    if seed_props:
+                        props['SeedType_properties'] = seed_props
+                        props['SeedType_type'] = str(type(seed).__name__)
+                except:
+                    pass
+            
+            # Final pass to ensure all values are JSON serializable
+            clean_props = {}
+            for k, v in props.items():
+                try:
+                    import json
+                    json.dumps(v)  # Test if serializable
+                    clean_props[k] = v
+                except:
+                    clean_props[k] = str(v)  # Convert to string if not
+            
+            return {
+                "proxy_name": proxy_name,
+                "type": proxy.GetXMLName(),
+                "properties": clean_props,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+    
     def delete_filter(self, proxy_name: str) -> dict:
         """
         Delete a filter from the pipeline.
@@ -343,32 +520,6 @@ class WorkflowMCP:
             "count": count,
             "tip": "Scalar bars hidden. Use update_color to show a specific one."
         }
-    
-    def get_chart_gallery(self) -> dict:
-        """
-        Get list of chart thumbnails created during this session.
-        
-        Returns base64-encoded PNG images of charts (histograms, BL profiles, etc.)
-        that can be displayed in a gallery UI.
-        
-        Returns:
-            Dict with list of charts, each with title and base64 image
-        """
-        charts = self._analysis.get_chart_gallery()
-        return {
-            "count": len(charts),
-            "charts": charts
-        }
-    
-    def clear_charts(self) -> dict:
-        """
-        Clear both the chart queue (ParaView views) and chart gallery (thumbnails).
-        
-        Use this to free resources and start fresh.
-        """
-        self._analysis._chart_view_queue = []
-        self._analysis.clear_chart_gallery()
-        return {"status": "cleared"}
     
     def get_mcp(self) -> dict:
         """Return MCP declaration with workflow and refinement tools."""
@@ -471,14 +622,13 @@ When explaining visualizations, use the ontology to provide:
                 # Knowledge and utilities
                 self.get_ontology,
                 self.save_screenshot,
-                self.save_all_charts,
                 self.save_state,
                 self.set_view,
+                self.set_filter_property,
+                self.get_filter_properties,
                 self.delete_filter,
                 self.clear_all_filters,
                 self.hide_all_scalar_bars,
-                self.get_chart_gallery,
-                self.clear_charts,
             ],
             "resources": {},
         }

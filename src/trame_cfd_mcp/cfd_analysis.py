@@ -34,7 +34,6 @@ class CFDAnalysis:
     
     def __init__(self):
         self._chart_view_queue = []
-        self._chart_gallery = []  # List of {title, base64_image} for UI display
         self._body_bounds_cache = {}
         self._analysis_log = []  # Track analysis decisions for provenance
     
@@ -58,42 +57,6 @@ class CFDAnalysis:
     def clear_analysis_log(self):
         """Clear the analysis log. Call at start of each workflow."""
         self._analysis_log = []
-    
-    def _capture_chart_to_gallery(self, chart_view, title: str):
-        """Capture a chart view as base64 PNG and add to gallery."""
-        import tempfile
-        import base64
-        import os
-        
-        try:
-            simple.Render(chart_view)
-            
-            # Save to temp file
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
-                temp_path = f.name
-            
-            simple.SaveScreenshot(temp_path, chart_view, ImageResolution=[400, 250])
-            
-            # Read as base64
-            with open(temp_path, 'rb') as f:
-                img_data = base64.b64encode(f.read()).decode('utf-8')
-            
-            os.unlink(temp_path)
-            
-            self._chart_gallery.append({
-                'title': title,
-                'image': f'data:image/png;base64,{img_data}'
-            })
-        except Exception as e:
-            print(f"[CHART] Failed to capture chart: {e}")
-    
-    def get_chart_gallery(self) -> list:
-        """Get list of chart thumbnails for UI display."""
-        return self._chart_gallery.copy()
-    
-    def clear_chart_gallery(self):
-        """Clear the chart gallery."""
-        self._chart_gallery = []
 
     def extract_filter_chain(self, proxy) -> list:
         """
@@ -203,9 +166,12 @@ class CFDAnalysis:
         # Get available fields from proxy
         data = proxy.GetClientSideObject().GetOutputDataObject(0)
         
-        # Handle multiblock
-        if data.IsA("vtkMultiBlockDataSet"):
-            block = data.GetBlock(0)
+        # Handle composite datasets (multiblock, partitioned)
+        if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
+            if data.IsA("vtkPartitionedDataSet"):
+                block = data.GetPartition(0) if data.GetNumberOfPartitions() > 0 else None
+            else:
+                block = data.GetBlock(0)
             while block and block.IsA("vtkMultiBlockDataSet"):
                 block = block.GetBlock(0)
             if block:
@@ -913,7 +879,7 @@ class CFDAnalysis:
                 return {"error": "No data available from proxy"}
             
             # Check if multiblock and merge if needed
-            if data.IsA("vtkMultiBlockDataSet"):
+            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
                 merge_input = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge_input)
                 data = merge_input.GetClientSideObject().GetOutputDataObject(0)
@@ -1066,7 +1032,7 @@ class CFDAnalysis:
             data = extracted.GetClientSideObject().GetOutputDataObject(0)
             
             # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet"):
+            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
                 merge = simple.MergeBlocks(Input=extracted)
                 simple.UpdatePipeline(proxy=merge)
                 merged_data = merge.GetClientSideObject().GetOutputDataObject(0)
@@ -1110,7 +1076,7 @@ class CFDAnalysis:
             data = extracted.GetClientSideObject().GetOutputDataObject(0)
             
             # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet"):
+            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
                 merge = simple.MergeBlocks(Input=extracted)
                 simple.UpdatePipeline(proxy=merge)
                 data = merge.GetClientSideObject().GetOutputDataObject(0)
@@ -1187,7 +1153,7 @@ class CFDAnalysis:
             data = extracted.GetClientSideObject().GetOutputDataObject(0)
             
             # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet"):
+            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
                 merge = simple.MergeBlocks(Input=extracted)
                 simple.UpdatePipeline(proxy=merge)
                 data = merge.GetClientSideObject().GetOutputDataObject(0)
@@ -1370,7 +1336,7 @@ class CFDAnalysis:
             simple.UpdatePipeline(proxy=proxy)
             data = proxy.GetClientSideObject().GetOutputDataObject(0)
             
-            if data.IsA("vtkMultiBlockDataSet"):
+            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
                 merge = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge)
                 input_for_gradient = merge
@@ -1507,7 +1473,7 @@ class CFDAnalysis:
         return {
             "field": field_name,
             "num_points": len(arr),
-            "bins": bin_edges.tolist(),
+            "bin_edges": bin_edges.tolist(),
             "counts": counts.tolist(),
             "min": float(arr.min()),
             "max": float(arr.max()),
@@ -1723,7 +1689,7 @@ out.GetPointData().AddArray(arr)
             
             # Merge blocks if multiblock
             data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            if data.IsA("vtkMultiBlockDataSet"):
+            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
                 merge_input = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge_input)
             else:
@@ -1993,7 +1959,7 @@ out.GetPointData().AddArray(arr)
             
             # Merge if multiblock
             data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            if data.IsA("vtkMultiBlockDataSet"):
+            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
                 merge_input = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge_input)
             else:
@@ -2347,9 +2313,7 @@ out.GetPointData().AddArray(arr)
         proxy_name: str = None
     ) -> dict:
         """
-        Create bar chart showing field distribution (VISUALIZATION ONLY).
-        
-        Uses field_histogram() for data, then creates ParaView chart.
+        Compute field histogram and return Plotly-compatible data.
         
         Args:
             field: Field name or semantic type (e.g., "velocity", "pressure")
@@ -2357,11 +2321,8 @@ out.GetPointData().AddArray(arr)
             proxy_name: Source proxy name
             
         Returns:
-            Dict with chart info and statistics
+            Dict with chart data for Plotly visualization
         """
-        # Save original view to restore later (charts create new views)
-        original_view = simple.GetActiveView()
-        
         # Get histogram data from analysis function
         hist_data = self.field_histogram(
             field=field,
@@ -2373,62 +2334,27 @@ out.GetPointData().AddArray(arr)
             return hist_data
         
         try:
-            proxy = self._get_proxy(proxy_name)
-            original_source = simple.GetActiveSource()  # Save for restore
             field_name = hist_data["field"]
+            bin_edges = hist_data["bin_edges"]
+            counts = hist_data["counts"]
             
-            # Merge if multiblock
-            simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            if data.IsA("vtkMultiBlockDataSet"):
-                merge = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge)
-                hist_input = merge
-            else:
-                merge = None
-                hist_input = proxy
-            
-            # Create histogram filter for visualization
-            hist = simple.Histogram(Input=hist_input)
-            hist.SelectInputArray = ['POINTS', self._resolve_field_type(field, proxy)]
-            hist.BinCount = num_bins
-            
-            # Use magnitude for vectors
-            if "Magnitude" in field_name:
-                hist.Component = 'Magnitude'
-            
-            simple.UpdatePipeline(proxy=hist)
-            
-            # Create bar chart view
-            chart_view = simple.CreateBarChartView()
-            chart_view.ViewSize = [800, 400]
-            chart_title = f'Distribution of {field_name}'
-            chart_view.ChartTitle = chart_title
-            
-            display = simple.Show(hist, chart_view)
-            simple.Render(chart_view)
-            
-            self._chart_view_queue.append(chart_view)
-            self._capture_chart_to_gallery(chart_view, chart_title)
-            
-            if merge:
-                simple.Delete(merge)
-            
-            # Restore active source and view
-            if original_source:
-                simple.SetActiveSource(original_source)
-            if original_view:
-                simple.SetActiveView(original_view)
-            
-            # Cache full data internally, return lightweight result
-            self._last_histogram_data = hist_data
+            # Compute bin centers for plotting
+            bin_centers = [(bin_edges[i] + bin_edges[i+1]) / 2 for i in range(len(counts))]
             
             return {
                 "status": "created",
                 "chart_type": "histogram",
+                "title": f"Distribution of {field_name}",
+                "x_label": field_name,
+                "y_label": "Count",
+                "data": {
+                    "x": bin_centers,
+                    "y": counts if isinstance(counts, list) else counts.tolist(),
+                    "bin_edges": bin_edges if isinstance(bin_edges, list) else bin_edges.tolist(),
+                },
                 "field": hist_data["field"],
                 "num_points": hist_data["num_points"],
-                "num_bins": len(hist_data["counts"]),
+                "num_bins": len(counts),
                 "min": hist_data["min"],
                 "max": hist_data["max"],
                 "mean": hist_data["mean"],
@@ -2446,9 +2372,7 @@ out.GetPointData().AddArray(arr)
         proxy_name: str = None
     ) -> dict:
         """
-        Create XY chart showing force distribution (VISUALIZATION ONLY).
-        
-        Uses compute_force_distribution() for data, then creates ParaView chart.
+        Compute force distribution along an axis and return Plotly-compatible data.
         
         Args:
             force_axis: "auto"/"drag", "lift", or "x"/"y"/"z"
@@ -2457,7 +2381,7 @@ out.GetPointData().AddArray(arr)
             proxy_name: Source proxy name
             
         Returns:
-            Dict with chart info and force data
+            Dict with chart data for Plotly visualization
         """
         # Get force distribution data from analysis function
         dist_data = self.compute_force_distribution(
@@ -2471,60 +2395,27 @@ out.GetPointData().AddArray(arr)
             return dist_data
         
         try:
-            import tempfile
-            import os
-            
-            original_source = simple.GetActiveSource()  # Save for restore
-            original_view = simple.GetActiveView()  # Save view too
-            
             stations = dist_data["stations"]
             sectional = dist_data["sectional_force"]
             accumulated = dist_data["accumulated_force"]
             
-            # Write CSV for plotting
-            csv_path = os.path.join(tempfile.gettempdir(), 'force_distribution.csv')
-            with open(csv_path, 'w') as f:
-                f.write('Position,Sectional_Force,Accumulated_Force\n')
-                for i in range(len(stations)):
-                    f.write(f'{stations[i]:.6f},{sectional[i]:.8f},{accumulated[i]:.8f}\n')
-            
-            # Create XY plot
-            table = simple.CSVReader(FileName=[csv_path])
-            simple.UpdatePipeline(proxy=table)
-            
             force_names = {"x": "Drag", "y": "Lift", "z": "Side Force"}
             force_name = force_names.get(dist_data["force_axis"].lower(), "Force")
             
-            chart_view = simple.CreateXYPlotView()
-            chart_view.ViewSize = [800, 400]
-            chart_title = f'Accumulated {force_name} Distribution'
-            chart_view.ChartTitle = chart_title
-            chart_view.BottomAxisTitle = f'{dist_data["distribution_axis"].upper()} Position'
-            chart_view.LeftAxisTitle = f'{force_name}'
-            
-            display = simple.Show(table, chart_view)
-            display.XArrayName = 'Position'
-            display.UseIndexForXAxis = 0
-            display.SeriesVisibility = ['Accumulated_Force', 'Sectional_Force']
-            display.SeriesColor = ['Accumulated_Force', '0', '0', '0.8', 'Sectional_Force', '0.8', '0', '0']
-            display.SeriesLineThickness = ['Accumulated_Force', '2', 'Sectional_Force', '2']
-            
-            simple.Render(chart_view)
-            self._chart_view_queue.append(chart_view)
-            self._capture_chart_to_gallery(chart_view, chart_title)
-            
-            # Restore active source and view
-            if original_source:
-                simple.SetActiveSource(original_source)
-            if original_view:
-                simple.SetActiveView(original_view)
-            
-            # Cache full data internally, return lightweight result
-            self._last_force_data = dist_data
-            
+            # Return Plotly-compatible chart data
             return {
                 "status": "created",
                 "chart_type": "force_distribution",
+                "title": f"Accumulated {force_name} Distribution",
+                "x_label": f'{dist_data["distribution_axis"].upper()} Position',
+                "y_label": force_name,
+                "data": {
+                    "x": stations if isinstance(stations, list) else stations.tolist(),
+                    "series": {
+                        "Accumulated Force": accumulated if isinstance(accumulated, list) else accumulated.tolist(),
+                        "Sectional Force": sectional if isinstance(sectional, list) else sectional.tolist(),
+                    }
+                },
                 "force_axis": dist_data["force_axis"],
                 "distribution_axis": dist_data["distribution_axis"],
                 "total_force": dist_data["total_force"],
@@ -2659,14 +2550,24 @@ out.GetPointData().AddArray(arr)
             else:
                 data = cso.GetOutputDataObject(0)
             
-            if data.IsA("vtkMultiBlockDataSet"):
+            print(f"[detect_streamwise] Initial data type: {data.GetClassName()}")
+            
+            # Handle composite datasets (MultiBlock, Partitioned)
+            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet") or data.IsA("vtkPartitionedDataSetCollection"):
+                print(f"[detect_streamwise] Merging composite dataset")
                 merge = simple.MergeBlocks(Input=proxy)
                 simple.UpdatePipeline(proxy=merge)
                 data = merge.GetClientSideObject().GetOutputDataObject(0)
+                print(f"[detect_streamwise] After merge: {data.GetClassName()}")
             else:
                 merge = None
             
             # Get velocity array
+            print(f"[detect_streamwise] Getting Velocity from {data.GetClassName()}, has PointData: {data.GetPointData() is not None}")
+            if data.GetPointData():
+                print(f"[detect_streamwise] PointData has {data.GetPointData().GetNumberOfArrays()} arrays")
+                for i in range(data.GetPointData().GetNumberOfArrays()):
+                    print(f"[detect_streamwise]   Array {i}: {data.GetPointData().GetArrayName(i)}")
             vel_array = data.GetPointData().GetArray("Velocity")
             if vel_array is None:
                 if merge:
@@ -3791,7 +3692,7 @@ out.GetPointData().AddArray(arr)
         
         merge = None
         # Handle multiblock
-        if data.IsA("vtkMultiBlockDataSet"):
+        if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
             merge = simple.MergeBlocks(Input=proxy)
             simple.UpdatePipeline(proxy=merge)
             data = merge.GetClientSideObject().GetOutputDataObject(0)

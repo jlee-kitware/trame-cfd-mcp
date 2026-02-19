@@ -27,14 +27,14 @@ This launches a web-based UI with:
 
 - **ParaView 3D View** - Interactive rendering of your CFD data
 - **Pipeline Browser** - Click the branch icon (or press 'p') to see/manage filters
-- **Chart Gallery** - Click the chart icon (top-right) to view generated charts
+- **Chart Panel** - Click the chart icon (top-right) to view interactive Plotly charts
 - **LLM Chat** - Click the chat icon (bottom-right) to interact with the assistant
 
 ### Features
 
 - **Conversation continuity** - Follow-up questions remember previous context
 - **Cost tracking** - Ask "what is the session cost?" to see token usage
-- **Chart management** - Charts auto-captured as thumbnails, collapsible panels, delete individual or all
+- **Interactive charts** - Plotly charts with zoom, pan, and hover for boundary layer profiles, histograms, and force distributions
 - **Pipeline updates** - New filters appear in pipeline browser automatically
 
 ### Example Session
@@ -253,8 +253,6 @@ User Query: "Analyze the wake and explain drag"
 | `delete_filter(proxy)` | Remove a filter from pipeline |
 | `clear_all_filters()` | Reset pipeline to original data |
 | `hide_all_scalar_bars()` | Hide color legends (reduces GPU texture usage) |
-| `get_chart_gallery()` | Get chart thumbnails for UI |
-| `clear_charts()` | Clear chart gallery |
 
 ## Key Analysis Features
 
@@ -268,14 +266,14 @@ User Query: "Analyze the wake and explain drag"
 - **Integral quantities**: δ (thickness), δ* (displacement), θ (momentum), H (shape factor)
 - **Flow state indication**: H ≈ 1.3-1.4 turbulent, H ≈ 2.6 laminar, H > 3.5 separation risk
 
-### Chart Gallery
+### Interactive Charts
 
-Workflows that create charts (`show_boundary_layer`, `show_histogram`, `show_forces`) automatically add thumbnails to the chart gallery:
+Workflows that create charts (`show_boundary_layer`, `show_histogram`, `show_forces`) display interactive Plotly charts in the Chart Panel:
 
-- **View in UI**: Click chart icon (top-right) to open gallery drawer
-- **Collapsible panels**: Click chart title to expand/collapse
-- **Delete individual**: X button on each chart
-- **Clear all**: Trash icon in header
+- **View in UI**: Click chart icon (top-right) to open/close the chart panel
+- **Multiple charts**: Charts stack vertically with scrolling
+- **Interactive**: Zoom, pan, hover for data values
+- **Clear button**: Remove all charts to start fresh
 
 ### PBR Rendering
 
