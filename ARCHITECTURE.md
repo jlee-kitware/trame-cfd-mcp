@@ -121,7 +121,7 @@ The LLM can use this to:
 
 ## Component Responsibilities
 
-### WorkflowMCP
+### WorkflowMCP (trame-cfd-mcp)
 
 High-level interface exposed to LLM. Key tool categories:
 - Discovery: `list_data`, `get_fields`, `analyze_data`
@@ -130,7 +130,7 @@ High-level interface exposed to LLM. Key tool categories:
 - Knowledge: `get_ontology`
 - Utilities: `save_screenshot`, `set_view`, `delete_filter`, `clear_all_filters`
 
-### CFDWorkflows
+### CFDWorkflows (trame-cfd-mcp)
 
 Implementation of workflow tools. Each method:
 1. Gets data reader explicitly (not active source)
@@ -138,7 +138,7 @@ Implementation of workflow tools. Each method:
 3. Creates ParaView filters/sources
 4. Returns rich result dict
 
-### CFDAnalysis
+### CFDAnalysis (trame-cfd-mcp)
 
 CFD analysis tools in two categories:
 
@@ -212,7 +212,7 @@ def show_vortices(self, ...):
 - Refinements automatically captured on re-extract
 - Full reproducibility: filter_chain + analysis = complete provenance
 
-### Ontology (ontology.json)
+### Ontology (trame-cfd-mcp, ontology.json)
 
 **Used for EXPLANATION only, not execution.**
 
@@ -222,6 +222,16 @@ CFD domain knowledge that helps LLM interpret results:
 - `analysis_recommendations` → Which tools for which questions
 
 The LLM calls `get_ontology()` when it needs to explain results. The ontology never influences which workflow runs or how it executes.
+
+### ParaViewMCP (trame-llm)
+
+Base ParaView operations from trame-llm. Provides low-level tools:
+- `list_existing_proxies`, `activate_proxy` - proxy management
+- `list_properties`, `update_property` - property inspection/modification
+- `create` - generic filter/source creation
+- View and camera control
+
+WorkflowMCP builds on top of ParaViewMCP, adding CFD-specific high-level workflows.
 
 ### TrackedLLMClient
 

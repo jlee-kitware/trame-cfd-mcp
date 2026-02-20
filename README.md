@@ -275,14 +275,24 @@ Workflows that create charts (`show_boundary_layer`, `show_histogram`, `show_for
 - **Interactive**: Zoom, pan, hover for data values
 - **Clear button**: Remove all charts to start fresh
 
-### PBR Rendering
+### Display Properties
 
-Enable physically-based rendering for more realistic materials:
+Control visual representation properties not exposed by base trame-llm:
 
 ```
-"Set interpolation to PBR"
-"Set metallic to 0.8 and roughness to 0.2"
+"Make the surface semi-transparent"     →  Opacity: 0.5
+"Show as wireframe with thick lines"    →  Representation: Wireframe, LineWidth: 2
+"Enable PBR rendering"                  →  Interpolation: PBR
+"Set metallic to 0.8 and roughness 0.2" →  PBR material properties
+"Make points larger"                    →  PointSize: 5
 ```
+
+Available properties via `update_display_property()`:
+- **Opacity**: 0.0 (transparent) to 1.0 (opaque)
+- **Interpolation**: "Flat", "Gouraud", or "PBR"
+- **LineWidth**: Line thickness for wireframe/edges
+- **PointSize**: Point size for Points representation
+- **Metallic/Roughness**: PBR material properties (0.0-1.0)
 
 ## Provenance
 
