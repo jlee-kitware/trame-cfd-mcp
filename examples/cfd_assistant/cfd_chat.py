@@ -7,13 +7,13 @@ Usage:
     pvpython cfd_chat.py data.vtm
     
     # Connect to pvserver (client-server, local or remote)
-    pvpython cfd_chat.py --server=localhost:11111 data.vtm
+    pvpython cfd_chat.py --pvserver=localhost:11111 data.vtm
     
     # Connect to live simulation
     pvpython cfd_chat.py --live --host localhost --port 22222
     
     # pvserver + live simulation
-    pvpython cfd_chat.py --server=localhost:11111 --live
+    pvpython cfd_chat.py --pvserver=localhost:11111 --live
     
     # Both: load file and enable live connection
     pvpython cfd_chat.py data.vtm --live
@@ -76,16 +76,19 @@ def main():
     parser.add_argument('--live', action='store_true', help='Enable Catalyst Live')
     parser.add_argument('--host', default='localhost', help='Catalyst host')
     parser.add_argument('--port', type=int, default=22222, help='Catalyst port')
-    parser.add_argument('--server', default=None, help='pvserver host:port (e.g. localhost:11111)')
-    args = parser.parse_args()
+    parser.add_argument('--pvserver', default=None, help='pvserver host:port (e.g. localhost:11111)')
+    args, remaining = parser.parse_known_args()
+    
+    # Strip our args from sys.argv so trame's parser only sees its own args
+    sys.argv = [sys.argv[0]] + remaining
     
     # Connect to pvserver if specified (must happen before any pipeline operations)
     remote = False
-    if args.server:
-        sv_host, sv_port = args.server.split(":")
+    if args.pvserver:
+        sv_host, sv_port = args.pvserver.split(":")
         simple.Connect(sv_host, int(sv_port))
         remote = True
-        print(f"Connected to pvserver at {args.server}")
+        print(f"Connected to pvserver at {args.pvserver}")
     
     data_file = args.data_file
     if data_file is None and not args.live:
