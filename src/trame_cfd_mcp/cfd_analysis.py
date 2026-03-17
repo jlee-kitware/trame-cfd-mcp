@@ -2086,8 +2086,7 @@ out.GetPointData().AddArray(arr)
             - flow_direction: Normalized flow direction used
         """
         import numpy as np
-        from vtk import vtkWindowToImageFilter
-        from vtk.util.numpy_support import vtk_to_numpy
+        from trame_llm.paraview import is_remote
         
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
@@ -2175,12 +2174,28 @@ out.GetPointData().AddArray(arr)
             simple.SetActiveView(view)
             simple.Render(view)
             
-            # Capture image
-            w2i = vtkWindowToImageFilter()
-            w2i.SetInput(view.GetRenderWindow())
-            w2i.Update()
+            # Capture image — dual mode for in-process vs pvserver
+            if is_remote():
+                # pvserver: SaveScreenshot renders server-side, writes file
+                import tempfile, os
+                tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                tmp.close()
+                simple.SaveScreenshot(tmp.name, view, ImageResolution=[resolution, resolution])
+                from vtk import vtkPNGReader
+                reader = vtkPNGReader()
+                reader.SetFileName(tmp.name)
+                reader.Update()
+                image = reader.GetOutput()
+                os.unlink(tmp.name)
+            else:
+                # In-process: direct framebuffer capture (faster, no disk I/O)
+                from vtk import vtkWindowToImageFilter
+                w2i = vtkWindowToImageFilter()
+                w2i.SetInput(view.GetRenderWindow())
+                w2i.Update()
+                image = w2i.GetOutput()
             
-            image = w2i.GetOutput()
+            from vtk.util.numpy_support import vtk_to_numpy
             dims = image.GetDimensions()
             vtk_array = image.GetPointData().GetScalars()
             np_img = vtk_to_numpy(vtk_array)

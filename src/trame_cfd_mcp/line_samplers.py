@@ -63,7 +63,6 @@ class LineSampler(ABC):
             return {"error": "ParaView not available"}
         
         from vtk.util.numpy_support import vtk_to_numpy
-        import vtk
         
         # Generate sample positions
         y_values = self.generate(probe_length)

@@ -80,9 +80,11 @@ def main():
     args = parser.parse_args()
     
     # Connect to pvserver if specified (must happen before any pipeline operations)
+    remote = False
     if args.server:
         sv_host, sv_port = args.server.split(":")
         simple.Connect(sv_host, int(sv_port))
+        remote = True
         print(f"Connected to pvserver at {args.server}")
     
     data_file = args.data_file
@@ -92,14 +94,25 @@ def main():
         if os.path.exists(default_file):
             data_file = default_file
     
-    if data_file and os.path.exists(data_file):
-        reader = simple.OpenDataFile(data_file)
-        simple.UpdatePipeline()
-        simple.Show()
-        simple.ResetCamera()
-        print(f"Loaded: {data_file}")
-    elif data_file:
-        print(f"Warning: File not found: {data_file}")
+    if data_file:
+        # Resolve to absolute path — pvserver needs a path valid on its filesystem.
+        # For co-located pvserver (same machine), this just works.
+        # For remote pvserver, the user must provide a server-accessible path.
+        data_file = os.path.abspath(data_file)
+        
+        if not remote and not os.path.exists(data_file):
+            print(f"Warning: File not found: {data_file}")
+        else:
+            try:
+                reader = simple.OpenDataFile(data_file)
+                simple.UpdatePipeline()
+                simple.Show()
+                simple.ResetCamera()
+                print(f"Loaded: {data_file}")
+            except Exception as e:
+                print(f"Error loading {data_file}: {e}")
+                if remote:
+                    print("  (path must be accessible from the pvserver filesystem)")
     
     app = Lite()
     ctrl = app.server.controller
