@@ -430,32 +430,25 @@ class WorkflowMCP:
         """
         Delete a filter from the pipeline.
         
+        Checks for downstream consumers before deletion — if other filters
+        depend on this one, deletion is refused.
+        
         Use this to clean up unwanted visualizations and free resources.
         
         Args:
             proxy_name: Name of the filter to delete (from list_data)
             
         Returns:
-            Dict with status
+            Dict with status, or error if proxy has consumers
         """
-        try:
-            proxy = simple.FindSource(proxy_name)
-            if proxy is None:
-                return {"error": f"Filter '{proxy_name}' not found"}
-            
-            simple.Delete(proxy)
-            self._base_mcp.pipeline_changed()
-            
-            return {
-                "status": "deleted",
-                "proxy_name": proxy_name,
-            }
-        except Exception as e:
-            return {"error": str(e)}
+        return self._base_mcp.delete_proxy(proxy_name)
     
     def clear_all_filters(self) -> dict:
         """
         Delete all filters, keeping only the original data sources.
+        
+        Deletes in leaf-first order using consumer checks to avoid
+        breaking the pipeline DAG.
         
         Use this to reset the pipeline and free OpenGL resources.
         
@@ -463,35 +456,50 @@ class WorkflowMCP:
             Dict with list of deleted filters
         """
         deleted = []
+        errors = []
         try:
-            # Get all sources
-            sources = dict(simple.GetSources())
-            
-            # Find readers (data sources) vs filters
-            readers = set()
-            for name, proxy in sources.items():
-                proxy_type = proxy.GetXMLName()
-                if "Reader" in proxy_type or "Source" in proxy_type:
-                    readers.add(name)
-            
-            # Delete filters (non-readers) in reverse dependency order
-            for name, proxy in sources.items():
-                if name not in readers:
-                    try:
-                        simple.Delete(proxy)
-                        deleted.append(name[0])
-                    except:
-                        pass
+            # Iteratively delete leaf nodes until only readers remain.
+            # Each pass removes proxies with no consumers; repeat since
+            # deleting a leaf may make its parent a new leaf.
+            max_passes = 50  # Guard against infinite loops
+            for _ in range(max_passes):
+                sources = dict(simple.GetSources())
+                deleted_this_pass = False
+                
+                for name_tuple, proxy in list(sources.items()):
+                    info = self._base_mcp.proxy_info(name_tuple[0])
+                    if "error" in info:
+                        continue
+                    if info["is_reader"]:
+                        continue
+                    if info["can_delete"]:
+                        result = self._base_mcp.delete_proxy(name_tuple[0])
+                        if "error" not in result:
+                            deleted.append(name_tuple[0])
+                            deleted_this_pass = True
+                        else:
+                            errors.append(f"{name_tuple[0]}: {result['error']}")
+                
+                if not deleted_this_pass:
+                    break
             
             self._base_mcp.pipeline_changed()
             
-            return {
+            # Report remaining proxies
+            remaining = [
+                n[0] for n in simple.GetSources().keys()
+            ]
+            
+            result = {
                 "status": "cleared",
                 "deleted": deleted,
-                "remaining": [n[0] for n in readers],
+                "remaining": remaining,
             }
+            if errors:
+                result["errors"] = errors
+            return result
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "deleted_before_error": deleted}
     
     def hide_all_scalar_bars(self) -> dict:
         """
@@ -533,9 +541,13 @@ ALWAYS call list_data() first to see what data is loaded.
 == WORKFLOW PATTERN ==
 
 1. Create visualization with show_* tools (they return proxy_name and parameters)
-2. If user wants refinement, use the proxy_name with refinement tools
-3. Use get_ontology() to get domain knowledge for explanations
-4. Save with save_screenshot()
+2. If a show_* tool FAILS, fall back to general filter creation tools (create, find_or_create) — do NOT present long error diagnostics or ask the user to troubleshoot
+3. If user wants refinement, use the proxy_name with refinement tools
+4. Use get_ontology() to get domain knowledge for explanations
+5. Save with save_screenshot()
+
+KEEP RESPONSES CONCISE.  Never present numbered option lists when a tool fails.
+Try the fallback tools first, and only ask the user if you truly cannot proceed.
 
 == VISUALIZATION TOOLS (use these first) ==
 
@@ -586,6 +598,27 @@ User: "Make them semi-transparent" → call update_display_property("Opacity", 0
 - analyze_data() - Get dataset info and recommendations
 - list_properties(proxy_name) - See adjustable properties
 
+== GENERAL FILTER CREATION ==
+
+For operations not covered by show_* workflow tools, or when a show_* tool FAILS,
+fall back to the base ParaView tools to accomplish the task directly:
+
+- list_compatible_filters(proxy_name) - See which filters can be applied to a source
+- create(proxy_name, input_proxy) - Create any ParaView filter by name (e.g., "Contour", "Slice", "Clip", "Glyph", "PlotOverLine", "StreamTracerWithCustomSource")
+- find_or_create(proxy_name, input_proxy) - Reuse existing filter or create new one
+- proxy_info(proxy_name) - Get detailed info about a filter or source
+
+After creating a filter, use list_properties() and update_*_property() to configure it.
+
+IMPORTANT: If a show_* workflow tool returns an error, DO NOT ask the user for diagnostic
+information or present long lists of options.  Instead:
+- For visualization tools (isosurfaces, slices, clips, streamlines): fall back to the
+  general tools above to accomplish the same goal with create() + update_*_property().
+- For analysis tools (boundary layer, forces, topology): these perform domain-specific
+  computations that cannot be replicated with raw filters.  Report the failure briefly
+  and suggest what might be wrong (e.g., "boundary layer analysis requires a Velocity field").
+  Do NOT present long numbered option lists.
+
 == EXPLANATION GUIDANCE ==
 
 When explaining visualizations, use the ontology to provide:
@@ -618,6 +651,12 @@ When explaining visualizations, use the ontology to provide:
                 self._base_mcp.show_or_hide,
                 self._base_mcp.list_properties,
                 self.update_display_property,
+                
+                # General filter creation (fallback for non-CFD workflows)
+                self._base_mcp.create,
+                self._base_mcp.find_or_create,
+                self._base_mcp.list_compatible_filters,
+                self._base_mcp.proxy_info,
                 
                 # Knowledge and utilities
                 self.get_ontology,

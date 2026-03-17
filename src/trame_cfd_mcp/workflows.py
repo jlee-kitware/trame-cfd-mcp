@@ -7,6 +7,7 @@ Full provenance tracking enables reproducibility and explanation.
 """
 
 from paraview import simple
+from trame_llm.paraview import ensure_flat_input
 
 
 class CFDWorkflows:
@@ -428,7 +429,8 @@ class CFDWorkflows:
         stream.SeedType.Radius = seed["radius"]
         stream.SeedType.NumberOfPoints = num_points
         stream.MaximumStreamlineLength = seed["max_length"]
-        stream.Vectors = ['POINTS', 'Velocity']
+        vel_field = self._mcp._resolve_field_type("velocity", proxy)
+        stream.Vectors = ['POINTS', vel_field]
         simple.UpdatePipeline(proxy=stream)
         
         # Show and color
@@ -574,8 +576,9 @@ class CFDWorkflows:
         
         if representation == "Surface LIC" and "Surface LIC" in display.Representation.Available:
             display.Representation = "Surface LIC"
-            display.SelectInputVectors = ['POINTS', 'Velocity']
-            color_array = "Velocity (LIC)"
+            vel_field = self._mcp._resolve_field_type("velocity", slice_filter)
+            display.SelectInputVectors = ['POINTS', vel_field]
+            color_array = f"{vel_field} (LIC)"
         else:
             display.Representation = "Surface"
             color_array = self._mcp._resolve_field_type(color_by, slice_filter)
@@ -953,9 +956,8 @@ class CFDWorkflows:
         
         span_y = probe_results[0]['span_absolute']
         
-        # Create velocity slice at span station
-        merge = simple.MergeBlocks(Input=proxy)
-        simple.UpdatePipeline(proxy=merge)
+        # Flatten composite data for slicing (reuses existing MergeBlocks)
+        merge, _, _ = ensure_flat_input(proxy)
         
         slice_filter = simple.Slice(Input=merge, registrationName='BL_Context_Slice')
         slice_filter.SliceType = 'Plane'
@@ -976,10 +978,11 @@ class CFDWorkflows:
         simple.UpdatePipeline(proxy=clip)
         
         # Show slice with velocity coloring
+        vel_field = self._mcp._resolve_field_type("velocity", clip)
         clip_display = simple.Show(clip, view)
-        simple.ColorBy(clip_display, ('POINTS', 'Velocity', 'Magnitude'))
+        simple.ColorBy(clip_display, ('POINTS', vel_field, 'Magnitude'))
         
-        vel_lut = simple.GetColorTransferFunction('Velocity')
+        vel_lut = simple.GetColorTransferFunction(vel_field)
         vel_lut.ApplyPreset('Jet', True)
         vel_lut.RescaleTransferFunction(0.0, 0.95)
         clip_display.SetScalarBarVisibility(view, True)

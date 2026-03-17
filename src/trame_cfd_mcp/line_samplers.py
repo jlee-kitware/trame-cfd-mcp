@@ -18,6 +18,7 @@ import numpy as np
 # Optional ParaView import - only needed for create_probe_line()
 try:
     from paraview import simple
+    from trame_llm.paraview import safe_delete
     PARAVIEW_AVAILABLE = True
 except ImportError:
     PARAVIEW_AVAILABLE = False
@@ -109,15 +110,15 @@ class LineSampler(ABC):
         
         field_array = resampled_data.GetPointData().GetArray(field_name)
         if field_array is None:
-            simple.Delete(resampled)
-            simple.Delete(producer)
+            safe_delete(resampled)
+            safe_delete(producer)
             return {"error": f"Field '{field_name}' not found in resampled data"}
         
         values = vtk_to_numpy(field_array)
         
         # Cleanup
-        simple.Delete(resampled)
-        simple.Delete(producer)
+        safe_delete(resampled)
+        safe_delete(producer)
         
         return {
             "y": y_values,

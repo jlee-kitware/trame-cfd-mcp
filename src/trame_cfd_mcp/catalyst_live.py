@@ -42,12 +42,95 @@ class CFDChatMCP:
             'energy': [],
         }
         self._last_iteration = -1
-    
+        self._pause_at_iteration = None  # Breakpoint target (iteration number)
+
     @property
     def _app(self):
         """Get the trame app from the base MCP."""
         return self._workflow_mcp._base_mcp.app
-    
+
+    # =========================================================================
+    # Internal helpers
+    # =========================================================================
+
+    @staticmethod
+    def _unwrap_composite(data):
+        """Unwrap composite/partitioned datasets to leaf dataset.
+
+        Descends through vtkPartitionedDataSet and vtkMultiBlockDataSet
+        wrappers, returning the first non-empty leaf or None.
+        """
+        while data is not None:
+            if hasattr(data, 'GetPartition') and data.GetNumberOfPartitions() > 0:
+                data = data.GetPartition(0)
+            elif hasattr(data, 'GetBlock') and data.GetNumberOfBlocks() > 0:
+                data = data.GetBlock(0)
+            elif hasattr(data, 'GetNumberOfPoints'):
+                break
+            else:
+                data = None
+        return data
+
+    @staticmethod
+    def _composite_stats(fetched):
+        """Get total point/cell counts across all partitions/blocks.
+
+        Returns (n_points, n_cells).
+        """
+        n_points = 0
+        n_cells = 0
+        if hasattr(fetched, 'GetNumberOfPartitions'):
+            for p in range(fetched.GetNumberOfPartitions()):
+                part = fetched.GetPartition(p)
+                if part:
+                    n_points += part.GetNumberOfPoints()
+                    n_cells += part.GetNumberOfCells()
+        elif hasattr(fetched, 'GetNumberOfBlocks'):
+            for b in range(fetched.GetNumberOfBlocks()):
+                block = fetched.GetBlock(b)
+                if block:
+                    n_points += block.GetNumberOfPoints()
+                    n_cells += block.GetNumberOfCells()
+        elif hasattr(fetched, 'GetNumberOfPoints'):
+            n_points = fetched.GetNumberOfPoints()
+            n_cells = fetched.GetNumberOfCells()
+        return n_points, n_cells
+
+    def _accumulate_monitor_points(self, data):
+        """Append new iteration data to client-side monitor history.
+
+        Scans point data arrays for iterations beyond ``_last_iteration``
+        and appends them to ``_monitor_history``.  Returns the number of
+        new points added.
+        """
+        if not data or not hasattr(data, 'GetPointData'):
+            return 0
+        pd = data.GetPointData()
+        iter_arr = pd.GetArray('iteration')
+        if not iter_arr:
+            return 0
+
+        added = 0
+        for i in range(iter_arr.GetNumberOfTuples()):
+            iteration = iter_arr.GetValue(i)
+            if iteration > self._last_iteration:
+                self._monitor_history['iteration'].append(iteration)
+                for name in ['continuity', 'momentum_x', 'momentum_y', 'momentum_z', 'energy']:
+                    arr = pd.GetArray(name)
+                    if arr and i < arr.GetNumberOfTuples():
+                        self._monitor_history[name].append(arr.GetValue(i))
+                self._last_iteration = iteration
+                added += 1
+        return added
+
+    def _process_events(self):
+        """Pump the VTK network access manager event queue."""
+        from paraview import servermanager
+        pm = servermanager.vtkProcessModule.GetProcessModule()
+        nam = pm.GetNetworkAccessManager()
+        while nam.ProcessEvents(1) == 1:
+            pass
+
     # =========================================================================
     # Cost tracking tools
     # =========================================================================
@@ -94,11 +177,8 @@ class CFDChatMCP:
             # Connect to Catalyst - this changes the active connection
             self._live_link = servermanager.ConnectToCatalyst(host, port)
             
-            # Process pending notifications (like ParaView's ProcessServerNotifications)
-            pm = servermanager.vtkProcessModule.GetProcessModule()
-            nam = pm.GetNetworkAccessManager()
-            while nam.ProcessEvents(1) == 1:
-                pass
+            # Process pending notifications
+            self._process_events()
             
             # Initialize the link
             self._live_link.InvokeCommand('Initialize')
@@ -156,8 +236,26 @@ class CFDChatMCP:
         }
     
     def disconnect_live(self) -> dict:
-        """Disconnect from the simulation."""
+        """Disconnect from the simulation and clean up resources."""
         if self._live_link:
+            try:
+                # Clean up extracted source proxies before dropping the link
+                for name, proxy in self._extracted_sources.items():
+                    try:
+                        simple.Delete(proxy)
+                    except Exception:
+                        pass
+                # Drop the Catalyst connection session
+                from paraview import servermanager
+                link_spm = self._live_link.GetInsituProxyManager()
+                if link_spm:
+                    session = link_spm.GetSession()
+                    if session:
+                        conn = servermanager.GetConnectionFromSession(session)
+                        if conn:
+                            servermanager.Disconnect(conn)
+            except Exception as e:
+                print(f"[Live] Disconnect error (non-fatal): {e}")
             self._live_link = None
             self._display_session = None
             self._monitor_source = None
@@ -221,6 +319,69 @@ class CFDChatMCP:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
+    def set_breakpoint(self, iteration: int) -> dict:
+        """
+        Set a breakpoint at a specific iteration number.
+        
+        The simulation will automatically pause when it reaches this
+        iteration.  Requires monitoring to be active (extract_monitors).
+        
+        Args:
+            iteration: Iteration number to pause at
+        """
+        self._pause_at_iteration = iteration
+        return {
+            "status": "breakpoint_set",
+            "pause_at": iteration,
+            "current_iteration": self._last_iteration,
+        }
+    
+    def clear_breakpoint(self) -> dict:
+        """Clear any active breakpoint."""
+        was_set = self._pause_at_iteration
+        self._pause_at_iteration = None
+        return {
+            "status": "breakpoint_cleared",
+            "was_set_at": was_set,
+        }
+    
+    def step_simulation(self, count: int = 1) -> dict:
+        """
+        Step the simulation forward by a number of iterations, then pause.
+        
+        Resumes the simulation and sets a breakpoint at current_iteration + count.
+        Auto-starts monitoring if not already active.
+        
+        Args:
+            count: Number of iterations to advance (default: 1)
+        """
+        if not self._live_link:
+            return {"error": "Not connected to live simulation"}
+        
+        # Auto-start monitoring if needed — we need iteration tracking
+        if not self._monitoring_active:
+            result = self.extract_monitors()
+            if result.get("status") == "error":
+                return result
+            print(f"[Live] Auto-started monitoring for step")
+        
+        target = self._last_iteration + count
+        self._pause_at_iteration = target
+        
+        # Resume the simulation
+        result = self.resume_simulation()
+        if result.get("status") == "error":
+            return result
+        
+        print(f"[Live] Stepping from iteration {self._last_iteration} to {target}")
+        
+        return {
+            "status": "stepping",
+            "from_iteration": self._last_iteration,
+            "to_iteration": target,
+            "count": count,
+        }
+    
     def extract_live_data(self, source_name: str) -> dict:
         """
         Extract data from the live simulation to local ParaView session.
@@ -234,7 +395,7 @@ class CFDChatMCP:
         if not self._live_link:
             return {"error": "Not connected to live simulation"}
         
-        from paraview.live import ExtractCatalystData, ProcessServerNotifications
+        from paraview.live import ExtractCatalystData
         
         # Check if already extracted - just update the existing source
         if source_name in self._extracted_sources:
@@ -252,7 +413,7 @@ class CFDChatMCP:
         
         try:
             # Process any pending notifications first
-            ProcessServerNotifications()
+            self._process_events()
             
             print(f"[extract_live_data] Extracting '{source_name}'")
             
@@ -260,7 +421,7 @@ class CFDChatMCP:
             extracted = ExtractCatalystData(self._live_link, source_name)
             
             # Process notifications after extraction
-            ProcessServerNotifications()
+            self._process_events()
             
             if extracted:
                 # Force pipeline update
@@ -271,13 +432,6 @@ class CFDChatMCP:
                 # Get info after update
                 info = extracted.GetDataInformation()
                 data_type = info.GetDataClassName()
-                
-                # Debug: print basic info
-                print(f"[extract_live_data] DataClassName: {data_type}")
-                print(f"[extract_live_data] IsCompositeDataSet: {info.IsCompositeDataSet()}")
-                print(f"[extract_live_data] GetNumberOfPoints (direct): {info.GetNumberOfPoints()}")
-                print(f"[extract_live_data] GetNumberOfCells (direct): {info.GetNumberOfCells()}")
-                
                 n_points = info.GetNumberOfPoints()
                 n_cells = info.GetNumberOfCells()
                 
@@ -287,43 +441,7 @@ class CFDChatMCP:
                     try:
                         fetched = servermanager.Fetch(extracted)
                         if fetched:
-                            print(f"[extract_live_data] Fetched type: {fetched.GetClassName()}")
-                            
-                            # Handle vtkPartitionedDataSet
-                            if hasattr(fetched, 'GetNumberOfPartitions'):
-                                num_parts = fetched.GetNumberOfPartitions()
-                                print(f"[extract_live_data] Number of partitions: {num_parts}")
-                                n_points = 0
-                                n_cells = 0
-                                for p in range(num_parts):
-                                    part = fetched.GetPartition(p)
-                                    if part:
-                                        pts = part.GetNumberOfPoints()
-                                        cells = part.GetNumberOfCells()
-                                        n_points += pts
-                                        n_cells += cells
-                                        if p < 4:  # Only print first few
-                                            print(f"[extract_live_data]   Partition {p}: {pts} pts, {cells} cells")
-                            # Handle vtkMultiBlockDataSet
-                            elif hasattr(fetched, 'GetNumberOfBlocks'):
-                                num_blocks = fetched.GetNumberOfBlocks()
-                                print(f"[extract_live_data] Number of blocks: {num_blocks}")
-                                n_points = 0
-                                n_cells = 0
-                                for b in range(num_blocks):
-                                    block = fetched.GetBlock(b)
-                                    if block:
-                                        pts = block.GetNumberOfPoints()
-                                        cells = block.GetNumberOfCells()
-                                        n_points += pts
-                                        n_cells += cells
-                                        if b < 4:
-                                            print(f"[extract_live_data]   Block {b}: {pts} pts, {cells} cells")
-                            # Simple dataset
-                            elif hasattr(fetched, 'GetNumberOfPoints'):
-                                n_points = fetched.GetNumberOfPoints()
-                                n_cells = fetched.GetNumberOfCells()
-                                print(f"[extract_live_data] Simple dataset: {n_points} pts, {n_cells} cells")
+                            n_points, n_cells = self._composite_stats(fetched)
                     except Exception as e:
                         print(f"[extract_live_data] Fetch failed: {e}")
                 
@@ -331,9 +449,8 @@ class CFDChatMCP:
                 point_fields = list(extracted.PointData.keys()) if hasattr(extracted, 'PointData') else []
                 cell_fields = list(extracted.CellData.keys()) if hasattr(extracted, 'CellData') else []
                 
-                print(f"[extract_live_data] Final: {n_points} points, {n_cells} cells")
-                print(f"[extract_live_data] Point fields: {point_fields}")
-                print(f"[extract_live_data] Cell fields: {cell_fields}")
+                print(f"[extract_live_data] {data_type}: {n_points} pts, {n_cells} cells, "
+                      f"fields: {point_fields} / {cell_fields}")
                 
                 # Update trame app to refresh pipeline browser
                 if self._app:
@@ -469,12 +586,12 @@ class CFDChatMCP:
             }
         
         try:
-            from paraview.live import ExtractCatalystData, ProcessServerNotifications
+            from paraview.live import ExtractCatalystData
             from paraview import servermanager
             
-            ProcessServerNotifications()
+            self._process_events()
             extracted = ExtractCatalystData(self._live_link, channel_name)
-            ProcessServerNotifications()
+            self._process_events()
             
             if extracted:
                 extracted.UpdatePipeline()
@@ -500,32 +617,8 @@ class CFDChatMCP:
                 # Immediately fetch and populate initial data
                 try:
                     data = servermanager.Fetch(extracted)
-                    
-                    # Unwrap composite/partitioned datasets
-                    while data is not None:
-                        if hasattr(data, 'GetPartition') and data.GetNumberOfPartitions() > 0:
-                            data = data.GetPartition(0)
-                        elif hasattr(data, 'GetBlock') and data.GetNumberOfBlocks() > 0:
-                            data = data.GetBlock(0)
-                        elif hasattr(data, 'GetNumberOfPoints'):
-                            break
-                        else:
-                            data = None
-                            break
-                    
-                    if data and hasattr(data, 'GetNumberOfPoints') and data.GetNumberOfPoints() > 0:
-                        pd = data.GetPointData()
-                        iter_arr = pd.GetArray('iteration')
-                        if iter_arr:
-                            for i in range(iter_arr.GetNumberOfTuples()):
-                                iteration = iter_arr.GetValue(i)
-                                if iteration > self._last_iteration:
-                                    self._monitor_history['iteration'].append(iteration)
-                                    for name in ['continuity', 'momentum_x', 'momentum_y', 'momentum_z', 'energy']:
-                                        arr = pd.GetArray(name)
-                                        if arr and i < arr.GetNumberOfTuples():
-                                            self._monitor_history[name].append(arr.GetValue(i))
-                                    self._last_iteration = iteration
+                    data = self._unwrap_composite(data)
+                    self._accumulate_monitor_points(data)
                 except Exception as e:
                     print(f"[extract_monitors] Initial fetch failed: {e}")
                 
@@ -603,67 +696,40 @@ class CFDChatMCP:
     def get_monitor_data(self) -> dict:
         """
         Get monitor data, accumulating new points from simulation.
-        
-        Extracts latest data and appends any new iterations to client-side history.
+
+        Uses the cached _monitor_source proxy (created by extract_monitors)
+        rather than re-calling ExtractCatalystData each poll.  The
+        _accumulate_monitor_points helper handles deduplication via
+        _last_iteration, so we always update+fetch here — no time guard.
         """
         if not self._live_link or not self._monitoring_active:
             return {"error": "Not monitoring"}
-        
+
+        if not self._monitor_source:
+            return {"error": "No monitor source. Call extract_monitors() first."}
+
         try:
-            from paraview.live import ExtractCatalystData, ProcessServerNotifications
             from paraview import servermanager
-            
-            # Process events to sync with simulation
-            ProcessServerNotifications()
-            
-            # Extract current data from simulation
-            extracted = ExtractCatalystData(self._live_link, "monitors")
-            if not extracted:
-                return {"iteration": self._monitor_history['iteration'], 
-                        "residuals": {k: v for k, v in self._monitor_history.items() if k != 'iteration'}}
-            
-            extracted.UpdatePipeline()
-            data = servermanager.Fetch(extracted)
-            
-            # Unwrap composite/partitioned datasets
-            while data is not None:
-                if hasattr(data, 'GetPartition') and data.GetNumberOfPartitions() > 0:
-                    data = data.GetPartition(0)
-                elif hasattr(data, 'GetBlock') and data.GetNumberOfBlocks() > 0:
-                    data = data.GetBlock(0)
-                elif hasattr(data, 'GetNumberOfPoints'):
-                    break  # We have a proper dataset
-                else:
-                    print(f"[Monitor] Unknown data type: {type(data)}")
-                    data = None
-                    break
-            
-            if data and hasattr(data, 'GetNumberOfPoints') and data.GetNumberOfPoints() > 0:
-                pd = data.GetPointData()
-                
-                # Get all iterations from this extract
-                iter_arr = pd.GetArray('iteration')
-                if iter_arr:
-                    for i in range(iter_arr.GetNumberOfTuples()):
-                        iteration = iter_arr.GetValue(i)
-                        
-                        # Only add if we haven't seen this iteration
-                        if iteration > self._last_iteration:
-                            self._monitor_history['iteration'].append(iteration)
-                            
-                            for name in ['continuity', 'momentum_x', 'momentum_y', 'momentum_z', 'energy']:
-                                arr = pd.GetArray(name)
-                                if arr and i < arr.GetNumberOfTuples():
-                                    self._monitor_history[name].append(arr.GetValue(i))
-                            
-                            self._last_iteration = iteration
-            
-            # Clean up the extracted source to avoid accumulating proxies
-            simple.Delete(extracted)
-            
+
+            # Pump network events so pipeline sees new data
+            self._process_events()
+
+            # Update the existing proxy and fetch data
+            self._monitor_source.UpdatePipeline()
+            data = servermanager.Fetch(self._monitor_source)
+            data = self._unwrap_composite(data)
+            self._accumulate_monitor_points(data)
+
+            # Check breakpoint
+            if (self._pause_at_iteration is not None
+                    and self._last_iteration >= self._pause_at_iteration):
+                self.pause_simulation()
+                self._pause_at_iteration = None
+                print(f"[Live] Breakpoint hit at iteration {self._last_iteration}")
+
             return {
                 "iteration": self._monitor_history['iteration'],
-                "residuals": {k: v for k, v in self._monitor_history.items() if k != 'iteration'}
+                "residuals": {k: v for k, v in self._monitor_history.items() if k != 'iteration'},
             }
         except Exception as e:
             import traceback
@@ -724,6 +790,9 @@ class CFDChatMCP:
                 self.set_pause_on_connect,
                 self.pause_simulation,
                 self.resume_simulation,
+                self.set_breakpoint,
+                self.clear_breakpoint,
+                self.step_simulation,
                 self.extract_live_data,
                 self.show_live_source,
                 self.extract_monitors,
@@ -747,6 +816,9 @@ The extract step is REQUIRED when paused - it copies data from simulation memory
 
 Other tools:
 - resume_simulation() - Continue after analysis
+- step_simulation(count=5) - Advance N iterations then auto-pause
+- set_breakpoint(iteration=100) - Pause when iteration is reached
+- clear_breakpoint() - Remove active breakpoint
 - extract_monitors("monitors") - Get residual data
 - show_monitor_chart() - Visualize convergence
 """

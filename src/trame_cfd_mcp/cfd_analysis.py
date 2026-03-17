@@ -13,6 +13,7 @@ Methods include:
 """
 
 from paraview import simple
+from trame_llm.paraview import safe_delete, ensure_flat_input
 import numpy as np
 import json
 from pathlib import Path
@@ -279,6 +280,66 @@ class CFDAnalysis:
     # =========================================================================
     # DATA VALIDATION AND CHARACTERIZATION
     # =========================================================================
+
+    # Common velocity field names across CFD solvers
+    _VELOCITY_NAMES = [
+        "Velocity", "velocity", "U", "u", "V", "vel", "Vel",
+        "VELOCITY", "flow_velocity", "FlowVelocity",
+    ]
+
+    def _find_velocity_array(self, data):
+        """Find velocity array in point data by searching common names and 3-component vectors."""
+        pd = data.GetPointData()
+        if pd is None:
+            return None, None
+        
+        # Try common names first
+        for name in self._VELOCITY_NAMES:
+            arr = pd.GetArray(name)
+            if arr is not None and arr.GetNumberOfComponents() == 3:
+                return arr, name
+        
+        # Fall back: first 3-component array (likely velocity)
+        for i in range(pd.GetNumberOfArrays()):
+            arr = pd.GetArray(i)
+            if arr is not None and arr.GetNumberOfComponents() == 3:
+                name = pd.GetArrayName(i)
+                print(f"[_find_velocity_array] No standard name found, using 3-component array '{name}'")
+                return arr, name
+        
+        return None, None
+
+    # Common pressure field names across CFD solvers
+    _PRESSURE_NAMES = [
+        "p", "P", "Pressure", "pressure", "PRESSURE",
+        "StaticPressure", "static_pressure", "press",
+        "Total Pressure", "total_pressure", "Pt",
+    ]
+
+    def _find_pressure_array(self, data):
+        """Find pressure array in point or cell data by searching common names and scalars."""
+        for getter in [data.GetPointData, data.GetCellData]:
+            arrays = getter()
+            if arrays is None:
+                continue
+            # Try common names first
+            for name in self._PRESSURE_NAMES:
+                arr = arrays.GetArray(name)
+                if arr is not None and arr.GetNumberOfComponents() == 1:
+                    association = "POINTS" if getter == data.GetPointData else "CELLS"
+                    return arr, name, association
+        return None, None, None
+
+    def _find_field(self, data, field_name: str):
+        """Find a named field in point or cell data, return (array, actual_name, association)."""
+        for getter, assoc in [(data.GetPointData, "POINTS"), (data.GetCellData, "CELLS")]:
+            arrays = getter()
+            if arrays is None:
+                continue
+            arr = arrays.GetArray(field_name)
+            if arr is not None:
+                return arr, field_name, assoc
+        return None, None, None
     
     def _get_body_bounds(self, proxy, clip_margin: float = 0.05):
         """
@@ -354,12 +415,12 @@ class CFDAnalysis:
             # Always clean up temporary filters — delete child before parent
             if clip is not None:
                 try:
-                    simple.Delete(clip)
+                    safe_delete(clip)
                 except:
                     pass
             if surface is not None:
                 try:
-                    simple.Delete(surface)
+                    safe_delete(surface)
                 except:
                     pass
             # Restore active source
@@ -872,24 +933,11 @@ class CFDAnalysis:
         
         try:
             # Handle multiblock - merge first for consistent processing
-            simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            
-            if data is None:
-                return {"error": "No data available from proxy"}
-            
-            # Check if multiblock and merge if needed
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge_input = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge_input)
-                data = merge_input.GetClientSideObject().GetOutputDataObject(0)
-                cleanup_input_merge = merge_input
-            else:
-                cleanup_input_merge = None
+            flat_proxy, data, cleanup_input_merge = ensure_flat_input(proxy)
                 
             if data is None:
                 if cleanup_input_merge:
-                    simple.Delete(cleanup_input_merge)
+                    safe_delete(cleanup_input_merge)
                 return {"error": "No data available after merge"}
             
             # Check field type
@@ -899,13 +947,13 @@ class CFDAnalysis:
             
             if arr is None:
                 if cleanup_input_merge:
-                    simple.Delete(cleanup_input_merge)
+                    safe_delete(cleanup_input_merge)
                 return {"error": f"Field '{field}' not found"}
             
             is_vector = arr.GetNumberOfComponents() > 1
             
             # Use the merged data as input if we merged
-            threshold_source = cleanup_input_merge if cleanup_input_merge else proxy
+            threshold_source = flat_proxy
             
             if is_vector:
                 # Need Calculator to compute magnitude
@@ -931,29 +979,20 @@ class CFDAnalysis:
             thresh.ThresholdMethod = "Between"
             simple.UpdatePipeline(proxy=thresh)
             
-            # Get result
-            result_data = thresh.GetClientSideObject().GetOutputDataObject(0)
-            
-            # Handle multiblock
-            if result_data.IsA("vtkMultiBlockDataSet"):
-                merge = simple.MergeBlocks(Input=thresh)
-                simple.UpdatePipeline(proxy=merge)
-                result_data = merge.GetClientSideObject().GetOutputDataObject(0)
-                cleanup_merge = merge
-            else:
-                cleanup_merge = None
+            # Get result (flatten if composite)
+            _, result_data, cleanup_merge = ensure_flat_input(thresh)
             
             num_points = result_data.GetNumberOfPoints()
             
             if num_points == 0:
                 # Cleanup
                 if cleanup_merge:
-                    simple.Delete(cleanup_merge)
-                simple.Delete(thresh)
+                    safe_delete(cleanup_merge)
+                safe_delete(thresh)
                 if is_vector:
-                    simple.Delete(calc)
+                    safe_delete(calc)
                 if cleanup_input_merge:
-                    simple.Delete(cleanup_input_merge)
+                    safe_delete(cleanup_input_merge)
                 return {
                     "error": f"No points found where {field} {'<' if below else '>'} {threshold}",
                     "field": field,
@@ -969,12 +1008,12 @@ class CFDAnalysis:
             
             # Cleanup
             if cleanup_merge:
-                simple.Delete(cleanup_merge)
-            simple.Delete(thresh)
+                safe_delete(cleanup_merge)
+            safe_delete(thresh)
             if is_vector:
-                simple.Delete(calc)
+                safe_delete(calc)
             if cleanup_input_merge:
-                simple.Delete(cleanup_input_merge)
+                safe_delete(cleanup_input_merge)
             
             return {
                 "location": centroid,
@@ -1029,19 +1068,14 @@ class CFDAnalysis:
             extracted = simple.ExtractSelection(Input=proxy, Selection=selection)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutputDataObject(0)
+            # Flatten if composite
+            _, flat_data, cleanup = ensure_flat_input(extracted)
+            num_selected = (flat_data.GetNumberOfPoints() if field_type == "POINT" 
+                           else flat_data.GetNumberOfCells())
+            if cleanup:
+                safe_delete(cleanup)
             
-            # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge = simple.MergeBlocks(Input=extracted)
-                simple.UpdatePipeline(proxy=merge)
-                merged_data = merge.GetClientSideObject().GetOutputDataObject(0)
-                num_selected = merged_data.GetNumberOfPoints() if field_type == "POINT" else merged_data.GetNumberOfCells()
-                simple.Delete(merge)
-            else:
-                num_selected = data.GetNumberOfPoints() if field_type == "POINT" else data.GetNumberOfCells()
-            
-            simple.Delete(extracted)
+            safe_delete(extracted)
             
             return {
                 "query": query,
@@ -1073,23 +1107,14 @@ class CFDAnalysis:
             extracted = simple.ExtractSelection(Input=proxy)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutputDataObject(0)
-            
-            # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge = simple.MergeBlocks(Input=extracted)
-                simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutputDataObject(0)
-                cleanup_merge = merge
-            else:
-                cleanup_merge = None
+            _, data, cleanup_merge = ensure_flat_input(extracted)
             
             num_points = data.GetNumberOfPoints()
             
             if num_points == 0:
                 if cleanup_merge:
-                    simple.Delete(cleanup_merge)
-                simple.Delete(extracted)
+                    safe_delete(cleanup_merge)
+                safe_delete(extracted)
                 return {"error": "No selection or empty selection"}
             
             # Compute centroid and bounds (vectorized)
@@ -1099,8 +1124,8 @@ class CFDAnalysis:
             centroid = points.mean(axis=0).tolist()
             
             if cleanup_merge:
-                simple.Delete(cleanup_merge)
-            simple.Delete(extracted)
+                safe_delete(cleanup_merge)
+            safe_delete(extracted)
             
             return {
                 "num_points": num_points,
@@ -1150,23 +1175,14 @@ class CFDAnalysis:
             extracted = simple.ExtractSelection(Input=proxy, Selection=selection)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutputDataObject(0)
-            
-            # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge = simple.MergeBlocks(Input=extracted)
-                simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutputDataObject(0)
-                cleanup_merge = merge
-            else:
-                cleanup_merge = None
+            _, data, cleanup_merge = ensure_flat_input(extracted)
             
             num_points = data.GetNumberOfPoints()
             
             if num_points == 0:
                 if cleanup_merge:
-                    simple.Delete(cleanup_merge)
-                simple.Delete(extracted)
+                    safe_delete(cleanup_merge)
+                safe_delete(extracted)
                 return {"error": "No points match query", "query": query}
             
             # Compute centroid
@@ -1176,8 +1192,8 @@ class CFDAnalysis:
             centroid = points.mean(axis=0).tolist()
             
             if cleanup_merge:
-                simple.Delete(cleanup_merge)
-            simple.Delete(extracted)
+                safe_delete(cleanup_merge)
+            safe_delete(extracted)
             
             return {
                 "location": centroid,
@@ -1332,21 +1348,10 @@ class CFDAnalysis:
         original_active = simple.GetActiveSource()
         
         try:
-            # Check if multiblock by trying to get the output type
-            simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge)
-                input_for_gradient = merge
-                cleanup_merge = merge
-            else:
-                input_for_gradient = proxy
-                cleanup_merge = None
+            flat_proxy, data, cleanup_merge = ensure_flat_input(proxy)
             
             # Create Gradient filter
-            gradient = simple.Gradient(Input=input_for_gradient)
+            gradient = simple.Gradient(Input=flat_proxy)
             gradient.ScalarArray = ['POINTS', resolved_field]
             gradient.ComputeGradient = 1
             gradient.ResultArrayName = "Gradient"
@@ -1356,9 +1361,9 @@ class CFDAnalysis:
             arr, grad_data = self._get_array(gradient, "Gradient")
             
             if arr is None:
-                simple.Delete(gradient)
+                safe_delete(gradient)
                 if cleanup_merge:
-                    simple.Delete(cleanup_merge)
+                    safe_delete(cleanup_merge)
                 return {"error": f"Could not compute gradient of '{resolved_field}'"}
             
             # Compute gradient magnitude
@@ -1372,9 +1377,9 @@ class CFDAnalysis:
             value = float(grad_mag[idx])
             
             # Cleanup
-            simple.Delete(gradient)
+            safe_delete(gradient)
             if cleanup_merge:
-                simple.Delete(cleanup_merge)
+                safe_delete(cleanup_merge)
             
             # Restore active source
             simple.SetActiveSource(original_active)
@@ -1515,13 +1520,20 @@ class CFDAnalysis:
             return {"error": "No proxy found"}
         
         try:
-            # Merge blocks for gradient computation
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
+            # Flatten if composite (reuses existing MergeBlocks if present)
+            flat_proxy, _, _flat_cleanup = ensure_flat_input(proxy)
+            
+            # Find velocity field
+            flat_data = flat_proxy.GetClientSideObject().GetOutput()
+            _, vel_name = self._find_velocity_array(flat_data)
+            if vel_name is None:
+                if _flat_cleanup:
+                    safe_delete(_flat_cleanup)
+                return {"error": "No velocity field found for vortex detection"}
             
             # Compute gradient with appropriate fields
-            gradient = simple.Gradient(Input=merge)
-            gradient.ScalarArray = ['POINTS', 'Velocity']
+            gradient = simple.Gradient(Input=flat_proxy)
+            gradient.ScalarArray = ['POINTS', vel_name]
             
             if method == "q_criterion":
                 gradient.ComputeQCriterion = 1
@@ -1536,7 +1548,8 @@ class CFDAnalysis:
                 gradient.ResultArrayName = "VelocityGradient"
                 field_name = "Lambda2"
             else:
-                simple.Delete(merge)
+                if _flat_cleanup:
+                    safe_delete(_flat_cleanup)
                 return {"error": f"Unknown method: {method}. Use 'q_criterion', 'vorticity', or 'lambda2'"}
             
             simple.UpdatePipeline(proxy=gradient)
@@ -1631,7 +1644,10 @@ out.GetPointData().AddArray(arr)
             # Hide intermediate filters
             view = simple.GetActiveView()
             if view:
-                for p in [merge, gradient]:
+                intermediates = [gradient]
+                if flat_proxy is not proxy:
+                    intermediates.append(flat_proxy)
+                for p in intermediates:
                     if p and p != output_proxy:
                         rep = simple.GetRepresentation(p, view)
                         if rep:
@@ -1687,13 +1703,8 @@ out.GetPointData().AddArray(arr)
         try:
             simple.UpdatePipeline(proxy=proxy)
             
-            # Merge blocks if multiblock
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge_input = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge_input)
-            else:
-                merge_input = proxy
+            # Flatten composite data if needed
+            merge_input, _, cleanup_merge_input = ensure_flat_input(proxy)
             
             # Extract surfaces
             surface = simple.ExtractSurface(Input=merge_input)
@@ -1704,46 +1715,38 @@ out.GetPointData().AddArray(arr)
             normals.ComputeCellNormals = 1
             simple.UpdatePipeline(proxy=normals)
             
-            surf_data = normals.GetClientSideObject().GetOutputDataObject(0)
+            # Flatten normals output if composite
+            _, surf_data, cleanup_merge_normals = ensure_flat_input(normals)
             
-            # Handle multiblock by merging
-            if surf_data.IsA("vtkMultiBlockDataSet"):
-                merge = simple.MergeBlocks(Input=normals)
-                simple.UpdatePipeline(proxy=merge)
-                surf_data = merge.GetClientSideObject().GetOutputDataObject(0)
-            else:
-                merge = None
-            
-            # Get pressure (cell data after surface extraction)
-            pressure_array = surf_data.GetCellData().GetArray("p")
-            if pressure_array is None:
-                pressure_array = surf_data.GetCellData().GetArray("Pressure")
-            if pressure_array is None:
-                # Try point data and use cell centers
-                pressure_array = surf_data.GetPointData().GetArray("p")
-                if pressure_array is None:
-                    pressure_array = surf_data.GetPointData().GetArray("Pressure")
+            # Get pressure field
+            pressure_array, pres_name, _ = self._find_pressure_array(surf_data)
             
             if pressure_array is None:
-                if merge:
-                    simple.Delete(merge)
-                simple.Delete(normals)
-                simple.Delete(surface)
-                if merge_input != proxy:
-                    simple.Delete(merge_input)
-                return {"error": "No pressure field found (tried 'p' and 'Pressure')"}
+                if cleanup_merge_normals:
+                    safe_delete(cleanup_merge_normals)
+                safe_delete(normals)
+                safe_delete(surface)
+                if cleanup_merge_input:
+                    safe_delete(cleanup_merge_input)
+                available = []
+                for getter_name, getter in [("point", surf_data.GetPointData), ("cell", surf_data.GetCellData)]:
+                    arrays = getter()
+                    if arrays:
+                        for i in range(arrays.GetNumberOfArrays()):
+                            available.append(f"{arrays.GetArrayName(i)}({getter_name})")
+                return {"error": f"No pressure field found. Available: {', '.join(available)}"}
             
             pressure = vtk_to_numpy(pressure_array)
             
             # Get surface normals (cell data)
             normal_array = surf_data.GetCellData().GetArray("Normals")
             if normal_array is None:
-                if merge:
-                    simple.Delete(merge)
-                simple.Delete(normals)
-                simple.Delete(surface)
-                if merge_input != proxy:
-                    simple.Delete(merge_input)
+                if cleanup_merge_normals:
+                    safe_delete(cleanup_merge_normals)
+                safe_delete(normals)
+                safe_delete(surface)
+                if cleanup_merge_input:
+                    safe_delete(cleanup_merge_input)
                 return {"error": "Could not compute surface normals"}
             
             surf_normals = vtk_to_numpy(normal_array)
@@ -1798,13 +1801,13 @@ out.GetPointData().AddArray(arr)
             # Get reference values if not provided
             if freestream_velocity is None:
                 # Use max velocity magnitude as reference
-                vel_array = surf_data.GetPointData().GetArray("Velocity")
+                vel_array, _ = self._find_velocity_array(surf_data)
                 if vel_array is None:
                     # Try from original proxy
                     orig_data = proxy.GetClientSideObject().GetOutputDataObject(0)
                     if orig_data.IsA("vtkMultiBlockDataSet"):
                         orig_data = orig_data.GetBlock(0)
-                    vel_array = orig_data.GetPointData().GetArray("Velocity")
+                    vel_array, _ = self._find_velocity_array(orig_data)
                 
                 if vel_array is not None:
                     vel = vtk_to_numpy(vel_array)
@@ -1843,12 +1846,12 @@ out.GetPointData().AddArray(arr)
                 Cd = Cl = float('nan')
             
             # Cleanup
-            if merge:
-                simple.Delete(merge)
-            simple.Delete(normals)
-            simple.Delete(surface)
-            if merge_input != proxy:
-                simple.Delete(merge_input)
+            if cleanup_merge_normals:
+                safe_delete(cleanup_merge_normals)
+            safe_delete(normals)
+            safe_delete(surface)
+            if cleanup_merge_input:
+                safe_delete(cleanup_merge_input)
             
             result = {
                 "drag_force": float(drag),
@@ -1957,13 +1960,8 @@ out.GetPointData().AddArray(arr)
             elif distribution_axis == "span":
                 distribution_axis = span_axis
             
-            # Merge if multiblock
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge_input = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge_input)
-            else:
-                merge_input = proxy
+            # Flatten composite data if needed
+            merge_input, _, cleanup_merge_input = ensure_flat_input(proxy)
             
             # Extract surface and compute normals
             surface = simple.ExtractSurface(Input=merge_input)
@@ -1977,14 +1975,12 @@ out.GetPointData().AddArray(arr)
             num_cells = surf_data.GetNumberOfCells()
             
             # Get pressure
-            pressure = surf_data.GetPointData().GetArray('p')
+            pressure, _, _ = self._find_pressure_array(surf_data)
             if pressure is None:
-                pressure = surf_data.GetPointData().GetArray('Pressure')
-            if pressure is None:
-                simple.Delete(normals_filter)
-                simple.Delete(surface)
-                if merge_input != proxy:
-                    simple.Delete(merge_input)
+                safe_delete(normals_filter)
+                safe_delete(surface)
+                if cleanup_merge_input:
+                    safe_delete(cleanup_merge_input)
                 return {"error": "No pressure field found"}
             
             pressure = vtk_to_numpy(pressure)
@@ -2020,10 +2016,10 @@ out.GetPointData().AddArray(arr)
             )
             
             # Cleanup filters
-            simple.Delete(normals_filter)
-            simple.Delete(surface)
-            if merge_input != proxy:
-                simple.Delete(merge_input)
+            safe_delete(normals_filter)
+            safe_delete(surface)
+            if cleanup_merge_input:
+                safe_delete(cleanup_merge_input)
             
             if body_mask.sum() == 0:
                 return {"error": "No body cells found (all cells at boundaries)"}
@@ -2109,8 +2105,7 @@ out.GetPointData().AddArray(arr)
             
             # Extract surface first, then clip to body region
             # (Clipping volume mesh doesn't isolate body surface correctly)
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
+            merge, _, cleanup_merge = ensure_flat_input(proxy)
             
             surf = simple.ExtractSurface(Input=merge)
             simple.UpdatePipeline(proxy=surf)
@@ -2202,11 +2197,12 @@ out.GetPointData().AddArray(arr)
             pixel_size = 2.0 * parallel_scale / height
             area = covered_pixels * pixel_size * pixel_size
             
-            # Cleanup
-            simple.Delete(view)
-            simple.Delete(surf)
-            simple.Delete(clip)
-            simple.Delete(merge)
+            # Cleanup — children before parents
+            safe_delete(view)
+            safe_delete(clip)   # child of surf
+            safe_delete(surf)   # child of merge
+            if cleanup_merge:
+                safe_delete(cleanup_merge)
             
             result = {
                 "area": float(area),
@@ -2259,20 +2255,20 @@ out.GetPointData().AddArray(arr)
             return {"error": "No proxy found"}
         
         try:
-            # Merge blocks first
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
+            # Flatten composite data if needed
+            merge, _, cleanup_merge = ensure_flat_input(proxy)
             
             # Check for velocity field
             data = merge.GetClientSideObject().GetOutput()
-            vel = data.GetPointData().GetArray('Velocity')
+            vel, vel_name = self._find_velocity_array(data)
             if vel is None:
-                simple.Delete(merge)
-                return {"error": "No Velocity field found"}
+                if cleanup_merge:
+                    safe_delete(cleanup_merge)
+                return {"error": "No velocity field found"}
             
             # Run VortexCores filter
             vortex = simple.VortexCores(Input=merge)
-            vortex.VectorField = ['POINTS', 'Velocity']
+            vortex.VectorField = ['POINTS', vel_name]
             simple.UpdatePipeline(proxy=vortex)
             
             # Get output
@@ -2293,7 +2289,8 @@ out.GetPointData().AddArray(arr)
             
             # Keep filter alive for visualization (don't delete yet)
             # The workflow will handle cleanup
-            simple.Delete(merge)
+            if cleanup_merge:
+                safe_delete(cleanup_merge)
             
             return {
                 "vortex_cores": cores,
@@ -2555,12 +2552,10 @@ out.GetPointData().AddArray(arr)
             # Handle composite datasets (MultiBlock, Partitioned)
             if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet") or data.IsA("vtkPartitionedDataSetCollection"):
                 print(f"[detect_streamwise] Merging composite dataset")
-                merge = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutputDataObject(0)
+                _, data, cleanup_merge = ensure_flat_input(proxy)
                 print(f"[detect_streamwise] After merge: {data.GetClassName()}")
             else:
-                merge = None
+                cleanup_merge = None
             
             # Get velocity array
             print(f"[detect_streamwise] Getting Velocity from {data.GetClassName()}, has PointData: {data.GetPointData() is not None}")
@@ -2568,12 +2563,20 @@ out.GetPointData().AddArray(arr)
                 print(f"[detect_streamwise] PointData has {data.GetPointData().GetNumberOfArrays()} arrays")
                 for i in range(data.GetPointData().GetNumberOfArrays()):
                     print(f"[detect_streamwise]   Array {i}: {data.GetPointData().GetArrayName(i)}")
-            vel_array = data.GetPointData().GetArray("Velocity")
+            vel_array, vel_name = self._find_velocity_array(data)
             if vel_array is None:
-                if merge:
-                    simple.Delete(merge)
-                return {"error": "No Velocity field found"}
+                if cleanup_merge:
+                    safe_delete(cleanup_merge)
+                # List what arrays ARE available for debugging
+                available = []
+                if data.GetPointData():
+                    for i in range(data.GetPointData().GetNumberOfArrays()):
+                        name = data.GetPointData().GetArrayName(i)
+                        nc = data.GetPointData().GetArray(i).GetNumberOfComponents()
+                        available.append(f"{name}({nc})")
+                return {"error": f"No velocity field found. Available point arrays: {', '.join(available)}"}
             
+            print(f"[detect_streamwise] Using velocity field '{vel_name}'")
             vel = vtk_to_numpy(vel_array)
             
             # Compute magnitude-weighted average direction
@@ -2585,19 +2588,19 @@ out.GetPointData().AddArray(arr)
             weighted_vel = vel * weights[:, np.newaxis]
             total_weight = np.sum(weights)
             if total_weight < 1e-20:
-                if merge:
-                    simple.Delete(merge)
+                if cleanup_merge:
+                    safe_delete(cleanup_merge)
                 return {"error": "All velocity magnitudes near zero — cannot determine flow direction"}
             avg_direction = np.sum(weighted_vel, axis=0) / total_weight
             norm = np.linalg.norm(avg_direction)
             if norm < 1e-20:
-                if merge:
-                    simple.Delete(merge)
+                if cleanup_merge:
+                    safe_delete(cleanup_merge)
                 return {"error": "Velocity directions cancel out — no dominant flow direction"}
             avg_direction = avg_direction / norm
             
-            if merge:
-                simple.Delete(merge)
+            if cleanup_merge:
+                safe_delete(cleanup_merge)
             
             # Find closest axis-aligned direction
             axes = {
@@ -2620,7 +2623,8 @@ out.GetPointData().AddArray(arr)
             result = {
                 "streamwise": best_dir,
                 "direction_vector": avg_direction.tolist(),
-                "confidence": float(best_dot)  # 1.0 = perfectly aligned with axis
+                "confidence": float(best_dot),  # 1.0 = perfectly aligned with axis
+                "velocity_field": vel_name,  # Actual array name used
             }
             
             self._log_analysis(
@@ -2687,6 +2691,7 @@ out.GetPointData().AddArray(arr)
                 "body_bounds": list(body_bounds),
                 "body_center": body_center,
                 "span_extent": extents[span_axis],
+                "velocity_field": streamwise_result.get("velocity_field", "Velocity"),
             }
             
             self._log_analysis(
@@ -2877,7 +2882,7 @@ out.GetPointData().AddArray(arr)
             finally:
                 # Always clean up the temporary clip
                 try:
-                    simple.Delete(downstream_clip)
+                    safe_delete(downstream_clip)
                 except:
                     pass
             
@@ -3331,7 +3336,7 @@ out.GetPointData().AddArray(arr)
                 proxy_type = proxy.__class__.__name__
                 if proxy_type not in reader_types:
                     try:
-                        simple.Delete(proxy)
+                        safe_delete(proxy)
                         deleted += 1
                     except:
                         pass
@@ -3687,30 +3692,22 @@ out.GetPointData().AddArray(arr)
         """Get VTK array as numpy array."""
         from vtk.util.numpy_support import vtk_to_numpy
         
-        simple.UpdatePipeline(proxy=proxy)
-        data = proxy.GetClientSideObject().GetOutputDataObject(0)
+        _, data, cleanup = ensure_flat_input(proxy)
         
-        merge = None
-        # Handle multiblock
-        if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
-            data = merge.GetClientSideObject().GetOutputDataObject(0)
-        
-        arr = data.GetPointData().GetArray(field_name)
-        if arr is None:
+        arr = data.GetPointData().GetArray(field_name) if data else None
+        if arr is None and data is not None:
             arr = data.GetCellData().GetArray(field_name)
         
         if arr is None:
-            if merge:
-                simple.Delete(merge)
+            if cleanup:
+                safe_delete(cleanup)
             return None, None
         
         # Copy the array before deleting merge
         result = vtk_to_numpy(arr).copy()
         
-        if merge:
-            simple.Delete(merge)
+        if cleanup:
+            safe_delete(cleanup)
         
         return result, data
 
@@ -3751,9 +3748,8 @@ out.GetPointData().AddArray(arr)
         if proxy_name is None:
             proxy_name = proxy.GetGlobalIDAsString()
         
-        # Merge blocks
-        merge = simple.MergeBlocks(Input=proxy)
-        simple.UpdatePipeline(proxy=merge)
+        # Flatten composite data (reuses existing MergeBlocks if present)
+        merge, _, cleanup_merge = ensure_flat_input(proxy)
         
         # Get body bounds (excludes farfield)
         body_bounds, _ = self._get_body_bounds(proxy)
@@ -3767,6 +3763,7 @@ out.GetPointData().AddArray(arr)
         span_axis = span_info.get("span_axis", "y")
         vertical_axis = span_info.get("vertical_axis", "z")
         streamwise_axis = span_info.get("streamwise_axis", "x")
+        velocity_field = span_info.get("velocity_field", "Velocity")
         body_center = np.array(span_info["body_center"])
         
         axis_map = {"x": 0, "y": 1, "z": 2}
@@ -3827,10 +3824,11 @@ out.GetPointData().AddArray(arr)
         cut_data = plane_cut.GetClientSideObject().GetOutputDataObject(0)
         
         def cleanup():
-            simple.Delete(plane_cut)
-            simple.Delete(clip)
-            simple.Delete(surface)
-            simple.Delete(merge)
+            safe_delete(plane_cut)
+            safe_delete(clip)
+            safe_delete(surface)
+            if cleanup_merge:
+                safe_delete(cleanup_merge)
             simple.SetActiveSource(original_active_source)
         
         if cut_data.GetNumberOfPoints() == 0:
@@ -3918,7 +3916,7 @@ out.GetPointData().AddArray(arr)
             start_point=surface_point,
             direction=surface_normal,
             probe_length=probe_length,
-            field_name="Velocity"
+            field_name=velocity_field
         )
         
         cleanup()

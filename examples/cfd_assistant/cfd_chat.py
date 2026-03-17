@@ -100,6 +100,8 @@ def main():
     app.state.live_port = args.port
     app.state.monitoring_active = False
     app.state.analysis_chart_active = False  # True when showing analysis chart (not live)
+    app.state.simulation_paused = False
+    app.state.step_count = 5  # Default step count
     
     # Store chart figures directly - we'll create multiple widget slots
     app.chart_figures = []  # List of Plotly figure objects for analysis charts
@@ -363,6 +365,11 @@ def main():
                 if app.state.monitoring_active != chat_mcp._monitoring_active:
                     app.state.monitoring_active = chat_mcp._monitoring_active
                 
+                # Sync live_connected state (LLM may connect/disconnect via MCP)
+                link_alive = chat_mcp.is_connection_alive()
+                if app.state.live_connected != link_alive:
+                    app.state.live_connected = link_alive
+                
                 # Skip live chart updates if showing an analysis chart
                 if app.state.analysis_chart_active:
                     # Debug: only print occasionally to avoid spam
@@ -376,6 +383,10 @@ def main():
                             paused = chat_mcp._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
                         except:
                             pass
+                    
+                    # Sync pause state to UI (picks up breakpoint-triggered pauses)
+                    if app.state.simulation_paused != paused:
+                        app.state.simulation_paused = paused
                     
                     # Always update chart - whether paused or running
                     # Get data and update Plotly figure
@@ -466,10 +477,38 @@ def main():
     def toggle_live_connection():
         if app.state.live_connected:
             chat_mcp.disconnect_live()
-            app.state.live_connected = False
+            with app.state:
+                app.state.live_connected = False
+                app.state.simulation_paused = False
         else:
             result = chat_mcp.connect_live()
-            app.state.live_connected = result.get("status") == "connected"
+            with app.state:
+                app.state.live_connected = result.get("status") == "connected"
+                app.state.simulation_paused = result.get("paused", False)
+
+    def toggle_pause():
+        if not app.state.live_connected:
+            return
+        if app.state.simulation_paused:
+            chat_mcp.resume_simulation()
+            app.state.simulation_paused = False
+        else:
+            chat_mcp.pause_simulation()
+            chat_mcp.clear_breakpoint()  # Cancel any pending step/breakpoint
+            app.state.simulation_paused = True
+
+    def step_forward():
+        if not app.state.live_connected:
+            return
+        count = int(app.state.step_count or 5)
+        result = chat_mcp.step_simulation(count)
+        if result.get("status") == "error":
+            print(f"[Live] Step failed: {result}")
+            return
+        app.state.simulation_paused = False
+        # Auto-open chart panel so user sees residuals
+        if not app.state.chart_drawer_open:
+            app.state.chart_drawer_open = True
     
     # State for chart panel position and collapse
     app.state.setdefault("chart_collapsed", False)
@@ -603,8 +642,8 @@ def main():
                 title="Live Residual Chart",
             )
             
-            # Live connection button
-            with html.Div(v_if="live_enabled"):
+            # Live connection and transport controls
+            with html.Div(v_if="live_enabled", style="display: flex; gap: 4px; align-items: center;"):
                 v3.VBtn(
                     icon=("live_connected ? 'mdi-broadcast' : 'mdi-broadcast-off'",),
                     click=toggle_live_connection,
@@ -613,6 +652,32 @@ def main():
                     size="small",
                     title=("live_connected ? 'Connected' : 'Click to connect'",),
                 )
+                # Transport controls - only visible when connected
+                with html.Div(v_show="live_connected", style="display: flex; gap: 2px; align-items: center;"):
+                    v3.VBtn(
+                        icon=("simulation_paused ? 'mdi-play' : 'mdi-pause'",),
+                        click=(toggle_pause,),
+                        color=("simulation_paused ? 'success' : 'warning'",),
+                        variant="elevated",
+                        size="small",
+                        title=("simulation_paused ? 'Resume' : 'Pause'",),
+                    )
+                    v3.VTextField(
+                        v_model=("step_count",),
+                        type="number",
+                        density="compact",
+                        variant="outlined",
+                        hide_details=True,
+                        style="width: 60px; max-width: 60px;",
+                        bg_color="white",
+                    )
+                    v3.VBtn(
+                        icon="mdi-skip-forward",
+                        click=(step_forward,),
+                        variant="elevated",
+                        size="small",
+                        title="Step N iterations",
+                    )
         
         llm.Chat(
             app_name="cfd",
