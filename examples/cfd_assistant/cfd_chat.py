@@ -3,11 +3,17 @@
 CFD Analysis Chat - Interactive visualization with optional Catalyst Live.
 
 Usage:
-    # Load static data file
+    # Load static data file (in-process)
     pvpython cfd_chat.py data.vtm
+    
+    # Connect to pvserver (client-server, local or remote)
+    pvpython cfd_chat.py --server=localhost:11111 data.vtm
     
     # Connect to live simulation
     pvpython cfd_chat.py --live --host localhost --port 22222
+    
+    # pvserver + live simulation
+    pvpython cfd_chat.py --server=localhost:11111 --live
     
     # Both: load file and enable live connection
     pvpython cfd_chat.py data.vtm --live
@@ -70,7 +76,14 @@ def main():
     parser.add_argument('--live', action='store_true', help='Enable Catalyst Live')
     parser.add_argument('--host', default='localhost', help='Catalyst host')
     parser.add_argument('--port', type=int, default=22222, help='Catalyst port')
+    parser.add_argument('--server', default=None, help='pvserver host:port (e.g. localhost:11111)')
     args = parser.parse_args()
+    
+    # Connect to pvserver if specified (must happen before any pipeline operations)
+    if args.server:
+        sv_host, sv_port = args.server.split(":")
+        simple.Connect(sv_host, int(sv_port))
+        print(f"Connected to pvserver at {args.server}")
     
     data_file = args.data_file
     if data_file is None and not args.live:

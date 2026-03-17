@@ -7,7 +7,7 @@ Full provenance tracking enables reproducibility and explanation.
 """
 
 from paraview import simple
-from trame_llm.paraview import ensure_flat_input
+from trame_llm.paraview import ensure_flat_input, set_producer_output
 
 
 class CFDWorkflows:
@@ -157,8 +157,7 @@ class CFDWorkflows:
         
         # Create TrivialProducer to hold the table
         producer = simple.TrivialProducer(registrationName=proxy_name)
-        producer.GetClientSideObject().SetOutput(table)
-        producer.UpdatePipeline()
+        set_producer_output(producer, table)
         
         print(f"[_create_chart_table] Created proxy '{proxy_name}', ID={producer.GetGlobalIDAsString()}")
         

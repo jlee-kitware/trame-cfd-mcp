@@ -13,7 +13,7 @@ Methods include:
 """
 
 from paraview import simple
-from trame_llm.paraview import safe_delete, ensure_flat_input
+from trame_llm.paraview import safe_delete, ensure_flat_input, fetch_data
 import numpy as np
 import json
 from pathlib import Path
@@ -165,7 +165,7 @@ class CFDAnalysis:
         patterns = FIELD_TYPE_PATTERNS[field_type]
         
         # Get available fields from proxy
-        data = proxy.GetClientSideObject().GetOutputDataObject(0)
+        data = fetch_data(proxy)
         
         # Handle composite datasets (multiblock, partitioned)
         if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
@@ -237,7 +237,7 @@ class CFDAnalysis:
         Returns:
             Dict mapping semantic type to actual field name, plus all field names
         """
-        data = proxy.GetClientSideObject().GetOutputDataObject(0)
+        data = fetch_data(proxy)
         
         # Handle multiblock - get first leaf
         data = self._get_leaf_data(data)
@@ -487,7 +487,7 @@ class CFDAnalysis:
             simple.UpdatePipeline(proxy=proxy)
             
             # Get data object - handle multiblock
-            raw_data = proxy.GetClientSideObject().GetOutputDataObject(0)
+            raw_data = fetch_data(proxy)
             data = self._get_leaf_data(raw_data)
             
             if data is None:
@@ -705,7 +705,7 @@ class CFDAnalysis:
             if "velocity" in fields["resolved"]:
                 vel_name = fields["resolved"]["velocity"]
                 # Verify it's 3-component
-                raw_data = proxy.GetClientSideObject().GetOutputDataObject(0)
+                raw_data = fetch_data(proxy)
                 data = self._get_leaf_data(raw_data)
                 
                 if data is None:
@@ -1524,7 +1524,7 @@ class CFDAnalysis:
             flat_proxy, _, _flat_cleanup = ensure_flat_input(proxy)
             
             # Find velocity field
-            flat_data = flat_proxy.GetClientSideObject().GetOutput()
+            flat_data = fetch_data(flat_proxy)
             _, vel_name = self._find_velocity_array(flat_data)
             if vel_name is None:
                 if _flat_cleanup:
@@ -1602,7 +1602,7 @@ out.GetPointData().AddArray(arr)
                 output_proxy = gradient
             
             # Get field array for threshold calculation
-            output_data = output_proxy.GetClientSideObject().GetOutputDataObject(0)
+            output_data = fetch_data(output_proxy)
             field_vtk = output_data.GetPointData().GetArray(field_name)
             if field_vtk is None:
                 return {"error": f"Could not compute {field_name}"}
@@ -1804,7 +1804,7 @@ out.GetPointData().AddArray(arr)
                 vel_array, _ = self._find_velocity_array(surf_data)
                 if vel_array is None:
                     # Try from original proxy
-                    orig_data = proxy.GetClientSideObject().GetOutputDataObject(0)
+                    orig_data = fetch_data(proxy)
                     if orig_data.IsA("vtkMultiBlockDataSet"):
                         orig_data = orig_data.GetBlock(0)
                     vel_array, _ = self._find_velocity_array(orig_data)
@@ -1971,7 +1971,7 @@ out.GetPointData().AddArray(arr)
             normals_filter.ComputeCellNormals = 1
             simple.UpdatePipeline(proxy=normals_filter)
             
-            surf_data = normals_filter.GetClientSideObject().GetOutputDataObject(0)
+            surf_data = fetch_data(normals_filter)
             num_cells = surf_data.GetNumberOfCells()
             
             # Get pressure
@@ -2259,7 +2259,7 @@ out.GetPointData().AddArray(arr)
             merge, _, cleanup_merge = ensure_flat_input(proxy)
             
             # Check for velocity field
-            data = merge.GetClientSideObject().GetOutput()
+            data = fetch_data(merge)
             vel, vel_name = self._find_velocity_array(data)
             if vel is None:
                 if cleanup_merge:
@@ -2272,7 +2272,7 @@ out.GetPointData().AddArray(arr)
             simple.UpdatePipeline(proxy=vortex)
             
             # Get output
-            cores = vortex.GetClientSideObject().GetOutput()
+            cores = fetch_data(vortex)
             
             n_points = cores.GetNumberOfPoints()
             n_cores = cores.GetNumberOfCells()
@@ -2541,11 +2541,7 @@ out.GetPointData().AddArray(arr)
             simple.UpdatePipeline(proxy=proxy)
             
             # Merge blocks if needed
-            cso = proxy.GetClientSideObject()
-            if hasattr(cso, 'GetOutput'):
-                data = cso.GetOutput()
-            else:
-                data = cso.GetOutputDataObject(0)
+            data = fetch_data(proxy)
             
             print(f"[detect_streamwise] Initial data type: {data.GetClassName()}")
             
@@ -3821,7 +3817,7 @@ out.GetPointData().AddArray(arr)
         plane_cut.SliceType.Normal = normal
         simple.UpdatePipeline(proxy=plane_cut)
         
-        cut_data = plane_cut.GetClientSideObject().GetOutputDataObject(0)
+        cut_data = fetch_data(plane_cut)
         
         def cleanup():
             safe_delete(plane_cut)
