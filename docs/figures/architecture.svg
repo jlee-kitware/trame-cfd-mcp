@@ -16,78 +16,49 @@
     <path d="M2 1.5L8 5L2 8.5" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
   </marker>
 </defs>
-
-<!-- TIER 1: Browser -->
 <rect x="170" y="12" width="140" height="36" rx="6" class="box-accent"/>
 <text class="title" x="240" y="26" text-anchor="middle" dominant-baseline="central">Browser</text>
 <text class="sub" x="240" y="38" text-anchor="middle" dominant-baseline="central">thin client</text>
-
-<!-- Arrows: Browser to/from Orchestration -->
 <line x1="210" y1="48" x2="210" y2="72" class="arr" marker-end="url(#a)"/>
 <text class="label" x="206" y="64" text-anchor="end">input</text>
 <line x1="270" y1="72" x2="270" y2="48" class="arr" marker-end="url(#a)"/>
 <text class="label" x="274" y="64" text-anchor="start">frames</text>
-
-<!-- TIER 2: Orchestration container -->
 <rect x="20" y="74" width="440" height="185" rx="12" class="container"/>
 <text class="label" x="240" y="90" text-anchor="middle" font-style="italic">Orchestration layer</text>
-
-<!-- trame box -->
 <rect x="35" y="100" width="90" height="42" rx="5" class="box"/>
 <text class="title" x="80" y="116" text-anchor="middle" dominant-baseline="central">trame</text>
 <text class="sub" x="80" y="132" text-anchor="middle" dominant-baseline="central">web server</text>
-
-<!-- LLM box -->
 <rect x="148" y="100" width="90" height="42" rx="5" class="box"/>
 <text class="title" x="193" y="116" text-anchor="middle" dominant-baseline="central">LLM</text>
 <text class="sub" x="193" y="132" text-anchor="middle" dominant-baseline="central">intent + explain</text>
-
-<!-- Ontology box -->
 <rect x="261" y="100" width="96" height="42" rx="5" class="box"/>
 <text class="title" x="309" y="116" text-anchor="middle" dominant-baseline="central">Ontology</text>
 <text class="sub" x="309" y="132" text-anchor="middle" dominant-baseline="central">domain knowledge</text>
-
-<!-- MCP box -->
 <rect x="380" y="100" width="66" height="42" rx="5" class="box"/>
 <text class="title" x="413" y="116" text-anchor="middle" dominant-baseline="central">MCP</text>
 <text class="sub" x="413" y="132" text-anchor="middle" dominant-baseline="central">dispatch</text>
-
-<!-- Arrows between orchestration boxes -->
 <line x1="125" y1="121" x2="146" y2="121" class="arr" marker-end="url(#a)"/>
 <line x1="238" y1="116" x2="259" y2="116" class="arr" marker-end="url(#a)"/>
 <line x1="259" y1="126" x2="238" y2="126" class="arr" marker-end="url(#a)"/>
 <line x1="357" y1="121" x2="378" y2="121" class="arr" marker-end="url(#a)"/>
-
-<!-- Plan-Execute-Interpret loop -->
 <rect x="55" y="162" width="370" height="32" rx="6" class="box-accent"/>
 <text class="loop-label" x="120" y="180" text-anchor="middle" dominant-baseline="central">Plan</text>
 <text class="sub" x="180" y="180" text-anchor="middle" dominant-baseline="central">&#x2192;</text>
 <text class="loop-label" x="240" y="180" text-anchor="middle" dominant-baseline="central">Execute</text>
 <text class="sub" x="300" y="180" text-anchor="middle" dominant-baseline="central">&#x2192;</text>
 <text class="loop-label" x="360" y="180" text-anchor="middle" dominant-baseline="central">Interpret</text>
-
-<!-- Loop-back arrow -->
 <path d="M400 194 L400 208 L80 208 L80 194" fill="none" class="loop-back" marker-end="url(#a)"/>
 <text class="label" x="240" y="220" text-anchor="middle">follow-up analysis (closes the loop)</text>
-
-<!-- Arrows: Orchestration to/from pvserver -->
 <line x1="180" y1="260" x2="180" y2="286" class="arr" marker-end="url(#a)"/>
 <text class="label" x="176" y="278" text-anchor="end">tool calls</text>
 <line x1="300" y1="286" x2="300" y2="260" class="arr" marker-end="url(#a)"/>
 <text class="label" x="304" y="278" text-anchor="start">structured results</text>
-
-<!-- TIER 3: pvserver container -->
 <rect x="20" y="288" width="440" height="120" rx="12" class="container"/>
-<text class="label" x="240" y="304" text-anchor="middle" font-style="italic">pvserver (MPI-parallel) — data and rendering stay here</text>
-
-<!-- CFD Tools box -->
+<text class="label" x="240" y="304" text-anchor="middle" font-style="italic">pvserver (MPI-parallel), data and rendering stay here</text>
 <rect x="35" y="314" width="195" height="52" rx="5" class="box"/>
 <text class="title" x="132" y="332" text-anchor="middle" dominant-baseline="central">CFD tools</text>
 <text class="sub" x="132" y="350" text-anchor="middle" dominant-baseline="central">ParaView filters + ontology</text>
-
-<!-- TTK Tools box -->
 <rect x="250" y="314" width="195" height="52" rx="5" class="box"/>
 <text class="title" x="347" y="332" text-anchor="middle" dominant-baseline="central">TTK tools</text>
 <text class="sub" x="347" y="350" text-anchor="middle" dominant-baseline="central">TTK plugin + ontology</text>
-
 </svg>

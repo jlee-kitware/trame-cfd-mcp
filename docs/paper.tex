@@ -50,10 +50,10 @@ of tightly coupled operations where correctness depends on tool selection,
 execution order, and parameterization.
 A CFD engineer investigating flow separation must extract wall shear stress,
 identify zero-crossings in skin friction, and confirm with boundary layer
-profiles---a chain that requires both domain expertise and proficiency with
+profiles, a chain that requires both domain expertise and proficiency with
 visualization tools.
 Current approaches to LLM-assisted scientific visualization generate scripts
-that encode this knowledge implicitly and often incorrectly---producing code
+that encode this knowledge implicitly and often incorrectly, producing code
 that executes but yields wrong results.
 We present an architecture that separates intent interpretation (LLM) from
 execution (deterministic domain tools) from explanation (LLM), connected by
@@ -63,7 +63,7 @@ We demonstrate the approach in two domains on the same ParaView server
 infrastructure: computational fluid dynamics post-processing and topological
 data analysis via the Topology ToolKit (TTK).
 Adding the second domain required only an ontology and tool wrappers around
-existing filters---no changes to the architecture, protocol, or deployment.
+existing filters, with no changes to the architecture, protocol, or deployment.
 Evaluated on canonical analysis scenarios in both domains, the approach
 produces physically and topologically correct results where script generation
 produces silent failures, and scales to production datasets via ParaView's
@@ -94,8 +94,8 @@ question, which tools should be applied, in what order, with what parameters,
 and what do the results mean?
 
 Large language models (LLMs) offer a natural interface for bridging this gap.
-A user can state an engineering question---``is there flow separation on the
-upper surface?''---and an LLM can, in principle, translate that into the
+A user can state an engineering question (``is there flow separation on the
+upper surface?'') and an LLM can, in principle, translate that into the
 appropriate sequence of analysis operations.
 However, current approaches to LLM-assisted scientific visualization conflate
 two fundamentally different tasks: deciding \textit{what} to analyze (an intent
@@ -103,7 +103,7 @@ interpretation problem where LLMs excel) and \textit{how} to execute the
 analysis (a procedural domain knowledge problem where deterministic tools are
 superior).
 
-The dominant paradigm---LLM-generated scripts---asks the model to produce
+The dominant paradigm, LLM-generated script generation, asks the model to produce
 executable code that directly invokes visualization APIs.
 Recent work by Zhao et al.~\cite{Zhao:2026:RAG} demonstrates that even with
 retrieval-augmented generation (RAG), this approach suffers from API
@@ -116,9 +116,9 @@ be resolved by better code generation.
 
 We propose an architecture that assigns each task to the component best suited
 for it.
-The LLM interprets user intent and explains results---tasks that require natural
+The LLM interprets user intent and explains results, tasks that require natural
 language understanding and synthesis.
-Deterministic domain tools execute the analysis---tasks that require validated,
+Deterministic domain tools execute the analysis, tasks that require validated,
 reproducible procedures.
 The Model Context Protocol (MCP)~\cite{MCP:2024} provides a standardized
 interface between them.
@@ -130,8 +130,8 @@ We demonstrate that this pattern generalizes across scientific domains by
 implementing it for two distinct applications on the same ParaView server
 infrastructure: computational fluid dynamics (CFD) post-processing and
 topological data analysis via TTK.
-Both domains exhibit the same structural challenge---powerful tools that
-require expert knowledge to configure, chain, and interpret---and both
+Both domains exhibit the same structural challenge: powerful tools that
+require expert knowledge to configure, chain, and interpret. Both
 benefit from the same architectural solution.
 Adding the second domain required only an ontology file and MCP tool wrappers
 around existing TTK filters; no changes to the architecture, protocol,
@@ -174,11 +174,11 @@ for retrieval.
 These approaches share a common architecture: the LLM generates executable code
 that directly invokes visualization APIs.
 The limitations are structural.
-Generated scripts are one-shot---no structured results flow back for the LLM to
+Generated scripts are one-shot; no structured results flow back for the LLM to
 reason about.
 Correction is human-driven, not system-driven.
-And the most dangerous failure mode---code that executes but performs the wrong
-analysis---is not addressed by better code generation.
+And the most dangerous failure mode, code that executes but performs the wrong
+analysis, is not addressed by better code generation.
 
 \textbf{Natural language interfaces for scientific tools.}
 Natural language interfaces for visualization have been explored extensively in
@@ -197,8 +197,8 @@ and a stateless protocol over stateful backends.
 Function calling and tool use in LLMs have been explored through
 ReAct~\cite{Yao:2023:ReAct} and chain-of-thought
 prompting~\cite{Wei:2022:CoT}.
-Our work differs in that the tools return structured quantitative data---not
-confirmation messages or rendered images---enabling the LLM to perform
+Our work differs in that the tools return structured quantitative data, not
+confirmation messages or rendered images, enabling the LLM to perform
 quantitative reasoning in the interpretation phase.
 
 \textbf{Domain ontologies in scientific computing.}
@@ -222,7 +222,7 @@ topological data analysis.
 
 The system comprises four layers (\autoref{fig:architecture}):
 (1)~a \textbf{browser client} that receives compressed rendered frames and
-sends user input---no data or geometry reaches the browser, as rendering is
+sends user input. No data or geometry reaches the browser; rendering is
 performed entirely server-side via ParaView's \texttt{VtkRemoteView};
 (2)~a \textbf{trame web server}~\cite{Jourdain:2023:trame} that mediates
 between the browser and the ParaView backend, hosting the LLM integration
@@ -242,7 +242,7 @@ and client-server fetch based on the active connection type.
 
 \begin{figure}[tb]
  \centering
- \includegraphics[width=\columnwidth]{figures/architecture}
+ \includegraphics[width=\columnwidth]{architecture}
  \caption{System architecture. The browser is a thin client receiving only
  rendered frames. The LLM plans analysis operations constrained by the domain
  ontology, dispatches them via MCP to deterministic tools running on
@@ -268,7 +268,7 @@ The output is an ordered sequence of named tool invocations with parameters.
 
 \textbf{Execute.}
 MCP dispatches the planned tool calls to the ParaView pipeline.
-Tools are deterministic domain workflows---not generated scripts---that build
+Tools are deterministic domain workflows, not generated scripts, that build
 or modify the server-side pipeline and return structured results: field
 statistics, extracted profiles, integrated quantities, topological invariants.
 Critically, tools return \textit{data}, not \textit{renders}.
@@ -301,8 +301,8 @@ Each is authored by a domain expert in JSON and loaded at startup.
 
 \autoref{fig:ontology} shows representative entries from the CFD and TTK
 ontologies.
-The ontology is deliberately small---capturing the high-leverage knowledge that
-distinguishes expert analysis from naive tool application---rather than
+The ontology is deliberately small, capturing the high-leverage knowledge that
+distinguishes expert analysis from naive tool application, rather than
 attempting encyclopedic domain coverage.
 
 \begin{figure}[tb]
@@ -355,7 +355,7 @@ These are domain-independent and shared across both instantiations.
 
 Three design principles govern tool implementation.
 \textit{Structured returns:} every tool returns quantitative data, not just
-confirmation---data the interpretation phase can reason about.
+confirmation, data the interpretation phase can reason about.
 \textit{Dynamic field resolution:} tools accept semantic field names
 (``velocity,'' ``pressure'') and resolve them to solver-specific array names
 at runtime using pattern matching and alias tables.
@@ -372,7 +372,7 @@ memory, executes the full visualization pipeline, and renders frames using
 server-side GPUs.
 The trame web server connects via \texttt{simple.Connect()} and forwards all
 pipeline operations through ParaView's client-server protocol.
-The browser receives only compressed JPEG frames---it never sees geometry or
+The browser receives only compressed JPEG frames. It never sees geometry or
 field data.
 Client memory remains constant regardless of dataset size; a 100-million-cell
 mesh resides entirely on the server.
@@ -442,7 +442,7 @@ field, not from the LLM's training alone.
  %% Right: Interpret (structured output + explanation)
  %% Show the Cf distribution with zero-crossing marked
  \fbox{\parbox{0.95\textwidth}{\centering\vspace{1.5cm}
- \textbf{TODO: Use case walkthrough --- Natural Language to Validated Analysis}\\
+ \textbf{TODO: Use case walkthrough, Natural Language to Validated Analysis}\\
  Left: chat UI with user query. Center: $C_f$ distribution with zero-crossing marked.\\
  Right: structured interpretation with follow-up recommendation.\\
  Show the Plan--Execute--Interpret cycle concretely.\vspace{1.5cm}}}
@@ -496,7 +496,7 @@ The planner decomposes the question:
 \texttt{show\_forces},
 (2)~extract separation location for both cases,
 (3)~compare wake momentum deficit profiles.
-All extractions execute within a persistent pipeline session---both datasets
+All extractions execute within a persistent pipeline session; both datasets
 remain loaded, and tools operate on each in turn.
 
 The interpreter synthesizes: ``Separation moved forward from $x/c = 0.78$ at
@@ -514,7 +514,7 @@ multi-step reasoning where the ontology tells the planner how drag decomposes.
 
 \subsection{Implementation}
 
-TTK is a ParaView plugin---it runs on the same \texttt{pvserver} instance as
+TTK is a ParaView plugin; it runs on the same \texttt{pvserver} instance as
 the CFD filters with no additional infrastructure.
 Adding topological analysis required authoring a TTK-specific ontology and
 implementing MCP tool wrappers around existing TTK filters.
@@ -546,7 +546,7 @@ The ontology maps ``dominant features'' to a prerequisite chain: compute
 persistence diagram, identify the persistence gap that separates signal from
 noise, simplify below the gap, then extract critical points of the simplified
 field.
-This ordering is critical---running critical point extraction on unsimplified
+This ordering is critical; running critical point extraction on unsimplified
 data produces hundreds of spurious features that obscure the real structure.
 Without the ontology, an LLM might skip simplification entirely or choose an
 arbitrary threshold.
@@ -746,15 +746,15 @@ A script is fire-and-forget.
 The LLM generates it, ParaView executes it, and the user sees an image.
 No structured results flow back for the LLM to reason about.
 The Plan--Execute--Interpret loop requires that execution returns
-\textit{data}---field statistics, extracted profiles, zero-crossing
-locations---so that the interpreter can perform quantitative reasoning.
+\textit{data} (field statistics, extracted profiles, zero-crossing
+locations) so that the interpreter can perform quantitative reasoning.
 ``Separation at $x/c = 0.72$'' is a qualitatively different output from
 ``here is a picture of skin friction.''
 
 \textbf{Unverifiable correctness.}
 When an LLM generates a 40-line Python script that configures a ParaView
 pipeline, validating that it performs the correct analysis requires reading
-and understanding the script---which is the expertise the user lacked in the
+and understanding the script, which is the expertise the user lacked in the
 first place.
 With named tool operations, the analysis plan is expressed at the level of
 declared intent: ``extract skin friction on upper surface, find
@@ -763,8 +763,8 @@ The provenance is legible to domain users without programming expertise.
 
 \textbf{Wrong role for the LLM.}
 Zhao et al.'s error taxonomy~\cite{Zhao:2026:RAG} provides empirical evidence.
-Their four categories---module errors, missing parameterization, API
-hallucination, and wrong intention/logic---are ordered by difficulty.
+Their four categories (module errors, missing parameterization, API
+hallucination, and wrong intention/logic) are ordered by difficulty.
 The hardest, wrong intention/logic, occurs when the LLM chooses a fundamentally
 incorrect strategy.
 RAG reduces but does not eliminate these errors.
@@ -880,12 +880,12 @@ Python scripts.
 We evaluate both systems on three metrics:
 \textit{executability} (does the output run without errors?),
 \textit{analysis correctness} (does it perform the right analysis?),
-and \textit{silent failure rate}---the most critical metric---how often does the
+and \textit{silent failure rate}, the most critical metric: how often does the
 output execute successfully but produce incorrect results?
 
 \begin{table}[tb]
   \caption{Comparison: tool orchestration vs.\ script generation.
-  Silent failure rate is the most critical metric---code that executes but
+  Silent failure rate is the most critical metric: code that executes but
   produces wrong analysis.}
   \label{tab:script_comparison}
   \centering
@@ -990,7 +990,7 @@ handles the language.
 
 \subsection{What the Ontology Provides}
 
-The ontology is small---approximately 25--30 entries per domain---but its impact
+The ontology is small, approximately 25--30 entries per domain, but its impact
 on plan quality is disproportionate.
 Without it, the LLM must rely on training data to determine which tools to
 invoke and in what order.
@@ -1014,7 +1014,7 @@ changed to make a generated script executable.
 Our metric is \textit{domain correctness}: whether the system produces the
 right physical or topological conclusion.
 These measure fundamentally different things.
-A script can have zero correction cost while performing the wrong analysis---the
+A script can have zero correction cost while performing the wrong analysis, the
 silent failure case that our evaluation explicitly captures.
 
 The approaches are complementary rather than competing.
@@ -1088,15 +1088,15 @@ We have presented an architecture for LLM-guided scientific analysis that
 separates intent interpretation from execution from explanation, connected by
 the Model Context Protocol and grounded by domain ontologies.
 The central insight is that scientific analysis workflows are procedural,
-domain-constrained, and interpretive---properties that map naturally onto a
+domain-constrained, and interpretive, properties that map naturally onto a
 division of labor between LLMs (intent and explanation), deterministic tools
 (execution), and ontologies (constraints).
 
 Demonstrated across two scientific domains on the same ParaView server
 infrastructure, the architecture produces physically and topologically correct
 analyses where script generation produces silent failures.
-The CFD instantiation enables diagnostic reasoning capabilities---iterative
-investigation, cross-quantity synthesis, cross-solver robustness---that are not
+The CFD instantiation enables diagnostic reasoning capabilities (iterative
+investigation, cross-quantity synthesis, cross-solver robustness) that are not
 possible with one-shot script generation.
 The TTK instantiation shows that the pattern generalizes: adding a domain
 requires only an ontology and tool wrappers around existing filters, not new
