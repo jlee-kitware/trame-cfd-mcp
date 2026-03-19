@@ -33,9 +33,15 @@
 
 \title{Domain-Grounded Tool Orchestration for LLM-Guided Scientific Analysis}
 
-\author{Jeff Lee\thanks{e-mail: jeff.lee@kitware.com}\\
-        \scriptsize Kitware, Inc.
-\and [Co-authors]\thanks{e-mail: }\\
+\author{Jeff Lee\thanks{e-mail: jeff.lee@kitware.com}\\ %
+        \scriptsize Kitware, Inc. %
+\and Sebastien Jourdain\thanks{e-mail: sebastien.jourdain@kitware.com}\\ %
+     \scriptsize Kitware, Inc. %
+\and Corey Quammen\thanks{e-mail: corey.quammen@kitware.com}\\ %
+     \scriptsize Kitware, Inc. %
+\and Patrick O'Leary\thanks{e-mail: patrick.oleary@kitware.com}\\ %
+     \scriptsize Kitware, Inc. %
+\and Berk Geveci\thanks{e-mail: berk.geveci@kitware.com}\\ %
      \scriptsize Kitware, Inc.}
 
 \abstract{%
@@ -234,6 +240,25 @@ development, or client-server via \texttt{pvserver} for production.
 A dual-mode data access helper transparently selects between in-process access
 and client-server fetch based on the active connection type.
 
+\begin{figure}[tb]
+ \centering
+ %% TODO: Architecture diagram showing the four layers:
+ %% Browser (thin client) <-> trame web server <-> LLM + Ontology <-> pvserver (MPI)
+ %% Show: rendered frames flowing left, MCP tool calls flowing right,
+ %% CFD and TTK tools both inside pvserver
+ \fbox{\parbox{0.95\columnwidth}{\centering\vspace{2cm}
+ \textbf{TODO: Architecture diagram}\\
+ Browser $\leftrightarrow$ trame $\leftrightarrow$ LLM + Ontology $\leftrightarrow$ pvserver\\
+ Show Plan--Execute--Interpret loop, MCP tool dispatch,\\
+ CFD and TTK tools on same server instance\vspace{2cm}}}
+ \caption{System architecture. The browser is a thin client receiving only
+ rendered frames. The LLM plans analysis operations constrained by the domain
+ ontology, dispatches them via MCP to deterministic tools running on
+ \texttt{pvserver}, and interprets the structured results. Both CFD and TTK
+ tools execute on the same server instance.}
+ \label{fig:architecture}
+\end{figure}
+
 \subsection{The Plan--Execute--Interpret Loop}
 
 Each user interaction initiates a cycle through three phases.
@@ -258,14 +283,13 @@ The pipeline persists across invocations, enabling multi-step analysis within
 a single session.
 
 \textbf{Interpret.}
-The LLM receives the structured results along with relevant entries from the
-domain knowledge graph.
+The LLM receives the structured results along with the relevant ontology entry.
 It generates a grounded explanation with quantitative specifics (``separation
 detected at $x/c = 0.72$ based on $C_f$ sign reversal'') rather than generic
 commentary.
-The knowledge graph provides causal reasoning chains: if separation is detected,
-the graph suggests confirming with boundary layer profiles and checking for
-upstream transition.
+The ontology's \texttt{follow\_ups} field provides diagnostic reasoning chains:
+if separation is detected, the ontology recommends confirming with boundary
+layer profiles and checking for upstream transition.
 When the interpretation identifies a finding that warrants further investigation,
 it proposes a follow-up analysis, closing the loop back to the Plan phase.
 
@@ -281,6 +305,44 @@ The same schema is instantiated with different content for each domain.
 The CFD ontology contains approximately 30 entries covering external aerodynamics;
 the TTK ontology contains approximately 25 entries covering topological features.
 Each is authored by a domain expert in JSON and loaded at startup.
+
+\autoref{fig:ontology} shows representative entries from the CFD and TTK
+ontologies.
+The ontology is deliberately small---capturing the high-leverage knowledge that
+distinguishes expert analysis from naive tool application---rather than
+attempting encyclopedic domain coverage.
+
+\begin{figure}[tb]
+\centering
+\begin{lstlisting}[basicstyle=\scriptsize\ttfamily,frame=single,
+  caption={Representative ontology entries.},label={fig:ontology},
+  captionpos=b,abovecaptionskip=5pt]
+// CFD ontology entry
+{ "phenomenon": "flow_separation",
+  "indicators": ["Cf_zero_crossing",
+    "reversed_BL_velocity"],
+  "tools": ["show_forces", 
+    "show_boundary_layer"],
+  "follow_ups": ["boundary_layer_profiles",
+    "upstream_transition_check"],
+  "significance": "Increases pressure drag,
+    reduces lift, may indicate stall onset"
+}
+
+// TTK ontology entry
+{ "phenomenon": "noisy_scalar_field",
+  "indicators": ["many_low_persistence_pairs",
+    "no_clear_persistence_gap"],
+  "tools": ["compute_persistence",
+    "persistence_curve", "simplify_field"],
+  "follow_ups": ["re_extract_critical_points",
+    "segment_morse_smale"],
+  "significance": "Noise obscures real 
+    structure; simplification required 
+    before meaningful analysis"
+}
+\end{lstlisting}
+\end{figure}
 
 \subsection{MCP Tool Layer}
 
@@ -379,6 +441,26 @@ separation bubble structure.''
 The follow-up recommendation comes from the ontology's \texttt{follow\_ups}
 field, not from the LLM's training alone.
 
+\begin{figure*}[tb]
+ \centering
+ %% TODO: Use case walkthrough figure showing:
+ %% Left: user query in chat UI
+ %% Center: Plan (tool sequence), Execute (ParaView pipeline screenshot),
+ %% Right: Interpret (structured output + explanation)
+ %% Show the Cf distribution with zero-crossing marked
+ \fbox{\parbox{0.95\textwidth}{\centering\vspace{1.5cm}
+ \textbf{TODO: Use case walkthrough --- Natural Language to Validated Analysis}\\
+ Left: chat UI with user query. Center: $C_f$ distribution with zero-crossing marked.\\
+ Right: structured interpretation with follow-up recommendation.\\
+ Show the Plan--Execute--Interpret cycle concretely.\vspace{1.5cm}}}
+ \caption{Walkthrough of the validated analysis use case. The user asks
+ about flow separation; the planner consults the ontology to select
+ $C_f$ extraction; the tool returns structured data including zero-crossing
+ locations; the interpreter produces a quantitative explanation with a
+ physically motivated follow-up recommendation.}
+ \label{fig:usecase_cfd}
+\end{figure*}
+
 \subsection{Use Case: Iterative Diagnostic Reasoning}
 
 This use case demonstrates the closed-loop nature of the architecture.
@@ -387,7 +469,7 @@ This use case demonstrates the closed-loop nature of the architecture.
 The planner maps this to surface $C_p$ extraction and color-mapped display.
 After execution, the interpreter examines the $C_p$ distribution and identifies
 a plateau on the upper surface between $x/c = 0.55$ and $x/c = 0.70$.
-The knowledge graph links $C_p$ plateaus to likely laminar separation bubbles
+The ontology links $C_p$ plateaus to likely laminar separation bubbles
 and recommends boundary layer profiles upstream and downstream.
 The system reports: ``$C_p$ plateau detected on the upper surface between
 $x/c = 0.55$--$0.70$, consistent with a laminar separation bubble.
@@ -494,6 +576,26 @@ significant features: 3 maxima corresponding to thermal plumes, 2 minima
 marking cold pools, and 4 saddles.
 The saddle network connects the extrema, revealing the dominant convective
 cell structure.''
+
+\begin{figure}[tb]
+ \centering
+ %% TODO: TTK use case figure showing:
+ %% Left: persistence diagram with gap annotated
+ %% Center: unsimplified critical points (noisy) vs simplified (clean)
+ %% Right: Morse-Smale segmentation colored by basin
+ \fbox{\parbox{0.95\columnwidth}{\centering\vspace{1.5cm}
+ \textbf{TODO: TTK analysis walkthrough}\\
+ Left: persistence diagram with signal/noise gap.\\
+ Center: critical points before/after simplification.\\
+ Right: Morse-Smale basin segmentation.\vspace{1.5cm}}}
+ \caption{TTK analysis walkthrough. The persistence diagram (left) reveals a
+ clear gap separating 38 noise features from 9 signal features. After
+ topological simplification at the gap threshold, critical point extraction
+ (center) recovers the clean feature structure. Morse-Smale decomposition
+ (right) segments the domain into basins aligned with the physical flow
+ structure.}
+ \label{fig:usecase_ttk}
+\end{figure}
 
 \subsection{Use Case: Structural Decomposition}
 
@@ -709,6 +811,28 @@ quantity computation.
 The critical test is whether the system correctly identifies prerequisite steps
 (e.g., simplification before segmentation) and selects appropriate thresholds.
 
+\begin{table}[tb]
+  \caption{Plan correctness: precision and recall of tool selections
+  relative to expert-defined analysis chains.}
+  \label{tab:plan_correctness}
+  \centering
+  \scriptsize
+  \begin{tabular}{lccccc}
+  \toprule
+   & \multicolumn{2}{c}{\textbf{With ontology}} & & \multicolumn{2}{c}{\textbf{Without ontology}} \\
+  \cmidrule{2-3} \cmidrule{5-6}
+  \textbf{Scenario} & Precision & Recall & & Precision & Recall \\
+  \midrule
+  \multicolumn{6}{l}{\textit{CFD (10 scenarios)}} \\
+  \quad Mean & --- & --- & & --- & --- \\
+  \midrule
+  \multicolumn{6}{l}{\textit{TTK (6 scenarios)}} \\
+  \quad Mean & --- & --- & & --- & --- \\
+  \bottomrule
+  \multicolumn{6}{l}{\scriptsize --- = TODO: fill with experimental results} \\
+  \end{tabular}
+\end{table}
+
 \subsection{Interpretation Accuracy}
 
 For the same scenario sets, a domain expert writes reference conclusions.
@@ -720,6 +844,38 @@ and appropriate follow-up recommendation.
 Domain experts additionally rate interpretation quality on a 5-point scale
 across three dimensions: physical/topological grounding, quantitative
 specificity, and actionability.
+
+\begin{table}[tb]
+  \caption{Interpretation accuracy across CFD and TTK scenarios.}
+  \label{tab:interp_accuracy}
+  \centering
+  \scriptsize
+  \begin{tabular}{lcccc}
+  \toprule
+  & Correct & Quantitative & Follow-up & Mean expert \\
+  & phenomenon & accuracy & appropriate & rating (/5) \\
+  \midrule
+  CFD ($n=10$) & ---/10 & ---/10 & ---/10 & --- \\
+  TTK ($n=6$)  & ---/6  & ---/6  & ---/6  & --- \\
+  \bottomrule
+  \multicolumn{5}{l}{\scriptsize --- = TODO: fill with experimental results} \\
+  \end{tabular}
+\end{table}
+
+\textbf{Interpretation failure analysis.}
+Beyond measuring accuracy, we examine how interpretations fail.
+For each scenario, an expert categorizes the interpretation as:
+\textit{correct}, \textit{correct but imprecise} (right phenomenon but vague
+or missing quantitative detail), \textit{overconfident} (states a conclusion
+more strongly than the data supports), or \textit{incorrect} (wrong physical
+or topological conclusion from correct structured data).
+We report the distribution of failure modes to characterize the reliability
+boundary of LLM-based interpretation.
+
+%% TODO: Add interpretation failure mode distribution table after running
+%% experiments. Expected columns: failure mode, count, representative example.
+%% Key question: how often does the LLM produce overconfident explanations
+%% from ambiguous structured data?
 
 \subsection{Comparison with Script Generation}
 
@@ -733,6 +889,30 @@ We evaluate both systems on three metrics:
 \textit{analysis correctness} (does it perform the right analysis?),
 and \textit{silent failure rate}---the most critical metric---how often does the
 output execute successfully but produce incorrect results?
+
+\begin{table}[tb]
+  \caption{Comparison: tool orchestration vs.\ script generation.
+  Silent failure rate is the most critical metric---code that executes but
+  produces wrong analysis.}
+  \label{tab:script_comparison}
+  \centering
+  \scriptsize
+  \begin{tabular}{lccc}
+  \toprule
+  & Executability & Analysis & Silent failure \\
+  & & correct & rate \\
+  \midrule
+  \textbf{Tool orchestration} & & & \\
+  \quad CFD ($n=10$) & ---/10 & ---/10 & ---/10 \\
+  \quad TTK ($n=6$)  & ---/6  & ---/6  & ---/6  \\
+  \midrule
+  \textbf{Script generation} & & & \\
+  \quad CFD ($n=10$) & ---/10 & ---/10 & ---/10 \\
+  \quad TTK ($n=6$)  & ---/6  & ---/6  & ---/6  \\
+  \bottomrule
+  \multicolumn{4}{l}{\scriptsize --- = TODO: fill with experimental results} \\
+  \end{tabular}
+\end{table}
 
 \subsection{Robustness}
 
@@ -756,8 +936,8 @@ For each scenario, we record:
 the number of Plan--Execute--Interpret cycles before the system declares the
 investigation complete,
 whether each follow-up matches what a domain expert would do next,
-and the contribution of the knowledge graph (comparing follow-up quality with
-and without the ontology's \texttt{follow\_ups} field).
+and the contribution of the ontology's diagnostic chains (comparing follow-up
+quality with and without the \texttt{follow\_ups} field).
 
 \subsection{Scalability}
 
@@ -768,6 +948,33 @@ We report wall-clock time for representative analysis operations, server-side
 memory, and client-side memory.
 The hypothesis is that client memory remains constant regardless of dataset
 size, with all data-proportional costs borne by the server.
+
+\begin{table}[tb]
+  \caption{Scalability: wall-clock time and memory usage for representative
+  analysis operations at increasing dataset sizes. Client memory should remain
+  constant.}
+  \label{tab:scalability}
+  \centering
+  \scriptsize
+  \begin{tabular}{lrrrrr}
+  \toprule
+  & \multicolumn{2}{c}{\textbf{Server}} & & \multicolumn{2}{c}{\textbf{Client}} \\
+  \cmidrule{2-3} \cmidrule{5-6}
+  \textbf{Dataset} & Memory & Time & & Memory & Time \\
+  \midrule
+  \multicolumn{6}{l}{\textit{CFD: show\_boundary\_layer}} \\
+  \quad 1M cells   & --- & --- & & --- & --- \\
+  \quad 10M cells  & --- & --- & & --- & --- \\
+  \quad 100M cells & --- & --- & & --- & --- \\
+  \midrule
+  \multicolumn{6}{l}{\textit{TTK: compute\_persistence}} \\
+  \quad $256^3$    & --- & --- & & --- & --- \\
+  \quad $512^3$    & --- & --- & & --- & --- \\
+  \quad $1024^3$   & --- & --- & & --- & --- \\
+  \bottomrule
+  \multicolumn{6}{l}{\scriptsize --- = TODO: fill with experimental results} \\
+  \end{tabular}
+\end{table}
 
 
 \section{Discussion}
@@ -829,13 +1036,14 @@ Several limitations should be acknowledged.
 \textit{Ontology coverage:} the system's reasoning quality is bounded by the
 ontology's content; queries outside the encoded phenomena revert to
 unconstrained LLM planning.
-\textit{Interpretation reliability:} although the knowledge graph grounds
+\textit{Interpretation reliability:} although the ontology grounds
 interpretation, the LLM can still generate overconfident or subtly incorrect
 explanations; critical applications require expert review.
 \textit{Evaluation scope:} the CFD evaluation focuses on external aerodynamics;
 internal flows, multiphase, and combustion present different patterns.
 The TTK evaluation, while demonstrating generality, is less deeply exercised.
-\textit{Knowledge graph authoring:} the causal chains are manually authored;
+\textit{Ontology authoring:} the diagnostic reasoning chains
+(\texttt{follow\_ups}) are manually authored by domain experts;
 scaling to comprehensive cross-disciplinary coverage requires either significant
 expert effort or advances in automated knowledge extraction.
 
@@ -913,8 +1121,10 @@ everything.
 
 \acknowledgments{
 This work was supported in part by [funding sources].
-The authors thank Berk Geveci and Mathieu Westphal for valuable discussions on
-ParaView architecture, and the TTK development team for the topological analysis
+The trame and trame-llm frameworks developed by Sebastien Jourdain provide the
+web application infrastructure and LLM integration layer on which this work is
+built.
+The authors thank the TTK development team for the topological analysis
 infrastructure.}
 
 %\bibliographystyle{abbrv}
