@@ -242,20 +242,13 @@ and client-server fetch based on the active connection type.
 
 \begin{figure}[tb]
  \centering
- %% TODO: Architecture diagram showing the four layers:
- %% Browser (thin client) <-> trame web server <-> LLM + Ontology <-> pvserver (MPI)
- %% Show: rendered frames flowing left, MCP tool calls flowing right,
- %% CFD and TTK tools both inside pvserver
- \fbox{\parbox{0.95\columnwidth}{\centering\vspace{2cm}
- \textbf{TODO: Architecture diagram}\\
- Browser $\leftrightarrow$ trame $\leftrightarrow$ LLM + Ontology $\leftrightarrow$ pvserver\\
- Show Plan--Execute--Interpret loop, MCP tool dispatch,\\
- CFD and TTK tools on same server instance\vspace{2cm}}}
+ \includegraphics[width=\columnwidth]{figures/architecture}
  \caption{System architecture. The browser is a thin client receiving only
  rendered frames. The LLM plans analysis operations constrained by the domain
  ontology, dispatches them via MCP to deterministic tools running on
  \texttt{pvserver}, and interprets the structured results. Both CFD and TTK
- tools execute on the same server instance.}
+ tools execute on the same server instance. The Plan--Execute--Interpret loop
+ closes when the Interpret phase proposes follow-up analysis.}
  \label{fig:architecture}
 \end{figure}
 
