@@ -1,5 +1,4 @@
-# Domain-Grounded Tool Orchestration for Scientific Analysis:
-# Bridging LLMs and Computational Workflows via MCP
+# Domain-Grounded Tool Orchestration for LLM-Guided Scientific Analysis
 
 ## Paper Outline
 
