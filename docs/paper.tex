@@ -846,8 +846,9 @@ means}; domain tools should handle \textit{how}.
 
 \section{Evaluation}
 
-We evaluate along five dimensions: plan correctness, interpretation accuracy,
-robustness, iterative reasoning capability, and scalability.
+We evaluate along seven dimensions: plan correctness, interpretation accuracy,
+comparison with script generation, robustness, iterative reasoning capability,
+scalability, token usage, and determinism.
 All experiments use the same system instance running both CFD and TTK tools on
 a single \texttt{pvserver}.
 
@@ -1035,6 +1036,73 @@ size, with all data-proportional costs borne by the server.
   \multicolumn{6}{l}{\scriptsize --- = TODO: fill with experimental results} \\
   \end{tabular}
 \end{table}
+
+\subsection{Token Usage}
+
+Practical deployment requires understanding the cost per analysis interaction.
+We measure token consumption for each Plan-Execute-Interpret cycle across all
+evaluation scenarios, broken down by phase:
+\textit{plan tokens} (system prompt + ontology context + LLM planning response),
+\textit{tool overhead} (MCP tool descriptions, structured results returned to
+the LLM), and \textit{interpret tokens} (structured data + LLM explanation).
+
+\begin{table}[tb]
+  \caption{Token usage per Plan-Execute-Interpret cycle. Multi-step use cases
+  (iterative reasoning, cross-quantity synthesis) report cumulative tokens
+  across all cycles.}
+  \label{tab:tokens}
+  \centering
+  \scriptsize
+  \begin{tabular}{lrrrr}
+  \toprule
+  \textbf{Use case} & Plan & Tool & Interpret & Total \\
+  \midrule
+  \multicolumn{5}{l}{\textit{CFD}} \\
+  \quad Validated analysis     & --- & --- & --- & --- \\
+  \quad Iterative reasoning    & --- & --- & --- & --- \\
+  \quad Cross-quantity synth.  & --- & --- & --- & --- \\
+  \midrule
+  \multicolumn{5}{l}{\textit{TTK}} \\
+  \quad Feature identification & --- & --- & --- & --- \\
+  \quad Structural decomp.    & --- & --- & --- & --- \\
+  \quad Comparative topology   & --- & --- & --- & --- \\
+  \bottomrule
+  \multicolumn{5}{l}{\scriptsize --- = TODO: fill with experimental results} \\
+  \end{tabular}
+\end{table}
+
+We additionally report the fraction of tokens consumed by the ontology context,
+to quantify the cost of domain grounding relative to the overall interaction.
+For multi-step use cases, we report whether token usage grows linearly with
+the number of Plan-Execute-Interpret cycles or benefits from shared context.
+
+\subsection{Determinism}
+
+The tools in our architecture are deterministic: given the same inputs, a tool
+produces identical outputs.
+The LLM planning layer is not: given the same user query, the LLM may select
+different tools or different parameters across runs.
+We quantify this variance by executing each evaluation scenario $N=10$ times
+and measuring:
+\begin{itemize}
+\item \textit{Plan stability:} fraction of runs that produce the identical tool
+sequence (same tools in the same order with the same parameters).
+\item \textit{Outcome stability:} fraction of runs that reach the same physical
+or topological conclusion, even if the intermediate plan differs.
+\item \textit{Interpretation variance:} qualitative assessment of whether
+different runs produce substantively different explanations from the same
+structured data.
+\end{itemize}
+
+We expect outcome stability to be higher than plan stability: multiple valid
+analysis paths may exist for a given question (e.g., confirming separation via
+$C_f$ zero-crossing versus reversed boundary layer velocity), and the
+deterministic tools ensure that any valid plan produces a correct result.
+The ontology should improve plan stability by constraining the space of valid
+tool selections.
+
+%% TODO: Add plan stability and outcome stability results table after
+%% running N=10 repeated trials per scenario.
 
 
 \section{Discussion}
