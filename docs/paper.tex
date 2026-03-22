@@ -160,25 +160,63 @@ with a thin browser client.
 \section{Related Work}
 
 \textbf{LLM-assisted visualization code generation.}
-Several systems have explored using LLMs to generate visualization code.
-ChatVis~\cite{Chen:2024:ChatVis} presents an iterative assistant that generates
-Python scripts for data analysis and visualization, relying on chain-of-thought
-prompting and execution feedback for correction.
-VisGene~\cite{Li:2025:VisGene} proposes a multi-agent framework for scientific
-visualization in HPC environments, integrating LLM-generated VTK/Python modules
-with retrieval-augmented generation and fine-tuned vision models.
-Most recently, Zhao et al.~\cite{Zhao:2026:RAG} investigate structure-aware RAG
-for vtk.js pipeline generation, curating a corpus of code examples with
-module-level metadata and using module overlap rather than semantic similarity
-for retrieval.
+Several systems use LLMs to generate visualization scripts from natural language.
+ChatVis~\cite{Mallick:2024:ChatVis,Peterka:2025:ChatVis} generates Python scripts
+for ParaView, using chain-of-thought prompting and iterative error correction.
+VizGenie~\cite{Biswas:2025:VizGenie} targets VTK directly, proposing self-refining
+domain-aware workflows for scientific visualization.
+Su et al.~\cite{Su:2025:NIST} describe an AI-powered ParaView system for NIST
+research data.
+Zhao et al.~\cite{Zhao:2026:RAG} investigate structure-aware RAG for vtk.js
+pipeline generation, using module overlap rather than semantic similarity for
+retrieval.
+Specialized LLM systems have also been developed for specific visualization
+tasks: Jeong et al.~\cite{Jeong:2024:TF} use natural language to generate
+transfer functions for volume rendering, and Ai et al.~\cite{Ai:2025:VolVis}
+present a multi-agent system for volumetric scene exploration and editing.
 These approaches share a common architecture: the LLM generates executable code
 that directly invokes visualization APIs.
-The limitations are structural.
-Generated scripts are one-shot; no structured results flow back for the LLM to
-reason about.
-Correction is human-driven, not system-driven.
-And the most dangerous failure mode, code that executes but performs the wrong
-analysis, is not addressed by better code generation.
+The limitations are structural: generated scripts are one-shot, correction is
+human-driven, and the most dangerous failure mode (code that executes but
+performs the wrong analysis) is not addressed by better code generation.
+
+\textbf{ParaView-MCP.}
+Most closely related to our work, Liu et al.~\cite{Liu:2025:PVMCP} present
+ParaView-MCP, an autonomous visualization agent that uses MCP for direct tool
+invocation in ParaView.
+Their system demonstrates that MCP is a viable protocol for LLM-driven
+visualization.
+Our work differs in three ways: (1)~we introduce domain ontologies that
+constrain LLM planning to physically valid analysis chains, addressing the
+wrong-strategy errors that tool invocation alone does not prevent;
+(2)~our tools return structured quantitative data enabling a closed-loop
+Plan-Execute-Interpret cycle where interpretation drives follow-up analysis;
+and (3)~we demonstrate generalization across two scientific domains (CFD and
+topological analysis) on the same server infrastructure.
+
+\textbf{Agentic CFD systems.}
+A growing body of work applies LLM-based agents to CFD workflows, particularly
+around OpenFOAM.
+OpenFOAMGPT~\cite{Pandey:2025:OFGPT} uses retrieval-augmented generation for
+OpenFOAM case setup and analysis.
+Its successor, OpenFOAMGPT 2.0~\cite{Feng:2025:OFGPT2}, introduces a
+multi-agent framework with four specialized agents including a post-processing
+agent for querying simulation outputs.
+MetaOpenFOAM 2.0~\cite{Chen:2025:Meta} chains LLM reasoning for automated CFD
+simulation and post-processing, with a separate post-processing agent (limited
+to 2D plots and scalar queries).
+OptMetaOpenFOAM~\cite{Chen:2025:Opt} extends this with sensitivity analysis and
+parameter optimization.
+Foam-Agent~\cite{Yue:2025:Foam} uses multiple FAISS indices for RAG across
+OpenFOAM tutorials, scripts, and documentation.
+Beyond CFD, InferA~\cite{Tam:2025:InferA} offers a multi-agent approach for
+analyzing ensembles of cosmological simulations, including a visualization
+component.
+These systems demonstrate convergence toward agentic tool orchestration for
+scientific analysis.
+However, they remain solver-specific (primarily OpenFOAM), lack domain
+ontologies for constraining analysis planning, and do not return structured
+results for LLM-based interpretation.
 
 \textbf{Natural language interfaces for scientific tools.}
 Natural language interfaces for visualization have been explored extensively in
@@ -187,8 +225,6 @@ mapping from intent to visual encoding is relatively direct.
 Scientific visualization presents a harder problem: the mapping from an
 engineering question to a multi-step analysis procedure requires domain
 expertise that varies across disciplines, solvers, and data formats.
-No existing system maps natural language to physically validated, multi-step
-CFD or topological analysis chains.
 
 \textbf{Tool use and agentic architectures.}
 The Model Context Protocol (MCP)~\cite{MCP:2024} standardizes how LLMs discover
@@ -204,8 +240,6 @@ quantitative reasoning in the interpretation phase.
 \textbf{Domain ontologies in scientific computing.}
 Ontologies for scientific simulation have been developed across
 CFD, structural mechanics, and materials science.
-Knowledge graphs have been applied to scientific workflow management and
-data provenance.
 Our contribution is an ontology specifically designed to ground LLM planning
 in domain knowledge, mapping observable phenomena to the physical quantities
 that reveal them and the analysis tools that extract those quantities.
