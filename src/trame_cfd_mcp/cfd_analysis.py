@@ -3487,23 +3487,36 @@ out.GetPointData().AddArray(arr)
         # Step 1: Extract body surface and clip to body region
         if _shared_surface is not None:
             clip = _shared_surface
-            surface = None  # managed externally
+            surface = None
             owns_surface = False
-            print(f"[BL] Using shared surface, skipping ExtractSurface+Clip")
         else:
-            print(f"[BL] Creating new ExtractSurface+Clip (no shared surface)")
-            surface = simple.ExtractSurface(Input=merge)
-            simple.UpdatePipeline(proxy=surface)
-            
-            clip = simple.Clip(Input=surface)
-            clip.ClipType = 'Box'
-            clip.ClipType.Bounds = [
-                body_bounds[0] - 0.01, body_bounds[1] + 0.01,
-                body_bounds[2] - 0.01, body_bounds[3] + 0.01,
-                body_bounds[4] - 0.01, body_bounds[5] + 0.01
-            ]
-            clip.Invert = 1
-            owns_surface = True
+            # Check cache: reuse existing surface+clip for same proxy
+            cache = getattr(self, '_bl_surface_cache', None)
+            if cache and cache.get('proxy_id') == proxy.GetGlobalIDAsString():
+                clip = cache['clip']
+                surface = cache['surface']
+                owns_surface = False
+                print(f"[BL] Reusing cached ExtractSurface+Clip")
+            else:
+                print(f"[BL] Creating new ExtractSurface+Clip")
+                surface = simple.ExtractSurface(Input=merge)
+                simple.UpdatePipeline(proxy=surface)
+                
+                clip = simple.Clip(Input=surface)
+                clip.ClipType = 'Box'
+                clip.ClipType.Bounds = [
+                    body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+                    body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+                    body_bounds[4] - 0.01, body_bounds[5] + 0.01
+                ]
+                clip.Invert = 1
+                owns_surface = False  # cache owns it now
+                self._bl_surface_cache = {
+                    'proxy_id': proxy.GetGlobalIDAsString(),
+                    'clip': clip,
+                    'surface': surface,
+                    'merge_cleanup': cleanup_merge,
+                }
         simple.UpdatePipeline(proxy=clip)
         
         # Step 2: Cut with a plane at the span station to get airfoil section

@@ -633,26 +633,21 @@ class CFDWorkflows:
                             probe_length: float = None,
                             stations: object = None) -> dict:
         """
-        Show boundary layer velocity profile at a given chordwise and spanwise location.
+        Show boundary layer velocity profile at given chordwise and spanwise location(s).
         
-        Creates a line probe normal to the body surface and plots velocity vs distance from wall.
-        Uses surface-normal probing with multiple edge detection criteria following
-        Antares/CERFACS methodology.
-        
-        For multiple stations, use the 'stations' parameter with a list of x/c values
-        (e.g. stations=[0.1, 0.3, 0.5, 0.7, 0.9]). This is much more efficient than
-        calling this tool multiple times, as infrastructure filters are shared.
-        When 'stations' is provided, x_over_chord is ignored.
+        IMPORTANT: For multiple stations, pass stations as a JSON array in a SINGLE call:
+          show_boundary_layer(stations=[0.1, 0.3, 0.5, 0.7, 0.9])
+        Do NOT make separate calls for each station. A single call with a list is
+        10x more efficient (shared infrastructure, one response).
         
         Args:
-            x_over_chord: Chordwise location as fraction of chord (0=LE, 1=TE, default: 0.5)
-            span_fraction: Spanwise location as fraction of span (0=root, 1=tip, default: 0.5 for mid-span)
+            x_over_chord: Single chordwise location as fraction of chord (0=LE, 1=TE)
+            span_fraction: Spanwise location (0=root, 1=tip, default: 0.5 mid-span)
             probe_length: How far to probe into the flow (default: 30% of chord)
-            stations: List of x/c values for multi-station analysis (e.g. [0.1, 0.3, 0.5, 0.7, 0.9])
+            stations: List of x/c values, e.g. [0.1, 0.3, 0.5, 0.7, 0.9]. Preferred over x_over_chord for multi-station.
             
         Returns:
             Dict with boundary layer profile data including delta, delta*, theta, H
-            (or list of dicts when stations is provided)
         """
         import numpy as np
         
