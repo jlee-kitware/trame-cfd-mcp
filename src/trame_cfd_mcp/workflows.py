@@ -631,7 +631,7 @@ class CFDWorkflows:
 
     def show_boundary_layer(self, x_over_chord: float = 0.5, span_fraction: float = 0.5, 
                             probe_length: float = None,
-                            stations: list = None) -> dict:
+                            stations: object = None) -> dict:
         """
         Show boundary layer velocity profile at a given chordwise and spanwise location.
         
@@ -657,12 +657,18 @@ class CFDWorkflows:
         import numpy as np
         
         # Multi-station mode: batch all profiles in one call
-        if stations is not None and isinstance(stations, list) and len(stations) > 1:
-            return self._show_boundary_layer_multi(
-                stations=stations,
-                span_fraction=span_fraction,
-                probe_length=probe_length,
-            )
+        if stations is not None:
+            # Coerce single float to list
+            if isinstance(stations, (int, float)):
+                stations = [float(stations)]
+            if isinstance(stations, list) and len(stations) > 1:
+                return self._show_boundary_layer_multi(
+                    stations=stations,
+                    span_fraction=span_fraction,
+                    probe_length=probe_length,
+                )
+            elif isinstance(stations, list) and len(stations) == 1:
+                x_over_chord = float(stations[0])
         
         proxy = self._get_data_reader()
         if proxy is None:
