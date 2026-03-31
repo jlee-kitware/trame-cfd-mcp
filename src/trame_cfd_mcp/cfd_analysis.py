@@ -3489,7 +3489,9 @@ out.GetPointData().AddArray(arr)
             clip = _shared_surface
             surface = None  # managed externally
             owns_surface = False
+            print(f"[BL] Using shared surface, skipping ExtractSurface+Clip")
         else:
+            print(f"[BL] Creating new ExtractSurface+Clip (no shared surface)")
             surface = simple.ExtractSurface(Input=merge)
             simple.UpdatePipeline(proxy=surface)
             

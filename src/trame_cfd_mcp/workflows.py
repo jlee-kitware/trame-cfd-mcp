@@ -779,6 +779,8 @@ class CFDWorkflows:
         from paraview import simple
         from trame_llm.paraview import ensure_flat_input, safe_delete
 
+        print(f"[BL MULTI] Entering multi-station mode with {len(stations)} stations: {stations}")
+
         proxy = self._get_data_reader()
         if proxy is None:
             return {"error": "No data reader found"}
