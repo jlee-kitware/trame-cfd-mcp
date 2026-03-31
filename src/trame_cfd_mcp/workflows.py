@@ -58,6 +58,14 @@ class CFDWorkflows:
         # Build column dict for create_table_source
         columns = {}
 
+        # Store metadata for FieldData (added after proxy creation)
+        chart_metadata = {
+            "chart_type": chart_type,
+            "chart_title": title,
+            "x_label": data.get("x_label", ""),
+            "y_label": data.get("y_label", ""),
+        }
+
         if chart_type == "boundary_layer":
             columns["u_Ue"] = data.get("x", [])
             columns["y_wall"] = data.get("y", [])
@@ -74,6 +82,12 @@ class CFDWorkflows:
 
         producer = create_table_source(columns, name=proxy_name)
         
+        # Store chart metadata (title, labels) keyed by proxy name
+        # FieldData on vtkTable is unreliable in pvserver mode, so we store it here
+        if not hasattr(self, '_chart_metadata'):
+            self._chart_metadata = {}
+        self._chart_metadata[proxy_name] = chart_metadata
+        
         print(f"[_create_chart_table] Created proxy '{proxy_name}', ID={producer.GetGlobalIDAsString()}")
         
         # Register as internal proxy so it doesn't show visibility toggle in pipeline browser
@@ -89,6 +103,11 @@ class CFDWorkflows:
     def get_chart_proxy(self, proxy_name: str):
         """Get a chart data proxy by name."""
         return simple.FindSource(proxy_name)
+
+    def get_chart_metadata(self, proxy_name: str) -> dict:
+        """Get stored metadata (title, labels, chart_type) for a chart proxy."""
+        meta = getattr(self, '_chart_metadata', {})
+        return meta.get(proxy_name, {})
     
     def _render_chart(self, proxy_name: str):
         """Render a chart by proxy name if app is available."""

@@ -7,6 +7,8 @@ Usage:
     pvpython cfd_chat.py data.vtm
     
     # Connect to pvserver (client-server, local or remote)
+    # Start pvserver first: pvserver (default port 11111)
+    # Or with custom port: pvserver --server-port=22222
     pvpython cfd_chat.py --pvserver=localhost:11111 data.vtm
     
     # Connect to live simulation
@@ -257,6 +259,21 @@ def main():
         title = get_string_field("chart_title")
         x_label = get_string_field("x_label")
         y_label = get_string_field("y_label")
+
+        # Check workflow metadata dict (primary source, works in pvserver mode)
+        if hasattr(app, '_workflow_mcp') and app._workflow_mcp:
+            meta = app._workflow_mcp._workflows.get_chart_metadata(proxy_name)
+            if meta:
+                chart_type = meta.get("chart_type", chart_type) or chart_type
+                title = meta.get("chart_title", title) or title
+                x_label = meta.get("x_label", x_label) or x_label
+                y_label = meta.get("y_label", y_label) or y_label
+
+        # Fall back to parsing chart_type from proxy name (Chart_N_type)
+        if not chart_type and "_" in proxy_name:
+            parts = proxy_name.split("_", 2)
+            if len(parts) >= 3:
+                chart_type = parts[2]
         
         print(f"[render_chart_from_proxy] chart_type={chart_type}, title={title}")
         
@@ -485,6 +502,7 @@ def main():
     
     base_mcp = ParaViewMCP(app)
     workflow_mcp = WorkflowMCP(base_mcp, app=app)
+    app._workflow_mcp = workflow_mcp  # expose for render_chart_from_proxy
     chat_mcp = CFDChatMCP(
         workflow_mcp, 
         llm_client,
