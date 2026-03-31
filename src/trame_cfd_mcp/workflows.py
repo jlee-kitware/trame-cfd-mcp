@@ -7,7 +7,7 @@ Full provenance tracking enables reproducibility and explanation.
 """
 
 from paraview import simple
-from trame_llm.paraview import ensure_flat_input, set_producer_output
+from trame_llm.paraview import ensure_flat_input, create_table_source
 
 
 class CFDWorkflows:
@@ -50,114 +50,29 @@ class CFDWorkflows:
         
         Returns the proxy name which can be used to retrieve data for plotting.
         """
-        import vtk
         from paraview import servermanager
         
         self._chart_counter += 1
         proxy_name = f"Chart_{self._chart_counter}_{chart_type}"
         
-        # Create vtkTable
-        table = vtk.vtkTable()
-        
-        # Add columns based on chart type
+        # Build column dict for create_table_source
+        columns = {}
+
         if chart_type == "boundary_layer":
-            x_arr = vtk.vtkFloatArray()
-            x_arr.SetName("u_Ue")  # normalized velocity
-            y_arr = vtk.vtkFloatArray()
-            y_arr.SetName("y_wall")  # wall distance
-            
-            x_data = data.get("x", [])
-            y_data = data.get("y", [])
-            
-            for x, y in zip(x_data, y_data):
-                x_arr.InsertNextValue(float(x))
-                y_arr.InsertNextValue(float(y))
-            
-            table.AddColumn(x_arr)
-            table.AddColumn(y_arr)
-            
+            columns["u_Ue"] = data.get("x", [])
+            columns["y_wall"] = data.get("y", [])
         elif chart_type == "histogram":
-            x_arr = vtk.vtkFloatArray()
-            x_arr.SetName("bin_center")
-            y_arr = vtk.vtkFloatArray()
-            y_arr.SetName("count")
-            
-            for x, y in zip(data.get("x", []), data.get("y", [])):
-                x_arr.InsertNextValue(float(x))
-                y_arr.InsertNextValue(float(y))
-            
-            table.AddColumn(x_arr)
-            table.AddColumn(y_arr)
-            
+            columns["bin_center"] = data.get("x", [])
+            columns["count"] = data.get("y", [])
         elif chart_type == "force_distribution":
-            x_arr = vtk.vtkFloatArray()
-            x_arr.SetName("section")
-            x_data = data.get("x", [])
-            for x in x_data:
-                x_arr.InsertNextValue(float(x))
-            table.AddColumn(x_arr)
-            
-            # Add each series as a column
+            columns["section"] = data.get("x", [])
             for series_name, values in data.get("series", {}).items():
-                arr = vtk.vtkFloatArray()
-                arr.SetName(series_name)
-                for v in values:
-                    arr.InsertNextValue(float(v))
-                table.AddColumn(arr)
+                columns[series_name] = values
         else:
-            # Generic: x and y columns
-            x_arr = vtk.vtkFloatArray()
-            x_arr.SetName("x")
-            y_arr = vtk.vtkFloatArray()
-            y_arr.SetName("y")
-            
-            for x, y in zip(data.get("x", []), data.get("y", [])):
-                x_arr.InsertNextValue(float(x))
-                y_arr.InsertNextValue(float(y))
-            
-            table.AddColumn(x_arr)
-            table.AddColumn(y_arr)
-        
-        # Store metadata as field data
-        if metadata:
-            for key, value in metadata.items():
-                if isinstance(value, (int, float)):
-                    arr = vtk.vtkFloatArray()
-                    arr.SetName(f"meta_{key}")
-                    arr.InsertNextValue(float(value))
-                    table.GetFieldData().AddArray(arr)
-                elif isinstance(value, str):
-                    arr = vtk.vtkStringArray()
-                    arr.SetName(f"meta_{key}")
-                    arr.InsertNextValue(value)
-                    table.GetFieldData().AddArray(arr)
-        
-        # Store chart_type and title as field data
-        type_arr = vtk.vtkStringArray()
-        type_arr.SetName("chart_type")
-        type_arr.InsertNextValue(chart_type)
-        table.GetFieldData().AddArray(type_arr)
-        
-        title_arr = vtk.vtkStringArray()
-        title_arr.SetName("chart_title")
-        title_arr.InsertNextValue(title)
-        table.GetFieldData().AddArray(title_arr)
-        
-        # Store axis labels
-        if "x_label" in data:
-            arr = vtk.vtkStringArray()
-            arr.SetName("x_label")
-            arr.InsertNextValue(data["x_label"])
-            table.GetFieldData().AddArray(arr)
-        if "y_label" in data:
-            arr = vtk.vtkStringArray()
-            arr.SetName("y_label")
-            arr.InsertNextValue(data["y_label"])
-            table.GetFieldData().AddArray(arr)
-        
-        # Create TrivialProducer to hold the table
-        producer = simple.TrivialProducer(registrationName=proxy_name)
-        set_producer_output(producer, table)
+            columns["x"] = data.get("x", [])
+            columns["y"] = data.get("y", [])
+
+        producer = create_table_source(columns, name=proxy_name)
         
         print(f"[_create_chart_table] Created proxy '{proxy_name}', ID={producer.GetGlobalIDAsString()}")
         
@@ -393,45 +308,65 @@ class CFDWorkflows:
     def show_streamlines(
         self,
         color_by: str = "Velocity",
-        num_points: int = 100
+        num_points: int = 100,
+        seed_source: str = None,
     ) -> dict:
         """
-        Show streamlines in the wake region.
-        
+        Show streamlines seeded from an existing pipeline source or the auto-detected wake.
+
         Args:
             color_by: Field to color by (default: "Velocity")
-            num_points: Number of seed points (default: 100)
-            
+            num_points: Number of seed points when using auto wake seeding (default: 100)
+            seed_source: Name of any existing pipeline proxy to use as seed points.
+                         Can be any source visible in the pipeline browser — a slice,
+                         surface extraction, vortex contour, custom geometry, etc.
+                         Use list_data() to see available proxy names.
+                         If None, seeds are auto-placed in the wake region.
+
         Returns:
             Dict with visualization info including proxy_name and provenance
         """
         view = simple.GetActiveView()
         proxy = self._get_data_reader()
         proxy_name = self._get_proxy_name(proxy)
-        
-        # Clear analysis log for fresh provenance
+
         self._mcp.clear_analysis_log()
-        
-        # Hide all first
         self._mcp.hide_all()
-        
-        # Compute seed parameters (logs analysis decisions)
-        seed = self._mcp.compute_streamline_seed(proxy_name=proxy_name)
-        if "error" in seed:
-            return seed
-        
-        # Create StreamTracer with descriptive name
-        stream_name = f"Streamlines_wake"
-        stream = simple.StreamTracer(Input=proxy, registrationName=stream_name)
-        stream.SeedType = "Point Cloud"
-        stream.SeedType.Center = seed["center"]
-        stream.SeedType.Radius = seed["radius"]
-        stream.SeedType.NumberOfPoints = num_points
-        stream.MaximumStreamlineLength = seed["max_length"]
+
         vel_field = self._mcp._resolve_field_type("velocity", proxy)
-        stream.Vectors = ['POINTS', vel_field]
-        simple.UpdatePipeline(proxy=stream)
-        
+
+        if seed_source:
+            # Use an existing proxy as the seed source
+            seed_proxy = simple.FindSource(seed_source)
+            if seed_proxy is None:
+                return {"error": f"Seed source '{seed_source}' not found in pipeline"}
+
+            stream_name = f"Streamlines_{seed_source}"
+            stream = simple.StreamTracer(
+                Input=proxy,
+                Source=seed_proxy,
+                registrationName=stream_name,
+            )
+            stream.Vectors = ['POINTS', vel_field]
+            simple.UpdatePipeline(proxy=stream)
+            seed_info = {"type": "proxy", "source": seed_source}
+        else:
+            # Auto-place seeds in the wake region
+            seed = self._mcp.compute_streamline_seed(proxy_name=proxy_name)
+            if "error" in seed:
+                return seed
+
+            stream_name = "Streamlines_wake"
+            stream = simple.StreamTracer(Input=proxy, registrationName=stream_name)
+            stream.SeedType = "Point Cloud"
+            stream.SeedType.Center = seed["center"]
+            stream.SeedType.Radius = seed["radius"]
+            stream.SeedType.NumberOfPoints = num_points
+            stream.MaximumStreamlineLength = seed["max_length"]
+            stream.Vectors = ['POINTS', vel_field]
+            simple.UpdatePipeline(proxy=stream)
+            seed_info = {"type": "wake", "center": seed["center"], "radius": seed["radius"]}
+
         # Show and color
         display = simple.Show(stream, view)
         color_array = self._mcp._resolve_field_type(color_by, stream)
@@ -439,30 +374,32 @@ class CFDWorkflows:
             simple.ColorBy(display, ('POINTS', color_array))
             display.RescaleTransferFunctionToDataRange(True, False)
             display.SetScalarBarVisibility(view, True)
-        
+
         simple.ResetCamera(view)
         simple.Render(view)
-        
-        # Build provenance
+
         provenance = {
             "dataset": self._get_dataset_filename(proxy),
             "filter_chain": self._mcp.extract_filter_chain(stream),
             "analysis": self._mcp.get_analysis_log(),
-            "display": {
-                "color_by": color_array or color_by,
-                "representation": "Surface"
-            }
+            "seed": seed_info,
+            "display": {"color_by": color_array or color_by, "representation": "Surface"},
         }
-        
+
         self._register_provenance(stream_name, provenance)
         self._notify_pipeline_changed()
-        
+
+        tip = f"To refine: update_color('{stream_name}', field_name='pressure') to recolor."
+        if not seed_source:
+            tip += " Or call show_streamlines(seed_source='Vortices_q_criterion') to seed from vortex cores."
+
         return {
             "status": "created",
             "type": "streamlines",
             "proxy_name": stream_name,
+            "seed_source": seed_source or "wake (auto)",
             "provenance": provenance,
-            "tip": f"To refine: update_color('{stream_name}', field_name='pressure') to recolor, or update_representation('Wireframe', '{stream_name}') to change style."
+            "tip": tip,
         }
 
     def show_slice(
@@ -693,7 +630,8 @@ class CFDWorkflows:
         }
 
     def show_boundary_layer(self, x_over_chord: float = 0.5, span_fraction: float = 0.5, 
-                            probe_length: float = None) -> dict:
+                            probe_length: float = None,
+                            stations: list = None) -> dict:
         """
         Show boundary layer velocity profile at a given chordwise and spanwise location.
         
@@ -701,15 +639,30 @@ class CFDWorkflows:
         Uses surface-normal probing with multiple edge detection criteria following
         Antares/CERFACS methodology.
         
+        For multiple stations, use the 'stations' parameter with a list of x/c values
+        (e.g. stations=[0.1, 0.3, 0.5, 0.7, 0.9]). This is much more efficient than
+        calling this tool multiple times, as infrastructure filters are shared.
+        When 'stations' is provided, x_over_chord is ignored.
+        
         Args:
             x_over_chord: Chordwise location as fraction of chord (0=LE, 1=TE, default: 0.5)
             span_fraction: Spanwise location as fraction of span (0=root, 1=tip, default: 0.5 for mid-span)
             probe_length: How far to probe into the flow (default: 30% of chord)
+            stations: List of x/c values for multi-station analysis (e.g. [0.1, 0.3, 0.5, 0.7, 0.9])
             
         Returns:
             Dict with boundary layer profile data including delta, delta*, theta, H
+            (or list of dicts when stations is provided)
         """
         import numpy as np
+        
+        # Multi-station mode: batch all profiles in one call
+        if stations is not None and isinstance(stations, list) and len(stations) > 1:
+            return self._show_boundary_layer_multi(
+                stations=stations,
+                span_fraction=span_fraction,
+                probe_length=probe_length,
+            )
         
         proxy = self._get_data_reader()
         if proxy is None:
@@ -736,8 +689,8 @@ class CFDWorkflows:
         y = np.array(bl_data["y"])
         u_normalized = np.array(bl_data["u_normalized"])
         u = np.array(bl_data["u"])
-        delta = bl_data["delta"]
-        u_edge_idx = bl_data["u_edge_idx"]
+        delta = float(bl_data["delta"])
+        u_edge_idx = int(bl_data["u_edge_idx"])
         
         # Truncate plot at 3x delta or edge velocity location
         plot_limit = min(3 * delta, y[u_edge_idx]) if delta > 0 else y[u_edge_idx]
@@ -810,6 +763,111 @@ class CFDWorkflows:
             "delta_star_mm": round(bl_data["delta_star"] * 1000, 3),
             "theta_mm": round(bl_data["theta"] * 1000, 3),
             "shape_factor": round(bl_data["shape_factor"], 3),
+        }
+
+    def _show_boundary_layer_multi(self, stations: list, span_fraction: float = 0.5,
+                                    probe_length: float = None) -> dict:
+        """Internal: compute boundary layer profiles at multiple stations in one call."""
+        import numpy as np
+
+        proxy = self._get_data_reader()
+        if proxy is None:
+            return {"error": "No data reader found"}
+
+        proxy_name = self._get_proxy_name(proxy)
+        self._mcp.hide_all()
+
+        results = []
+        errors = []
+
+        for xc in stations:
+            bl_data = self._mcp.compute_boundary_layer_profile(
+                proxy=proxy,
+                x_over_chord=float(xc),
+                span_fraction=span_fraction,
+                probe_length=probe_length,
+                proxy_name=proxy_name,
+            )
+
+            if "error" in bl_data:
+                errors.append({"x_over_chord": xc, "error": bl_data["error"]})
+                continue
+
+            # Extract data for plotting
+            y = np.array(bl_data["y"])
+            u_normalized = np.array(bl_data["u_normalized"])
+            delta = float(bl_data["delta"])
+            u_edge_idx = int(bl_data["u_edge_idx"])
+
+            plot_limit = min(3 * delta, y[u_edge_idx]) if delta > 0 else y[u_edge_idx]
+            plot_mask = y <= plot_limit
+
+            geom = bl_data["geometry"]
+            span_axis = geom["span_axis"]
+            x_over_chord_val = bl_data["x_over_chord"]
+            span_absolute = bl_data["span_absolute"]
+            span_frac = bl_data["span_fraction"]
+
+            # Cache for context visualization
+            self._last_bl_results = getattr(self, '_last_bl_results', [])
+            self._last_bl_results.append({
+                "y": y.tolist(),
+                "surface_point": bl_data["surface_point"],
+                "surface_normal": bl_data["surface_normal"],
+                "section": bl_data["section"],
+                "probe_length": bl_data["probe_length"],
+                "span_absolute": bl_data["span_absolute"],
+                "x_over_chord": bl_data["x_over_chord"],
+                "shape_factor": bl_data["shape_factor"],
+                "delta": bl_data["delta"],
+                "delta_star": bl_data["delta_star"],
+                "theta": bl_data["theta"],
+                "u_edge": bl_data["u_edge"],
+            })
+
+            chart_title = f'Boundary Layer at x/c={x_over_chord_val:.2f}, {span_axis}={span_absolute:.3f} ({span_frac*100:.0f}% span)'
+
+            chart_proxy = self._create_chart_table(
+                chart_type="boundary_layer",
+                title=chart_title,
+                data={
+                    "x": u_normalized[plot_mask].tolist(),
+                    "y": y[plot_mask].tolist(),
+                    "x_label": "u / Ue",
+                    "y_label": "y (distance from wall)",
+                },
+                metadata={
+                    "surface": bl_data["surface"],
+                    "x_over_chord": bl_data["x_over_chord"],
+                    "span_fraction": bl_data["span_fraction"],
+                    "u_edge": bl_data["u_edge"],
+                    "delta": bl_data["delta"],
+                    "delta_star": bl_data["delta_star"],
+                    "theta": bl_data["theta"],
+                    "shape_factor": bl_data["shape_factor"],
+                }
+            )
+            self._render_chart(chart_proxy)
+
+            results.append({
+                "chart_proxy": chart_proxy,
+                "x_over_chord": round(bl_data["x_over_chord"], 4),
+                "surface": bl_data["surface"],
+                "u_edge": round(bl_data["u_edge"], 4),
+                "delta_mm": round(bl_data["delta"] * 1000, 3),
+                "delta_star_mm": round(bl_data["delta_star"] * 1000, 3),
+                "theta_mm": round(bl_data["theta"] * 1000, 3),
+                "shape_factor": round(bl_data["shape_factor"], 3),
+            })
+
+        return {
+            "status": "created",
+            "stations_requested": len(stations),
+            "stations_computed": len(results),
+            "stations_failed": len(errors),
+            "span_fraction": span_fraction,
+            "profiles": results,
+            "errors": errors if errors else None,
         }
 
     def create_section_debug_chart(self, bl_results: list = None, title: str = None) -> dict:
