@@ -773,8 +773,11 @@ class CFDWorkflows:
 
     def _show_boundary_layer_multi(self, stations: list, span_fraction: float = 0.5,
                                     probe_length: float = None) -> dict:
-        """Internal: compute boundary layer profiles at multiple stations in one call."""
+        """Internal: compute boundary layer profiles at multiple stations in one call.
+        Creates shared ExtractSurface+Clip infrastructure once, reused across all stations."""
         import numpy as np
+        from paraview import simple
+        from trame_llm.paraview import ensure_flat_input, safe_delete
 
         proxy = self._get_data_reader()
         if proxy is None:
@@ -782,6 +785,23 @@ class CFDWorkflows:
 
         proxy_name = self._get_proxy_name(proxy)
         self._mcp.hide_all()
+
+        # Create shared infrastructure once
+        merge, _, cleanup_merge = ensure_flat_input(proxy)
+        body_bounds, _ = self._mcp._get_body_bounds(proxy)
+
+        surface = simple.ExtractSurface(Input=merge)
+        simple.UpdatePipeline(proxy=surface)
+
+        clip = simple.Clip(Input=surface)
+        clip.ClipType = 'Box'
+        clip.ClipType.Bounds = [
+            body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+            body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+            body_bounds[4] - 0.01, body_bounds[5] + 0.01
+        ]
+        clip.Invert = 1
+        simple.UpdatePipeline(proxy=clip)
 
         results = []
         errors = []
@@ -793,6 +813,7 @@ class CFDWorkflows:
                 span_fraction=span_fraction,
                 probe_length=probe_length,
                 proxy_name=proxy_name,
+                _shared_surface=clip,
             )
 
             if "error" in bl_data:
@@ -865,6 +886,12 @@ class CFDWorkflows:
                 "theta_mm": round(bl_data["theta"] * 1000, 3),
                 "shape_factor": round(bl_data["shape_factor"], 3),
             })
+
+        # Clean up shared infrastructure
+        safe_delete(clip)
+        safe_delete(surface)
+        if cleanup_merge:
+            safe_delete(cleanup_merge)
 
         return {
             "status": "created",
