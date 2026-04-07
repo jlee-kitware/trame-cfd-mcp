@@ -3496,9 +3496,9 @@ out.GetPointData().AddArray(arr)
                 clip = cache['clip']
                 surface = cache['surface']
                 owns_surface = False
-                print(f"[BL] Reusing cached ExtractSurface+Clip")
+                pass  # reusing cached ExtractSurface+Clip
             else:
-                print(f"[BL] Creating new ExtractSurface+Clip")
+                pass  # creating new ExtractSurface+Clip
                 surface = simple.ExtractSurface(Input=merge)
                 simple.UpdatePipeline(proxy=surface)
                 
