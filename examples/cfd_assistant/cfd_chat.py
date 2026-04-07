@@ -1,3 +1,4 @@
+import logging
 #!/usr/bin/env python
 """
 CFD Analysis Chat - Interactive visualization with optional Catalyst Live.
@@ -47,8 +48,15 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-cfd-mcp/src')
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-llm/src')
+# Add src to path if running from examples directory (development mode)
+import pathlib
+_repo_src = pathlib.Path(__file__).parent.parent.parent / 'src'
+if _repo_src.exists():
+    sys.path.insert(0, str(_repo_src))
+# trame-llm: install via pip or set TRAME_LLM_SRC env var
+_trame_llm = os.environ.get('TRAME_LLM_SRC')
+if _trame_llm:
+    sys.path.insert(0, _trame_llm)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -229,21 +237,21 @@ def main():
         from paraview import servermanager
         from vtk.util.numpy_support import vtk_to_numpy
         
-        print(f"[render_chart_from_proxy] Fetching proxy_name={proxy_name}")
+        logging.debug(f"[render_chart_from_proxy] Fetching proxy_name={proxy_name}")
         if not PLOTLY_AVAILABLE:
-            print("[render_chart_from_proxy] Plotly not available")
+            logging.debug("[render_chart_from_proxy] Plotly not available")
             return
         
         # Get the proxy
         proxy = simple.FindSource(proxy_name)
         if proxy is None:
-            print(f"[render_chart_from_proxy] Proxy {proxy_name} not found")
+            logging.debug(f"[render_chart_from_proxy] Proxy {proxy_name} not found")
             return
         
         # Fetch the data
         data = servermanager.Fetch(proxy)
         if data is None:
-            print(f"[render_chart_from_proxy] Failed to fetch data from {proxy_name}")
+            logging.debug(f"[render_chart_from_proxy] Failed to fetch data from {proxy_name}")
             return
         
         # Get chart metadata from field data
@@ -275,7 +283,7 @@ def main():
             if len(parts) >= 3:
                 chart_type = parts[2]
         
-        print(f"[render_chart_from_proxy] chart_type={chart_type}, title={title}")
+        logging.debug(f"[render_chart_from_proxy] chart_type={chart_type}, title={title}")
         
         # Build chart data from table columns
         chart_data = {
@@ -331,7 +339,7 @@ def main():
             app.state.live_chart_status = f"Showing {len(app.chart_figures)} chart(s)"
         
         update_all_chart_widgets()
-        print(f"[render_chart_from_proxy] Added chart from {proxy_name}, total: {len(app.chart_figures)}")
+        logging.debug(f"[render_chart_from_proxy] Added chart from {proxy_name}, total: {len(app.chart_figures)}")
     
     # Legacy function for direct chart data (still useful for some cases)
     def render_analysis_chart(chart_data: dict):
@@ -404,7 +412,7 @@ def main():
                         app.state.monitoring_active = False
                         app.state.live_chart_status = "Simulation ended"
                     chat_mcp._monitoring_active = False
-                    print("[Live] Connection to simulation dropped")
+                    logging.debug("[Live] Connection to simulation dropped")
                     return
                 
                 # Sync monitoring_active state with chat_mcp
@@ -550,7 +558,7 @@ def main():
         count = int(app.state.step_count or 5)
         result = chat_mcp.step_simulation(count)
         if result.get("status") == "error":
-            print(f"[Live] Step failed: {result}")
+            logging.debug(f"[Live] Step failed: {result}")
             return
         app.state.simulation_paused = False
         # Auto-open chart panel so user sees residuals

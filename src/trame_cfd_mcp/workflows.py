@@ -1,3 +1,4 @@
+import logging
 """
 High-level CFD workflow tools.
 
@@ -33,13 +34,13 @@ class CFDWorkflows:
         # Use trame's controller if available (this is what ptc's PipelineBrowser listens to)
         if self._app and hasattr(self._app, 'ctrl'):
             if self._app.ctrl.on_data_change.exists():
-                print(f"[_notify_pipeline_changed] Calling app.ctrl.on_data_change()")
+                logging.debug(f"[_notify_pipeline_changed] Calling app.ctrl.on_data_change()")
                 self._app.ctrl.on_data_change()
             # Also try view_update which triggers render
             if self._app.ctrl.view_update.exists():
                 self._app.ctrl.view_update()
         else:
-            print(f"[_notify_pipeline_changed] No ctrl - app={self._app is not None}")
+            logging.debug(f"[_notify_pipeline_changed] No ctrl - app={self._app is not None}")
         # Also call legacy callback if provided
         if self._on_pipeline_changed:
             self._on_pipeline_changed()
@@ -88,13 +89,13 @@ class CFDWorkflows:
             self._chart_metadata = {}
         self._chart_metadata[proxy_name] = chart_metadata
         
-        print(f"[_create_chart_table] Created proxy '{proxy_name}', ID={producer.GetGlobalIDAsString()}")
+        logging.debug(f"[_create_chart_table] Created proxy '{proxy_name}', ID={producer.GetGlobalIDAsString()}")
         
         # Register as internal proxy so it doesn't show visibility toggle in pipeline browser
         # (vtkTable has no 3D representation)
         if self._app and hasattr(self._app, 'ctrl') and self._app.ctrl.register_internal_proxy.exists():
             self._app.ctrl.register_internal_proxy(producer)
-            print(f"[_create_chart_table] Registered as internal proxy")
+            logging.debug(f"[_create_chart_table] Registered as internal proxy")
         
         self._notify_pipeline_changed()
         
@@ -111,20 +112,20 @@ class CFDWorkflows:
     
     def _render_chart(self, proxy_name: str):
         """Render a chart by proxy name if app is available."""
-        print(f"[_render_chart] proxy_name={proxy_name}, app={self._app is not None}")
+        logging.debug(f"[_render_chart] proxy_name={proxy_name}, app={self._app is not None}")
         if self._app and hasattr(self._app, 'render_chart_from_proxy'):
-            print(f"[_render_chart] Calling render_chart_from_proxy")
+            logging.debug(f"[_render_chart] Calling render_chart_from_proxy")
             self._app.render_chart_from_proxy(proxy_name)
         else:
-            print(f"[_render_chart] Cannot render - app or render_chart_from_proxy not available")
+            logging.debug(f"[_render_chart] Cannot render - app or render_chart_from_proxy not available")
     
     def _render_chart_direct(self, chart_data: dict):
         """Render a chart directly from data dict (for complex charts that don't fit vtkTable)."""
-        print(f"[_render_chart_direct] chart_type={chart_data.get('chart_type')}, app={self._app is not None}")
+        logging.debug(f"[_render_chart_direct] chart_type={chart_data.get('chart_type')}, app={self._app is not None}")
         if self._app and hasattr(self._app, 'render_analysis_chart'):
             self._app.render_analysis_chart(chart_data)
         else:
-            print(f"[_render_chart_direct] Cannot render - app or render_analysis_chart not available")
+            logging.debug(f"[_render_chart_direct] Cannot render - app or render_analysis_chart not available")
     
     def _register_provenance(self, proxy_name: str, provenance: dict):
         """Register provenance for a proxy to enable chaining."""
@@ -141,17 +142,17 @@ class CFDWorkflows:
         skip_types = ['CSVReader', 'DelimitedTextReader']
         
         # Debug: list all sources
-        print(f"[_get_data_reader] Available sources:")
+        logging.debug(f"[_get_data_reader] Available sources:")
         for name, proxy in simple.GetSources().items():
             source_name = name[0] if isinstance(name, tuple) else name
             xml_name = proxy.GetXMLName()
-            print(f"[_get_data_reader]   '{source_name}' -> {xml_name}")
+            logging.debug(f"[_get_data_reader]   '{source_name}' -> {xml_name}")
         
         # First, look for traditional file readers
         for name, proxy in simple.GetSources().items():
             xml_name = proxy.GetXMLName()
             if 'Reader' in xml_name and xml_name not in skip_types:
-                print(f"[_get_data_reader] Found reader: {name[0]} ({xml_name})")
+                logging.debug(f"[_get_data_reader] Found reader: {name[0]} ({xml_name})")
                 return proxy
         
         # For Live data, look for TrivialProducer sources named "volume" or "surface"
@@ -162,12 +163,12 @@ class CFDWorkflows:
                 xml_name = proxy.GetXMLName()
                 # Check both TrivialProducer and PVTrivialProducer
                 if 'TrivialProducer' in xml_name and source_name == preferred:
-                    print(f"[_get_data_reader] Found Live source: {source_name}")
+                    logging.debug(f"[_get_data_reader] Found Live source: {source_name}")
                     return proxy
         
         # Fall back to active source
         active = simple.GetActiveSource()
-        print(f"[_get_data_reader] Falling back to active source: {active.GetXMLName() if active else None}")
+        logging.debug(f"[_get_data_reader] Falling back to active source: {active.GetXMLName() if active else None}")
         return active
     
     def _get_proxy_name(self, proxy):
@@ -523,8 +524,8 @@ class CFDWorkflows:
         simple.UpdatePipeline(proxy=slice_filter)
         
         # Debug: verify parent relationship
-        print(f"[show_slice] Created {slice_name}, Input={slice_filter.Input}, Input ID={slice_filter.Input.GetGlobalIDAsString() if slice_filter.Input else None}")
-        print(f"[show_slice] Parent proxy: {self._get_proxy_name(proxy)}, ID={proxy.GetGlobalIDAsString()}")
+        logging.debug(f"[show_slice] Created {slice_name}, Input={slice_filter.Input}, Input ID={slice_filter.Input.GetGlobalIDAsString() if slice_filter.Input else None}")
+        logging.debug(f"[show_slice] Parent proxy: {self._get_proxy_name(proxy)}, ID={proxy.GetGlobalIDAsString()}")
         
         # Show with representation
         display = simple.Show(slice_filter, view)

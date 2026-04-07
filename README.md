@@ -88,12 +88,25 @@ The LLM acts as a **CFD analyst**, not just a command translator:
    pip install python-dotenv openai fastmcp trame trame-vuetify trame-vtk trame-dockview
    ```
 
-4. **OpenAI API key**
+4. **API key or local LLM**
+
+   For cloud (OpenAI):
    ```bash
    # Create .env file in examples/cfd_assistant/
-   echo "OPENAI_API_KEY=sk-your-key-here" > .env
+   echo "LLM_PROVIDER=openai" > .env
+   echo "OPENAI_API_KEY=sk-your-key-here" >> .env
    echo "LLM_MODEL=gpt-4o-mini" >> .env
+   echo "OPENAI_BASEURL=https://api.openai.com/v1" >> .env
    ```
+
+   For local inference (LM Studio / Ollama — recommended for privacy and zero API cost):
+   ```bash
+   echo "LLM_PROVIDER=openai" > .env
+   echo "OPENAI_API_KEY=lm-studio" >> .env
+   echo "LLM_MODEL=qwen2.5-coder-14b-instruct" >> .env   # or 32b if you have 20GB+ VRAM
+   echo "OPENAI_BASEURL=http://192.168.x.x:1234/v1" >> .env
+   ```
+   Enable "Serve on Local Network" in LM Studio, then verify the model ID from `/v1/models`.
 
 ### Install trame-cfd-mcp
 
@@ -261,10 +274,9 @@ User Query: "Analyze the wake and explain drag"
 `show_boundary_layer(x_over_chord, span_fraction)` provides comprehensive boundary layer characterization:
 
 - **Explicit station selection**: Specify chordwise position (0=LE, 1=TE) and span fraction (0=root, 1=tip)
-- **Plane-cut methodology**: Cuts spanwise plane to get true airfoil section, then probes normal to surface
-- **Geometric sampling**: Uses `BoundaryLayerSampler` with dense near-wall points (~50 vs 200 uniform)
+- **Plane-cut methodology**: Cuts spanwise plane to get true airfoil section (client-side geometry), then runs velocity probe and BL computation via ProgrammableFilter on pvserver — no field data moves to client
 - **Integral quantities**: δ (thickness), δ* (displacement), θ (momentum), H (shape factor)
-- **Flow state indication**: H ≈ 1.3-1.4 turbulent, H ≈ 2.6 laminar, H > 3.5 separation risk
+- **Flow state indication**: H ≈ 1.3–1.4 turbulent, H ≈ 2.6 laminar, H > 3.5 separation risk
 
 ### Interactive Charts
 
@@ -323,11 +335,24 @@ Every workflow returns structured provenance for traceability:
 
 ## Cost Tracking
 
-Monitor API costs in the interactive app:
+Monitor API costs (cloud) or electricity costs (local inference) in the interactive app:
 
 ```
 You: What is the session cost?
-Assistant: Model: gpt-5-mini, Input: 45,231 tokens, Output: 1,892 tokens, Cost: $0.0151
+Assistant: Model: qwen2.5-coder-32b-instruct, Input: 45,231 tokens, Output: 1,892 tokens, Cost: $0.0034
+```
+
+For **local inference** (LM Studio, Ollama), costs are estimated from electricity consumption:
+- Assumes ~350W total system draw at $0.15/kWh
+- Input tokens (prefill) charged at ~$0.036/1M (fast, ~400 tok/s)
+- Output tokens (generation) charged at ~$1.82/1M (slower, ~8 tok/s with partial GPU offload)
+
+Configure local inference in `.env`:
+```bash
+LLM_PROVIDER=openai
+LLM_MODEL=qwen2.5-coder-32b-instruct
+OPENAI_API_KEY=lm-studio          # any non-empty string
+OPENAI_BASEURL=http://192.168.x.x:1234/v1
 ```
 
 Or programmatically via `get_session_cost()` tool.
@@ -339,8 +364,18 @@ src/trame_cfd_mcp/
 ├── __init__.py          # Package exports
 ├── workflow_mcp.py      # High-level workflow tools (26 tools)
 ├── workflows.py         # Workflow implementations
-├── cfd_analysis.py      # CFD analysis functions
-├── line_samplers.py     # Modular line sampling strategies
+├── cfd_analysis.py      # CFD analysis functions (all analysis runs server-side)
+├── server_scripts/      # ProgrammableFilter scripts — execute on pvserver
+│   ├── field_statistics.py     # min/max/mean/std
+│   ├── field_histogram.py      # histogram bins/counts
+│   ├── vortex_threshold.py     # auto-threshold for Q/vorticity/lambda2
+│   ├── force_integration.py    # pressure×normal surface integration
+│   ├── force_distribution.py   # sectional force distribution
+│   ├── detect_streamwise.py    # primary flow axis detection
+│   ├── detect_wake.py          # wake centroid/bounds
+│   ├── boundary_layer.py       # BL probe + δ, δ*, θ, H
+│   ├── find_region.py          # spatial min/max location
+│   └── centroid.py             # point cloud centroid/bounds
 ├── catalyst_live.py     # Catalyst Live MCP (CFDChatMCP class)
 ├── cost_tracker.py      # Token usage and cost tracking
 └── ontology.json        # CFD domain knowledge

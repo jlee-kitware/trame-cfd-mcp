@@ -3,7 +3,10 @@
 Test workflows without LLM - just verify they run and return correct structure.
 """
 import sys
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-cfd-mcp/src')
+import pathlib
+_repo_src = pathlib.Path(__file__).parent.parent.parent / 'src'
+if _repo_src.exists():
+    sys.path.insert(0, str(_repo_src))
 
 import json
 from paraview import simple

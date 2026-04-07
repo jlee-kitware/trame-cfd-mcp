@@ -29,6 +29,11 @@ dependencies = [
     "python-dotenv",
 ]
 
+# Note: trame-llm is a required runtime dependency not yet on PyPI.
+# Install from: https://github.com/Kitware/trame-llm
+#   git clone https://github.com/Kitware/trame-llm
+#   pip install -e trame-llm
+
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
 dev = [

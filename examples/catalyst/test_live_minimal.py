@@ -11,7 +11,10 @@ adding trame complexity.
 """
 import sys
 import time
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-cfd-mcp/src')
+import pathlib
+_repo_src = pathlib.Path(__file__).parent.parent.parent / 'src'
+if _repo_src.exists():
+    sys.path.insert(0, str(_repo_src))
 
 from paraview import simple
 from paraview.live import ConnectToCatalyst, ExtractCatalystData, ProcessServerNotifications

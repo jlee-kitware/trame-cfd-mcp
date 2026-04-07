@@ -4,7 +4,10 @@ Debug Catalyst Live connection - very verbose.
 """
 import sys
 import time
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-cfd-mcp/src')
+import pathlib
+_repo_src = pathlib.Path(__file__).parent.parent.parent / 'src'
+if _repo_src.exists():
+    sys.path.insert(0, str(_repo_src))
 
 from paraview import simple, servermanager
 
@@ -32,8 +35,8 @@ try:
     print("Initialize called")
     
     print("\nNow start simulation in another terminal:")
-    print("  cd /Users/jeff.lee/gitsync/catalyst-examples/ParaView/PythonSteering")
-    print("  export PYTHONPATH=/Users/jeff.lee/gitsync/catalyst_build/lib/python3.14/site-packages:$PYTHONPATH")
+    print("  cd /path/to/catalyst-examples/ParaView/PythonSteering")
+    print("  export PYTHONPATH=/path/to/catalyst_build/lib/pythonX.Y/site-packages:$PYTHONPATH")
     print("  pvpython fedriver_simple.py catalyst_pipeline_live_simple.py")
     print()
     

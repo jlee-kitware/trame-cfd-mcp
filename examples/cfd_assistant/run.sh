@@ -1,46 +1,36 @@
 #!/bin/bash
-# Setup and run CFD Assistant example
+# Run CFD Assistant example
 #
 # Prerequisites:
-#   - ParaView 6 build at $PV_BUILD (or modify path below)
-#   - Python 3.10+ matching ParaView's Python
+#   - ParaView 6 build with pvpython
+#   - Set PV_BUILD to your ParaView build directory, or add pvpython to PATH
+#   - trame-llm installed or TRAME_LLM_SRC set (see README)
 #
 # Usage:
-#   ./run.sh              # Run with mock LLM
-#   ./run.sh --openai     # Run with OpenAI (needs OPENAI_API_KEY)
+#   export PV_BUILD=/path/to/paraview_build
+#   ./run.sh [your_data.vtm]
+#   ./run.sh --pvserver=localhost:11111 [your_data.vtm]
+#   ./run.sh --live
 
 set -e
 
-# Configuration - adjust these paths as needed
-PV_BUILD="${PV_BUILD:-/Users/jeff.lee/gitsync/paraview_build}"
-PVPYTHON="$PV_BUILD/bin/pvpython"
-
-# Check pvpython exists
-if [ ! -f "$PVPYTHON" ]; then
-    echo "Error: pvpython not found at $PVPYTHON"
-    echo "Set PV_BUILD environment variable to your ParaView build directory"
+# Find pvpython
+if [ -n "$PV_BUILD" ]; then
+    PVPYTHON="$PV_BUILD/bin/pvpython"
+elif command -v pvpython &>/dev/null; then
+    PVPYTHON="pvpython"
+else
+    echo "Error: pvpython not found."
+    echo "Set PV_BUILD=/path/to/paraview_build or add pvpython to PATH."
     exit 1
 fi
 
-# Create venv if needed (matching ParaView's Python version)
-if [ ! -d ".venv" ]; then
-    echo "Creating virtual environment..."
-    PY_VERSION=$($PVPYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    python$PY_VERSION -m venv .venv
-    
-    echo "Installing dependencies..."
-    source .venv/bin/activate
-    pip install -q trame trame-vuetify trame-vtk
-    pip install -q /Users/jeff.lee/gitsync/trame-llm
-    pip install -q -e /Users/jeff.lee/gitsync/paraview_llm[openai]
-    deactivate
+if [ ! -f "$PVPYTHON" ] && [ "$PVPYTHON" != "pvpython" ]; then
+    echo "Error: pvpython not found at $PVPYTHON"
+    exit 1
 fi
 
-# Run the test
-echo ""
-echo "Running integration test..."
-echo "ParaView: $PV_BUILD"
-echo "Python venv: .venv"
+echo "Using: $PVPYTHON"
 echo ""
 
-$PVPYTHON --venv .venv test_integration.py
+exec "$PVPYTHON" cfd_chat.py "$@"
