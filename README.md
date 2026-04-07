@@ -24,11 +24,12 @@ physical explanation.
 | trame-llm | main branch | Kitware internal; clone separately |
 | LLM | any OpenAI-compatible | Cloud (OpenAI) or local (Ollama, LM Studio) |
 
-**ParaView + SSL note:** The pre-built ParaView.app on macOS does not include SSL, which is
-required for API calls. Use one of:
-- `conda install -c conda-forge paraview` (easiest, includes SSL)
-- Build ParaView from source against your system Python
-- On Linux, the pre-built binary usually works fine
+**ParaView + SSL note:** The pre-built ParaView.app downloaded from paraview.org on macOS
+does not configure SSL certificates correctly, causing API calls to fail. This is a macOS
+certificate issue with that specific distribution, not a ParaView problem. Use one of:
+- Build ParaView from source (links against system Python/SSL — this is what Kitware developers use)
+- `conda install -c conda-forge paraview` (includes SSL, easiest for new installs)
+- On Linux, the official pre-built binary works fine
 
 ---
 
