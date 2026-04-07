@@ -243,20 +243,139 @@ infrastructure, dual-mode data access, provenance tracking, and Catalyst Live da
 
 ---
 
-## Catalyst Live Tools
+## Catalyst Live
+
+Connect to a running simulation for real-time visualization and residual monitoring.
+
+### Starting the app in live mode
+
+```bash
+pvpython cfd_chat.py --live --host localhost --port 22222
+
+# Combined with pvserver (data stays on compute node)
+pvpython cfd_chat.py --pvserver=<host>:11111 --live
+```
+
+### Workflow
+
+```
+1. Start your Catalyst-enabled simulation
+2. Click the broadcast icon (top-right) to connect
+3. Chat: "extract monitors"         → starts residual tracking
+4. Click chart icon to see live convergence plot
+5. Chat: "pause simulation"         → freeze for analysis
+6. Chat: "extract grid"             → copy mesh to local session
+7. Chat: "show grid colored by p"   → visualize
+8. Chat: "resume simulation"        → continue
+```
+
+Or use `set_pause_on_connect()` before starting the simulation to auto-pause on connect.
+
+### Simulation-side requirements
+
+The simulation must expose a Catalyst Live connection on the configured port (default 22222).
+In your Catalyst pipeline script:
+
+```python
+from paraview.catalyst import Options
+options = Options()
+options.EnableCatalystLive = True
+options.CatalystLiveURL = "localhost:22222"
+```
+
+### Monitor channel format
+
+`extract_monitors()` looks for a channel named `"monitors"` by default. The simulation
+must publish this channel as a **Blueprint mesh** via Conduit — Catalyst Live requires
+mesh data, not tables or plain objects.
+
+The expected Conduit node layout for the monitors channel:
+
+```
+catalyst/state/timestep                     ← integer
+catalyst/state/time                         ← float
+
+catalyst/channels/monitors/type             = "mesh"
+catalyst/channels/monitors/data/coordsets/coords/type        = "explicit"
+catalyst/channels/monitors/data/coordsets/coords/values/x    ← iteration array (float32)
+catalyst/channels/monitors/data/coordsets/coords/values/y    ← zeros (float32)
+catalyst/channels/monitors/data/coordsets/coords/values/z    ← zeros (float32)
+
+catalyst/channels/monitors/data/topologies/mesh/type         = "points"
+catalyst/channels/monitors/data/topologies/mesh/coordset     = "coords"
+
+catalyst/channels/monitors/data/fields/iteration/association = "vertex"
+catalyst/channels/monitors/data/fields/iteration/topology    = "mesh"
+catalyst/channels/monitors/data/fields/iteration/values      ← iteration array
+
+catalyst/channels/monitors/data/fields/continuity/association = "vertex"
+catalyst/channels/monitors/data/fields/continuity/topology    = "mesh"
+catalyst/channels/monitors/data/fields/continuity/values      ← residual array
+
+# ... additional fields: momentum_x, momentum_y, momentum_z, energy, drag, lift, etc.
+```
+
+**Key constraint:** Each point in the mesh represents one iteration. Send the **full
+history** each timestep (not just the current value) — the client deduplicates by
+tracking the last seen iteration number.
+
+**Field naming:** The chart legend uses the field names as-is. Use descriptive names
+(`continuity`, `momentum_x`, `energy`) rather than generic ones (`res1`, `r2`).
+
+A minimal Python example using the standalone Catalyst API:
+
+```python
+import catalyst_conduit as conduit
+import catalyst
+
+def send_monitors(solver):
+    node = conduit.Node()
+    n = solver.current_iteration
+
+    node["catalyst/state/timestep"] = n
+    node["catalyst/state/time"] = solver.time
+
+    ch = node["catalyst/channels/monitors"]
+    ch["type"] = "mesh"
+
+    # Coordinate: use iteration number as x
+    ch["data/coordsets/coords/type"] = "explicit"
+    ch["data/coordsets/coords/values/x"].set_external(solver.iterations[:n])
+    ch["data/coordsets/coords/values/y"].set(np.zeros(n, dtype=np.float32))
+    ch["data/coordsets/coords/values/z"].set(np.zeros(n, dtype=np.float32))
+
+    ch["data/topologies/mesh/type"] = "points"
+    ch["data/topologies/mesh/coordset"] = "coords"
+
+    for name, arr in solver.residuals.items():
+        ch[f"data/fields/{name}/association"] = "vertex"
+        ch[f"data/fields/{name}/topology"] = "mesh"
+        ch[f"data/fields/{name}/values"].set_external(arr[:n])
+
+    catalyst.execute(node)
+```
+
+See `examples/catalyst/mock_simulation.py` for a complete working example, and
+`examples/catalyst/catalyst_pipeline_monitors.py` for the corresponding pipeline script.
+
+### Catalyst Live tools
 
 | Tool | Description |
 |---|---|
-| `connect_live(host, port)` | Connect to running Catalyst simulation |
-| `disconnect_live()` | Disconnect |
-| `pause_simulation()` | Freeze for detailed analysis |
+| `connect_live(host, port, pause)` | Connect; optionally auto-pause |
+| `set_pause_on_connect()` | Auto-pause when simulation connects |
+| `disconnect_live()` | Disconnect and clean up |
+| `pause_simulation()` | Freeze for analysis |
 | `resume_simulation()` | Continue time stepping |
-| `extract_live_data(name)` | Extract data channel from simulation |
+| `step_simulation(count)` | Advance N iterations then auto-pause |
+| `set_breakpoint(iteration)` | Auto-pause at specific iteration |
+| `clear_breakpoint()` | Remove active breakpoint |
+| `extract_live_data(name)` | Extract named channel to local session |
 | `show_live_source(name, color_by)` | Display extracted data |
-| `extract_monitors(channel)` | Start residual convergence monitoring |
-| `get_live_status()` | Current simulation time and connection state |
-
-See `examples/catalyst/` for mock simulation scripts and pipeline examples.
+| `extract_monitors(channel)` | Start residual monitoring (default: `"monitors"`) |
+| `show_monitor_chart()` | Open convergence chart |
+| `get_current_monitors()` | Latest monitor values |
+| `get_live_status()` | Connection state and simulation time |
 
 ---
 
