@@ -36,7 +36,8 @@ class WorkflowMCP:
         self._workflows = CFDWorkflows(
             self._analysis, 
             on_pipeline_changed=self._base_mcp.pipeline_changed,
-            app=app
+            app=app,
+            ontology=CFD_ONTOLOGY,
         )
         self._ontology = CFD_ONTOLOGY
         print(f"[WorkflowMCP] Initialized with app={app is not None}, has_render={hasattr(app, 'render_analysis_chart') if app else False}")
@@ -240,6 +241,69 @@ class WorkflowMCP:
             "tip": "Load with File > Load State in ParaView GUI, or simple.LoadState() in Python"
         }
     
+    def update_list_property(self, property_name: str, property_value=None, proxy_name: str = None) -> dict:
+        """Update array property and refresh pipeline browser."""
+        if property_value is None:
+            return {"error": "property_value is required"}
+        if not isinstance(property_value, list):
+            property_value = [float(property_value)]
+        result = self._base_mcp.update_list_property(property_name=property_name,
+                                                      property_value=property_value,
+                                                      proxy_name=proxy_name)
+        if "error" not in result:
+            self._notify_pipeline_and_panel()
+        return result
+
+    def update_representation(self, representation_type: str, proxy_name: str = None) -> dict:
+        """Update representation and refresh pipeline browser."""
+        result = self._base_mcp.update_representation(representation_type=representation_type,
+                                                       proxy_name=proxy_name)
+        if "error" not in result:
+            self._notify_pipeline_and_panel()
+        return result
+
+    def update_color(self, proxy_name: str = None, field_name: str = None) -> dict:
+        """Update coloring and refresh pipeline browser."""
+        result = self._base_mcp.update_color(proxy_name=proxy_name, field_name=field_name)
+        if "error" not in result:
+            self._notify_pipeline_and_panel()
+        return result
+
+    def _notify_pipeline_and_panel(self):
+        """Flush proxy state and force property panel refresh."""
+        active = simple.GetActiveSource()
+        if active is not None:
+            simple.UpdatePipeline(proxy=active)
+        self._base_mcp.pipeline_changed()
+        ctrl = self._base_mcp.app.ctrl
+        state = self._base_mcp.app.state
+        # Directly write ptc_yaml_props inside a state context so it flushes
+        # to the client. This replicates ProxyEditor._reset() which calls
+        # active_widget.update_ui(proxy) → state.ptc_yaml_props = "...".
+        # Using `with state:` ensures flush() is called on exit regardless
+        # of thread context.
+        if active is not None:
+            try:
+                lines = []
+                for prop_name in active.ListProperties():
+                    if prop_name.endswith("Info"):
+                        continue
+                    if not hasattr(active, prop_name):
+                        continue
+                    entry = f"{prop_name}: {getattr(active, prop_name)}"
+                    if ": <" in entry:
+                        continue
+                    lines.append(entry)
+                with state:
+                    state.ptc_yaml_props = ""  # clear first so the new value is always dirty
+                    state.ptc_yaml_props = "\n".join(lines)
+            except Exception:
+                pass
+        if ctrl.on_active_proxy_change.exists():
+            ctrl.on_active_proxy_change()
+        with state:
+            pass  # flush any remaining pending state
+
     def get_ontology(self) -> dict:
         """
         Get CFD domain knowledge for interpreting results.
@@ -551,7 +615,8 @@ Try the fallback tools first, and only ask the user if you truly cannot proceed.
 
 == VISUALIZATION TOOLS (use these first) ==
 
-- show_vortices(method="q_criterion") - Show vortex structures
+- show_vortices(method="q_criterion") - Create vortex structure visualization (initial creation only —
+  to adjust an existing vortex visualization use update_list_property, not show_vortices again)
 - show_streamlines() - Show flow streamlines in wake region  
 - show_slice(location="wake") - Show slice through data
 - show_histogram(field="p") - Show field distribution chart
@@ -570,7 +635,8 @@ After a workflow runs, it returns proxy_name and parameters. Use these to refine
   → Change coloring to different field (e.g., "pressure", "Velocity")
   
 - update_list_property(property_name, property_value, proxy_name)
-  → Adjust thresholds: update_list_property("Isosurfaces", [new_values], proxy_name)
+  → Adjust thresholds: update_list_property("Isosurfaces", [new_value], proxy_name)
+  → property_value MUST be a list, e.g. [14.03] not 14.03
   → Lower threshold = more structures, higher = fewer
   
 - update_display_property(property_name, value, proxy_name)
@@ -585,11 +651,18 @@ After a workflow runs, it returns proxy_name and parameters. Use these to refine
 
 == REFINEMENT EXAMPLES ==
 
-User: "Show vortices" → call show_vortices() → returns {proxy_name: "Contour1", threshold: 28.0, ...}
-User: "Make them wireframe" → call update_representation("Wireframe", "Contour1")
-User: "Show more structures" → call update_list_property("Isosurfaces", [14.0], "Contour1")
-User: "Color by pressure" → call update_color("Contour1", "p")
-User: "Make them semi-transparent" → call update_display_property("Opacity", 0.5, "Contour1")
+After show_vortices() creates proxy "Vortices_q_criterion" with threshold=28.0:
+- "Show more structures" (lower threshold) → update_list_property("Isosurfaces", [14.0], "Vortices_q_criterion")
+- "Show fewer structures" (higher threshold) → update_list_property("Isosurfaces", [56.0], "Vortices_q_criterion")
+- "Make it wireframe" → update_representation("Wireframe", "Vortices_q_criterion")
+- "Color by pressure" → update_color("Vortices_q_criterion", "p")
+- "Make semi-transparent" → update_display_property("Opacity", 0.5, "Vortices_q_criterion")
+
+DO NOT call show_vortices again to adjust the threshold — that rebuilds the whole pipeline.
+Use update_list_property("Isosurfaces", [new_threshold], proxy_name) to adjust existing results.
+
+CRITICAL: When a user requests refinement, make the tool call immediately and silently.
+Do NOT output tool call syntax as text. Just call the tool and describe what changed.
 
 == DISCOVERY TOOLS ==
 
@@ -625,6 +698,36 @@ When explaining visualizations, use the ontology to provide:
 - What the visualization method means (e.g., Q > 0 indicates vortex cores)
 - What the specific results show (threshold value, location, etc.)
 - Design relevance (what this means for aerodynamic performance)
+
+Some workflow returns include an `ontology_hints` field — a short list of
+dotted keys into the ontology. Hints are only provided for two cases where
+reasoning from memory is unreliable:
+
+1. Expert-level thresholds that use our conventions rather than textbook
+   canon (e.g. shape-factor regime bands for BL flow state).
+2. Causal relationships that point at other tools via the `evidence` field
+   (e.g. "what to run next to confirm why drag increased").
+
+When hints are present, call get_ontology() and look up the hinted keys
+rather than answering from memory. When hints are absent, explain from
+your own CFD knowledge — the workflow didn't flag anything as requiring
+grounded interpretation.
+
+ALWAYS relay the `tip` field verbatim to the user when it is present in
+a tool result. Never say "see the provided tips" or "use the tips above"
+— quote or paraphrase the actual tip text so the user can act on it
+without having to ask what the tips are.
+
+When the user asks to refine a visualization (e.g. "show more structures",
+"make it wireframe", "color by pressure"), CALL THE TOOL — do not output
+the tool call syntax as plain text. The tip field shows what tool calls
+are available; when the user requests one of those refinements, execute
+the corresponding tool immediately rather than printing the command.
+
+When explaining a tool result, focus on the fields most relevant to the
+user: `type`, `method`, `result` (threshold, field, range), and `tip`.
+The `provenance` and `filter_chain` fields are internal bookkeeping —
+do not summarize or repeat them in your response unless the user asks.
 """,
             "tools": [
                 # Discovery
@@ -636,6 +739,8 @@ When explaining visualizations, use the ontology to provide:
                 self._workflows.show_vortices,
                 self._workflows.show_streamlines,
                 self._workflows.show_slice,
+                self._workflows.show_schlieren,
+                self._workflows.show_shadowgraph,
                 self._workflows.show_histogram,
                 self._workflows.show_forces,
                 self._workflows.show_boundary_layer,
@@ -645,9 +750,9 @@ When explaining visualizations, use the ontology to provide:
                 # Refinement tools (from base MCP)
                 self._base_mcp.reset_camera,
                 self._base_mcp.focus_on,
-                self._base_mcp.update_representation,
-                self._base_mcp.update_color,
-                self._base_mcp.update_list_property,
+                self.update_representation,
+                self.update_color,
+                self.update_list_property,
                 self._base_mcp.show_or_hide,
                 self._base_mcp.list_properties,
                 self.update_display_property,

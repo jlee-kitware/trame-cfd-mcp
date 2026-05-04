@@ -1297,6 +1297,180 @@ class CFDAnalysis:
         except Exception as e:
             simple.SetActiveSource(original_active)
             return {"error": str(e), "field": field}
+
+    def compute_schlieren(
+        self,
+        proxy_name: str = None,
+        field: str = "Density",
+        log_scale: bool = True,
+    ) -> dict:
+        """
+        Compute Schlieren visualization field (density gradient magnitude).
+        
+        Schlieren imaging visualizes density gradients in compressible flows,
+        revealing shocks, shear layers, and expansion fans. This computes
+        |∇ρ| (gradient magnitude of density).
+        
+        For shadowgraph (∇²ρ), use compute_shadowgraph instead.
+        
+        Args:
+            proxy_name: Source proxy name (default: active source)
+            field: Field to compute gradient of (default: "Density")
+            log_scale: If True, compute log10(|∇ρ| + epsilon) for better
+                       dynamic range across shocks (default: True)
+        
+        Returns:
+            Dict with:
+            - proxy_name: Name of the output proxy with Schlieren field
+            - field_name: "Schlieren" or "Schlieren_log"
+            - field_range: [min, max] of the computed field
+            - suggested_colormap: Recommended colormap for visualization
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        original_active = simple.GetActiveSource()
+        
+        try:
+            # Resolve field name
+            resolved_field = self._resolve_field_type(field, proxy)
+            if resolved_field is None:
+                return {"error": f"Field '{field}' not found"}
+            
+            # Flatten if composite
+            flat_proxy, _, _ = ensure_flat_input(proxy)
+            
+            # Compute gradient
+            gradient = simple.Gradient(Input=flat_proxy)
+            gradient.ScalarArray = ['POINTS', resolved_field]
+            gradient.ComputeGradient = 1
+            gradient.ResultArrayName = "DensityGradient"
+            
+            # Compute magnitude (and optionally log scale)
+            if log_scale:
+                field_name = "Schlieren_log"
+                # Add small epsilon to avoid log(0)
+                calc = simple.Calculator(Input=gradient)
+                calc.Function = "log10(mag(DensityGradient) + 1e-10)"
+                calc.ResultArrayName = field_name
+                output_proxy = calc
+            else:
+                field_name = "Schlieren"
+                calc = simple.Calculator(Input=gradient)
+                calc.Function = "mag(DensityGradient)"
+                calc.ResultArrayName = field_name
+                output_proxy = calc
+            
+            # Register with meaningful name
+            schlieren_name = f"Schlieren_{resolved_field}"
+            simple.RenameSource(schlieren_name, output_proxy)
+            simple.UpdatePipeline(proxy=output_proxy)
+            
+            # Get field range
+            data_info = output_proxy.GetDataInformation()
+            array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+            if array_info:
+                field_range = list(array_info.GetComponentRange(0))
+            else:
+                field_range = [0.0, 1.0]
+            
+            simple.SetActiveSource(original_active)
+            
+            return {
+                "proxy_name": schlieren_name,
+                "field_name": field_name,
+                "field_range": field_range,
+                "log_scale": log_scale,
+                "source_field": resolved_field,
+                "suggested_colormap": "Grayscale",  # Traditional Schlieren look
+                "description": f"Schlieren field computed from {resolved_field} gradient"
+            }
+            
+        except Exception as e:
+            simple.SetActiveSource(original_active)
+            return {"error": str(e)}
+
+    def compute_shadowgraph(
+        self,
+        proxy_name: str = None,
+        field: str = "Density",
+    ) -> dict:
+        """
+        Compute Shadowgraph visualization field (Laplacian of density).
+        
+        Shadowgraph imaging visualizes the second derivative of density (∇²ρ),
+        which highlights edges of shocks more sharply than Schlieren.
+        
+        Args:
+            proxy_name: Source proxy name (default: active source)
+            field: Field to compute Laplacian of (default: "Density")
+        
+        Returns:
+            Dict with:
+            - proxy_name: Name of the output proxy with Shadowgraph field
+            - field_name: "Shadowgraph"
+            - field_range: [min, max] of the computed field
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        original_active = simple.GetActiveSource()
+        
+        try:
+            # Resolve field name
+            resolved_field = self._resolve_field_type(field, proxy)
+            if resolved_field is None:
+                return {"error": f"Field '{field}' not found"}
+            
+            # Flatten if composite
+            flat_proxy, _, _ = ensure_flat_input(proxy)
+            
+            # Compute gradient (first derivative)
+            gradient1 = simple.Gradient(Input=flat_proxy)
+            gradient1.ScalarArray = ['POINTS', resolved_field]
+            gradient1.ComputeGradient = 1
+            gradient1.ComputeDivergence = 0
+            gradient1.ResultArrayName = "Grad1"
+            
+            # Compute divergence of gradient = Laplacian
+            gradient2 = simple.Gradient(Input=gradient1)
+            gradient2.ScalarArray = ['POINTS', 'Grad1']
+            gradient2.ComputeGradient = 0
+            gradient2.ComputeDivergence = 1
+            gradient2.DivergenceArrayName = "Shadowgraph"
+            
+            output_proxy = gradient2
+            field_name = "Shadowgraph"
+            
+            # Register with meaningful name
+            shadowgraph_name = f"Shadowgraph_{resolved_field}"
+            simple.RenameSource(shadowgraph_name, output_proxy)
+            simple.UpdatePipeline(proxy=output_proxy)
+            
+            # Get field range
+            data_info = output_proxy.GetDataInformation()
+            array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+            if array_info:
+                field_range = list(array_info.GetComponentRange(0))
+            else:
+                field_range = [0.0, 1.0]
+            
+            simple.SetActiveSource(original_active)
+            
+            return {
+                "proxy_name": shadowgraph_name,
+                "field_name": field_name,
+                "field_range": field_range,
+                "source_field": resolved_field,
+                "suggested_colormap": "Grayscale",
+                "description": f"Shadowgraph (Laplacian) computed from {resolved_field}"
+            }
+            
+        except Exception as e:
+            simple.SetActiveSource(original_active)
+            return {"error": str(e)}
     
     def field_statistics(self, field: str, proxy_name: str = None) -> dict:
         """
@@ -1584,7 +1758,9 @@ out.GetPointData().AddArray(arr)
         density: float = 1.0,
         streamwise_axis: str = "x",
         lift_axis: str = "y",
-        proxy_name: str = None
+        proxy_name: str = None,
+        _shared_normals=None,
+        _shared_body_surf=None,
     ) -> dict:
         """
         Compute aerodynamic forces (drag/lift) by integrating pressure on surfaces.
@@ -1623,7 +1799,10 @@ out.GetPointData().AddArray(arr)
                 else:
                     freestream_velocity = 1.0
 
-            # Auto-detect reference area via projected area
+            # Auto-detect reference area via raster projected area.
+            # SaveScreenshot renders server-side; with --force-offscreen-rendering
+            # on pvserver this produces no Cocoa window on macOS.
+            area_image_path = None
             if reference_area is None:
                 flow_dir = [0, 0, 0]
                 flow_dir[drag_idx] = 1.0
@@ -1631,17 +1810,24 @@ out.GetPointData().AddArray(arr)
                     flow_direction=flow_dir,
                     resolution=1024,
                     proxy_name=proxy_name,
+                    _shared_body_surf=_shared_body_surf,
                 )
                 if "error" not in area_result:
-                    reference_area = area_result["area"]
+                    reference_area  = area_result["area"]
+                    area_image_path = area_result.get("area_image")
                 else:
-                    body_bounds, _ = self._get_body_bounds(proxy)
-                    if drag_idx == 0:
-                        reference_area = (body_bounds[3] - body_bounds[2]) * (body_bounds[5] - body_bounds[4])
-                    elif drag_idx == 1:
-                        reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[5] - body_bounds[4])
-                    else:
-                        reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[3] - body_bounds[2])
+                    area_image_path = None
+                    reference_area  = None
+
+            # Bounding box fallback if all area computations failed
+            if reference_area is None:
+                body_bounds_fb, _ = self._get_body_bounds(proxy)
+                if drag_idx == 0:
+                    reference_area = (body_bounds_fb[3] - body_bounds_fb[2]) * (body_bounds_fb[5] - body_bounds_fb[4])
+                elif drag_idx == 1:
+                    reference_area = (body_bounds_fb[1] - body_bounds_fb[0]) * (body_bounds_fb[5] - body_bounds_fb[4])
+                else:
+                    reference_area = (body_bounds_fb[1] - body_bounds_fb[0]) * (body_bounds_fb[3] - body_bounds_fb[2])
 
             # Find pressure field name from metadata
             info = get_field_names(proxy)
@@ -1653,13 +1839,19 @@ out.GetPointData().AddArray(arr)
             if pres_name is None:
                 return {"error": f"No pressure field found. Available: {list(info['point'].keys()) + list(info['cell'].keys())}"}
 
-            # Build surface pipeline server-side
-            flat_proxy, _, cleanup = ensure_flat_input(proxy)
-            surface = simple.ExtractSurface(Input=flat_proxy)
-            simple.UpdatePipeline(proxy=surface)
-            normals_filter = simple.SurfaceNormals(Input=surface)
-            normals_filter.ComputeCellNormals = 1
-            simple.UpdatePipeline(proxy=normals_filter)
+            # Build surface pipeline — reuse shared normals proxy if provided
+            if _shared_normals is not None:
+                normals_filter = _shared_normals
+                surface = None
+                flat_proxy = None
+                cleanup = None
+            else:
+                flat_proxy, _, cleanup = ensure_flat_input(proxy)
+                surface = simple.ExtractSurface(Input=flat_proxy)
+                simple.UpdatePipeline(proxy=surface)
+                normals_filter = simple.SurfaceNormals(Input=surface)
+                normals_filter.ComputeCellNormals = 1
+                simple.UpdatePipeline(proxy=normals_filter)
 
             # Run integration entirely server-side
             pf = run_server_script(
@@ -1676,30 +1868,33 @@ out.GetPointData().AddArray(arr)
             )
             kpi = fetch_table(pf)
 
-            # Clean up temporary server-side filters
+            # Clean up — don't delete shared proxies owned by caller
             safe_delete(pf)
-            safe_delete(normals_filter)
-            safe_delete(surface)
-            if cleanup:
-                safe_delete(cleanup)
+            if _shared_normals is None:
+                safe_delete(normals_filter)
+                if surface:
+                    safe_delete(surface)
+                if cleanup:
+                    safe_delete(cleanup)
 
             if "error" in kpi:
                 return {"error": f"Force integration failed on server. Pressure field: {pres_name}"}
 
             result = {
-                "drag_force":        kpi["drag"],
-                "lift_force":        kpi["lift"],
-                "force_x":           kpi["Fx"],
-                "force_y":           kpi["Fy"],
-                "force_z":           kpi["Fz"],
-                "Cd":                kpi["Cd"],
-                "Cl":                kpi["Cl"],
+                "drag_force":         kpi["drag"],
+                "lift_force":         kpi["lift"],
+                "force_x":            kpi["Fx"],
+                "force_y":            kpi["Fy"],
+                "force_z":            kpi["Fz"],
+                "Cd":                 kpi["Cd"],
+                "Cl":                 kpi["Cl"],
                 "freestream_velocity": kpi["freestream_velocity"],
-                "reference_area":    kpi["reference_area"],
-                "density":           density,
+                "reference_area":     kpi["reference_area"],
+                "density":            density,
                 "total_surface_area": kpi["total_surface_area"],
-                "streamwise_axis":   streamwise_axis,
-                "lift_axis":         lift_axis,
+                "streamwise_axis":    streamwise_axis,
+                "lift_axis":          lift_axis,
+                "area_image":         area_image_path,
             }
 
             self._log_analysis(
@@ -1720,7 +1915,8 @@ out.GetPointData().AddArray(arr)
         force_axis: str = "auto",
         distribution_axis: str = "auto",
         num_bins: int = 40,
-        proxy_name: str = None
+        proxy_name: str = None,
+        _shared_normals=None,
     ) -> dict:
         """
         Compute force distribution along an axis (ANALYSIS ONLY - no visualization).
@@ -1778,6 +1974,11 @@ out.GetPointData().AddArray(arr)
 
             force_idx = axis_map.get(force_axis.lower(), 0)
             dist_idx  = axis_map.get(distribution_axis.lower(), 0)
+            # Lift axis: perpendicular to both streamwise and distribution axes
+            all_axes = ["x", "y", "z"]
+            lift_axis_name = next(a for a in all_axes
+                                  if a != force_axis.lower() and a != distribution_axis.lower())
+            lift_idx = axis_map.get(lift_axis_name, 1)
 
             # Find pressure field from metadata
             info = get_field_names(proxy)
@@ -1789,19 +1990,27 @@ out.GetPointData().AddArray(arr)
             if pres_name is None:
                 return {"error": "No pressure field found"}
 
-            # Build surface pipeline server-side
-            flat_proxy, _, cleanup = ensure_flat_input(proxy)
-            surface = simple.ExtractSurface(Input=flat_proxy)
-            simple.UpdatePipeline(proxy=surface)
-            normals_filter = simple.SurfaceNormals(Input=surface)
-            normals_filter.ComputeCellNormals = 1
-            simple.UpdatePipeline(proxy=normals_filter)
+            # Build surface pipeline — reuse shared normals proxy if provided
+            if _shared_normals is not None:
+                normals_filter = _shared_normals
+                surface = None
+                flat_proxy = None
+                cleanup = None
+            else:
+                flat_proxy, _, cleanup = ensure_flat_input(proxy)
+                surface = simple.ExtractSurface(Input=flat_proxy)
+                simple.UpdatePipeline(proxy=surface)
+                normals_filter = simple.SurfaceNormals(Input=surface)
+                normals_filter.ComputeCellNormals = 1
+                simple.UpdatePipeline(proxy=normals_filter)
+            num_body_cells = int(normals_filter.GetDataInformation().GetNumberOfCells())
 
             pf = run_server_script(
                 normals_filter, _script("force_distribution.py"),
                 params={
                     "PRESSURE_FIELD": pres_name,
                     "FORCE_IDX":      force_idx,
+                    "LIFT_IDX":       lift_idx,
                     "DIST_IDX":       dist_idx,
                     "NUM_BINS":       num_bins,
                 },
@@ -1809,27 +2018,36 @@ out.GetPointData().AddArray(arr)
             )
             kpi = fetch_table(pf)
             safe_delete(pf)
-            safe_delete(normals_filter)
-            safe_delete(surface)
-            if cleanup:
-                safe_delete(cleanup)
+            if _shared_normals is None:
+                safe_delete(normals_filter)
+                if surface:
+                    safe_delete(surface)
+                if cleanup:
+                    safe_delete(cleanup)
 
             if "error" in kpi:
                 return {"error": "Force distribution failed on server"}
 
-            stations   = kpi["station"] if isinstance(kpi["station"], list) else [kpi["station"]]
-            sectional  = kpi["sectional_force"] if isinstance(kpi["sectional_force"], list) else [kpi["sectional_force"]]
-            accumulated = kpi["accumulated_force"] if isinstance(kpi["accumulated_force"], list) else [kpi["accumulated_force"]]
+            stations          = kpi["station"] if isinstance(kpi["station"], list) else [kpi["station"]]
+            sectional_drag    = kpi["sectional_drag"] if isinstance(kpi["sectional_drag"], list) else [kpi["sectional_drag"]]
+            accumulated_drag  = kpi["accumulated_drag"] if isinstance(kpi["accumulated_drag"], list) else [kpi["accumulated_drag"]]
+            sectional_lift    = kpi["sectional_lift"] if isinstance(kpi["sectional_lift"], list) else [kpi["sectional_lift"]]
+            accumulated_lift  = kpi["accumulated_lift"] if isinstance(kpi["accumulated_lift"], list) else [kpi["accumulated_lift"]]
 
             return {
                 "force_axis":        force_axis,
+                "lift_axis":         lift_axis_name,
                 "distribution_axis": distribution_axis,
                 "stations":          stations,
-                "sectional_force":   sectional,
-                "accumulated_force": accumulated,
-                "total_force":       float(kpi["total_force"]),
+                "sectional_drag":    sectional_drag,
+                "accumulated_drag":  accumulated_drag,
+                "sectional_lift":    sectional_lift,
+                "accumulated_lift":  accumulated_lift,
+                "total_drag":        float(kpi["total_drag"]),
+                "total_lift":        float(kpi["total_lift"]),
                 "position_range":    [float(stations[0]), float(stations[-1])],
                 "num_bins":          num_bins,
+                "num_body_cells":    int(kpi.get("num_body_cells", 0)),
             }
 
         except Exception as e:
@@ -1838,183 +2056,143 @@ out.GetPointData().AddArray(arr)
     def compute_projected_area(
         self,
         flow_direction: list = None,
-        resolution: int = 2048,
-        proxy_name: str = None
+        resolution: int = 1024,
+        proxy_name: str = None,
+        _shared_body_surf=None,
     ) -> dict:
         """
-        Compute projected frontal area via rasterization and pixel counting.
-        
-        Renders the body surface with orthographic projection aligned with the
-        flow direction, then counts non-background pixels to compute area.
-        This handles complex geometries, hidden surfaces, and concavities correctly.
-        
+        Compute projected frontal area via offscreen render + SaveScreenshot.
+
+        Renders the body surface with orthographic projection along the flow
+        direction, counts non-background pixels, multiplies by pixel area.
+        Saves the silhouette image to output/projected_area.png.
+
         Args:
-            flow_direction: Flow direction vector [x, y, z] (default: [1, 0, 0])
-            resolution: Render resolution (default: 2048, higher = more accurate)
+            flow_direction: Flow direction [x,y,z] (default [1,0,0])
+            resolution: Image resolution (default 1024)
             proxy_name: Source proxy name
-            
+            _shared_body_surf: Pre-built body surface proxy (vtkPolyData).
+                               When provided, skips surface extraction.
+
         Returns:
-            Dict with:
-            - area: Projected frontal area in model units squared
-            - pixel_count: Number of covered pixels
-            - pixel_size: Size of each pixel in model units
-            - flow_direction: Normalized flow direction used
+            Dict with area, pixel_count, pixel_size, area_image path.
         """
-        import numpy as np
-        from trame_llm.paraview import is_remote
-        
+        import numpy as np, os
+
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
-        # Default flow direction
+
         if flow_direction is None:
             flow_direction = [1.0, 0.0, 0.0]
         flow = np.array(flow_direction, dtype=float)
         flow = flow / np.linalg.norm(flow)
-        
+        streamwise_idx = int(np.argmax(np.abs(flow)))
+
         try:
-            # Get body bounds
+            main_view = simple.GetActiveView()
             body_bounds, _ = self._get_body_bounds(proxy)
-            
-            # Extract surface first, then clip to body region
-            # (Clipping volume mesh doesn't isolate body surface correctly)
-            merge, _, cleanup_merge = ensure_flat_input(proxy)
-            
-            surf = simple.ExtractSurface(Input=merge)
-            simple.UpdatePipeline(proxy=surf)
-            
-            # Clip surface to body region
-            clip = simple.Clip(Input=surf)
-            clip.ClipType = 'Box'
-            clip.ClipType.Bounds = [
-                body_bounds[0] - 0.01, body_bounds[1] + 0.01,
-                body_bounds[2] - 0.01, body_bounds[3] + 0.01,
-                body_bounds[4] - 0.01, body_bounds[5] + 0.01
-            ]
-            clip.Invert = 1  # Keep inside
-            simple.UpdatePipeline(proxy=clip)
-            
-            # Create offscreen render view
+
+            if _shared_body_surf is not None:
+                body_surf = _shared_body_surf
+                merge = surf = clip = cleanup_merge = None
+            else:
+                merge, _, cleanup_merge = ensure_flat_input(proxy)
+                surf = simple.ExtractSurface(Input=merge)
+                simple.UpdatePipeline(proxy=surf)
+                clip = simple.Clip(Input=surf)
+                clip.ClipType = 'Box'
+                clip.ClipType.Bounds = [
+                    body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+                    body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+                    body_bounds[4] - 0.01, body_bounds[5] + 0.01,
+                ]
+                clip.Invert = 1
+                simple.UpdatePipeline(proxy=clip)
+                body_surf = simple.ExtractSurface(Input=clip)
+                simple.UpdatePipeline(proxy=body_surf)
+
             view = simple.CreateView('RenderView')
             view.ViewSize = [resolution, resolution]
             view.Background = [0, 0, 0]
-            view.UseColorPaletteForBackground = 0  # Use explicit black background
-            view.OrientationAxesVisibility = 0     # Hide orientation widget
-            
-            # Display with flat white color (no lighting effects)
-            display = simple.Show(clip, view)
+            view.UseColorPaletteForBackground = 0
+            view.OrientationAxesVisibility = 0
+
+            display = simple.Show(body_surf, view)
             display.Representation = 'Surface'
             display.DiffuseColor = [1, 1, 1]
             display.AmbientColor = [1, 1, 1]
             display.Specular = 0
             display.Ambient = 1.0
             display.Diffuse = 0.0
-            
-            # Orthographic projection
             view.CameraParallelProjection = 1
-            
-            # Camera alignment - look along flow direction
+
             cx = 0.5 * (body_bounds[0] + body_bounds[1])
             cy = 0.5 * (body_bounds[2] + body_bounds[3])
             cz = 0.5 * (body_bounds[4] + body_bounds[5])
             center = np.array([cx, cy, cz])
-            
-            # Place camera far upstream
-            distance = 10.0
-            camera_pos = center - flow * distance
-            
-            view.CameraPosition = camera_pos.tolist()
+            cam_flow = np.zeros(3); cam_flow[streamwise_idx] = 1.0
+            view.CameraPosition = (center - cam_flow * 10.0).tolist()
             view.CameraFocalPoint = center.tolist()
-            
-            # Choose view-up automatically (perpendicular to flow)
+
             up_guess = np.array([0, 0, 1])
-            if abs(np.dot(up_guess, flow)) > 0.9:
+            if abs(np.dot(up_guess, cam_flow)) > 0.9:
                 up_guess = np.array([0, 1, 0])
-            
-            right = np.cross(flow, up_guess)
-            up = np.cross(right, flow)
+            right = np.cross(cam_flow, up_guess)
+            up = np.cross(right, cam_flow)
             up = up / np.linalg.norm(up)
-            
             view.CameraViewUp = up.tolist()
-            
-            # Set parallel scale to fit body with margin
-            # Parallel scale = half the height of visible region
-            span_y = body_bounds[3] - body_bounds[2]
-            span_z = body_bounds[5] - body_bounds[4]
-            parallel_scale = max(span_y, span_z) * 0.6
-            view.CameraParallelScale = parallel_scale
-            height = view.ViewSize[1]
-            
+
+            all_axes = [0, 1, 2]
+            proj_axes = [a for a in all_axes if a != streamwise_idx]
+            span0 = body_bounds[proj_axes[0]*2+1] - body_bounds[proj_axes[0]*2]
+            span1 = body_bounds[proj_axes[1]*2+1] - body_bounds[proj_axes[1]*2]
+            parallel_scale = np.maximum(span0, span1) * 0.6
+            view.CameraParallelScale = float(parallel_scale)
+            pixel_size = 2.0 * float(parallel_scale) / resolution
+
             simple.SetActiveView(view)
-            simple.Render(view)
-            
-            # Capture image — dual mode for in-process vs pvserver
-            if is_remote():
-                # pvserver: SaveScreenshot renders server-side, writes file
-                import tempfile, os
-                tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-                tmp.close()
-                simple.SaveScreenshot(tmp.name, view, ImageResolution=[resolution, resolution])
-                from vtk import vtkPNGReader
-                reader = vtkPNGReader()
-                reader.SetFileName(tmp.name)
-                reader.Update()
-                image = reader.GetOutput()
-                os.unlink(tmp.name)
-            else:
-                # In-process: direct framebuffer capture (faster, no disk I/O)
-                from vtk import vtkWindowToImageFilter
-                w2i = vtkWindowToImageFilter()
-                w2i.SetInput(view.GetRenderWindow())
-                w2i.Update()
-                image = w2i.GetOutput()
-            
-            from vtk.util.numpy_support import vtk_to_numpy
-            dims = image.GetDimensions()
-            vtk_array = image.GetPointData().GetScalars()
-            np_img = vtk_to_numpy(vtk_array)
-            
-            # Reshape image (may be RGB or RGBA)
-            n_components = vtk_array.GetNumberOfComponents()
-            np_img = np_img.reshape(dims[1], dims[0], n_components)
-            
-            # Count non-background pixels (threshold > 10 to avoid noise)
-            mask = np_img[:, :, 0] > 10
-            covered_pixels = int(np.count_nonzero(mask))
-            
-            # Convert to area
-            pixel_size = 2.0 * parallel_scale / height
-            area = covered_pixels * pixel_size * pixel_size
-            
-            # Cleanup — children before parents
+            os.makedirs("output", exist_ok=True)
+            artifact_path = os.path.abspath("output/projected_area.png")
+            simple.SaveScreenshot(artifact_path, view, ImageResolution=[resolution, resolution])
+
+            from vtk import vtkPNGReader
+            reader = vtkPNGReader()
+            reader.SetFileName(artifact_path)
+            reader.Update()
+            from vtk.util.numpy_support import vtk_to_numpy as _v2n
+            img = reader.GetOutput()
+            scalars = _v2n(img.GetPointData().GetScalars())
+            n_comp = img.GetPointData().GetScalars().GetNumberOfComponents()
+            covered = int(np.count_nonzero(scalars.reshape(-1, n_comp)[:, 0] > 10))
+            area = covered * pixel_size * pixel_size
+
             safe_delete(view)
-            safe_delete(clip)   # child of surf
-            safe_delete(surf)   # child of merge
-            if cleanup_merge:
-                safe_delete(cleanup_merge)
-            
-            result = {
-                "area": float(area),
-                "pixel_count": covered_pixels,
-                "pixel_size": float(pixel_size),
-                "resolution": resolution,
+            if _shared_body_surf is None:
+                safe_delete(body_surf)
+                if clip: safe_delete(clip)
+                if surf: safe_delete(surf)
+                if cleanup_merge: safe_delete(cleanup_merge)
+            if main_view:
+                simple.SetActiveView(main_view)
+
+            self._log_analysis("projected_area", area=area,
+                               flow_axis=["x","y","z"][streamwise_idx],
+                               pixel_count=covered)
+
+            return {
+                "area":        area,
+                "pixel_count": covered,
+                "pixel_size":  pixel_size,
+                "resolution":  resolution,
                 "flow_direction": flow.tolist(),
-                "body_bounds": body_bounds
+                "body_bounds": body_bounds,
+                "area_image":  artifact_path,
             }
-            
-            self._log_analysis(
-                "projected_area",
-                area=float(area),
-                flow_direction=flow.tolist(),
-                resolution=resolution
-            )
-            
-            return result
-            
+
         except Exception as e:
             return {"error": str(e)}
-    
+
     def compute_flow_topology(
         self,
         proxy_name: str = None
@@ -2155,7 +2333,8 @@ out.GetPointData().AddArray(arr)
         force_axis: str = "auto",
         distribution_axis: str = "auto",
         num_bins: int = 40,
-        proxy_name: str = None
+        proxy_name: str = None,
+        _shared_normals=None,
     ) -> dict:
         """
         Compute force distribution along an axis and return Plotly-compatible data.
@@ -2174,40 +2353,41 @@ out.GetPointData().AddArray(arr)
             force_axis=force_axis,
             distribution_axis=distribution_axis,
             num_bins=num_bins,
-            proxy_name=proxy_name
+            proxy_name=proxy_name,
+            _shared_normals=_shared_normals,
         )
-        
+
         if "error" in dist_data:
             return dist_data
         
         try:
             stations = dist_data["stations"]
-            sectional = dist_data["sectional_force"]
-            accumulated = dist_data["accumulated_force"]
-            
-            force_names = {"x": "Drag", "y": "Lift", "z": "Side Force"}
-            force_name = force_names.get(dist_data["force_axis"].lower(), "Force")
-            
-            # Return Plotly-compatible chart data
+            dist_axis_label = dist_data["distribution_axis"].upper()
+
+            # Return Plotly-compatible chart data with both drag and lift distributions
             return {
                 "status": "created",
                 "chart_type": "force_distribution",
-                "title": f"Accumulated {force_name} Distribution",
-                "x_label": f'{dist_data["distribution_axis"].upper()} Position',
-                "y_label": force_name,
+                "title": f"Accumulated Drag and Lift Distribution",
+                "x_label": f'{dist_axis_label} Position',
+                "y_label": "Force",
                 "data": {
                     "x": stations if isinstance(stations, list) else stations.tolist(),
                     "series": {
-                        "Accumulated Force": accumulated if isinstance(accumulated, list) else accumulated.tolist(),
-                        "Sectional Force": sectional if isinstance(sectional, list) else sectional.tolist(),
+                        "Accumulated_Drag":  dist_data["accumulated_drag"] if isinstance(dist_data["accumulated_drag"], list) else dist_data["accumulated_drag"].tolist(),
+                        "Sectional_Drag":    dist_data["sectional_drag"]   if isinstance(dist_data["sectional_drag"],   list) else dist_data["sectional_drag"].tolist(),
+                        "Accumulated_Lift":  dist_data["accumulated_lift"] if isinstance(dist_data["accumulated_lift"], list) else dist_data["accumulated_lift"].tolist(),
+                        "Sectional_Lift":    dist_data["sectional_lift"]   if isinstance(dist_data["sectional_lift"],   list) else dist_data["sectional_lift"].tolist(),
                     }
                 },
-                "force_axis": dist_data["force_axis"],
+                "force_axis":        dist_data["force_axis"],
+                "lift_axis":         dist_data["lift_axis"],
                 "distribution_axis": dist_data["distribution_axis"],
-                "total_force": dist_data["total_force"],
-                "position_range": dist_data["position_range"],
-                "num_bins": dist_data["num_bins"],
-                "num_body_cells": dist_data["num_body_cells"],
+                "total_drag":        dist_data["total_drag"],
+                "total_lift":        dist_data["total_lift"],
+                "position_range":    dist_data["position_range"],
+                "num_bins":          dist_data["num_bins"],
+                "num_body_cells":    dist_data["num_body_cells"],
             }
             
         except Exception as e:

@@ -14,7 +14,7 @@ from trame_llm.paraview import ensure_flat_input, create_table_source
 class CFDWorkflows:
     """High-level workflow tools for CFD visualization."""
     
-    def __init__(self, cfd_analysis, on_pipeline_changed=None, app=None):
+    def __init__(self, cfd_analysis, on_pipeline_changed=None, app=None, ontology=None):
         """
         Initialize with reference to CFDAnalysis for internal tool access.
         
@@ -22,12 +22,61 @@ class CFDWorkflows:
             cfd_analysis: CFDAnalysis instance
             on_pipeline_changed: Optional callback to notify when pipeline changes
             app: Optional trame app for rendering charts
+            ontology: Optional ontology dict (from ontology.json). When provided,
+                      workflow returns include validated `ontology_hints` pointing
+                      at relevant domain knowledge. See _ontology_hints().
         """
         self._mcp = cfd_analysis  # Keep as _mcp for minimal code changes
         self._provenance_registry = {}  # proxy_name -> provenance dict
         self._on_pipeline_changed = on_pipeline_changed
         self._app = app
         self._chart_counter = 0
+        self._ontology = ontology or {}
+
+    def _ontology_hints(self, keys) -> list:
+        """
+        Validate dotted ontology keys against the loaded ontology and return the
+        subset that resolves. Keys that don't resolve log a warning so stale
+        references surface during development rather than failing silently.
+        
+        Ontology hints are passive: the LLM is expected to call get_ontology()
+        and look up the hinted keys when explaining results. This keeps tool
+        returns small (a few short strings) while nudging the LLM toward
+        grounded CFD interpretation instead of free-form recall.
+        
+        Args:
+            keys: Single dotted key string or list of them (e.g.
+                  "flow_features.boundary_layer.metrics.shape_factor")
+        
+        Returns:
+            List of keys that resolve against the current ontology. Empty list
+            if ontology wasn't provided to the constructor.
+        """
+        if not self._ontology:
+            return []
+        if isinstance(keys, str):
+            keys = [keys]
+        
+        resolved = []
+        for key in keys:
+            node = self._ontology
+            ok = True
+            for part in key.split('.'):
+                if isinstance(node, dict) and part in node:
+                    node = node[part]
+                else:
+                    ok = False
+                    break
+            if ok:
+                resolved.append(key)
+            else:
+                logging.warning(
+                    f"[_ontology_hints] Stale ontology key: '{key}' "
+                    f"does not resolve in ontology version "
+                    f"{self._ontology.get('version', '?')}. "
+                    f"Update the workflow or add the key to ontology.json."
+                )
+        return resolved
     
     def _notify_pipeline_changed(self):
         """Notify that pipeline has changed (for UI updates like pipeline browser)."""
@@ -245,7 +294,7 @@ class CFDWorkflows:
             "proxy_name": self._get_proxy_name(proxy),
             "point_fields": point_fields,
             "cell_fields": cell_fields,
-            "tip": "Use field names with update_color(proxy_name, field_name) to change visualization coloring."
+            "tip": "Say 'change coloring' with a field name to update visualization coloring."
         }
 
     def show_vortices(
@@ -255,11 +304,11 @@ class CFDWorkflows:
     ) -> dict:
         """
         Show vortex structures using Q-criterion, vorticity, or lambda2.
-        
+
         Args:
             method: "q_criterion" (default), "vorticity", or "lambda2"
             color_by: Field to color by (default: "Velocity")
-            
+
         Returns:
             Dict with visualization info including proxy_name and full provenance
         """
@@ -322,7 +371,7 @@ class CFDWorkflows:
                 "threshold": vortex["threshold"],
                 "field_range": vortex.get("field_range")
             },
-            "tip": f"Threshold {vortex['threshold']:.2f} is auto-computed. To show MORE structures: update_list_property('Isosurfaces', [{vortex['threshold']/2:.2f}], '{contour_name}'). To show FEWER: update_list_property('Isosurfaces', [{vortex['threshold']*2:.2f}], '{contour_name}'). To change style: update_representation('Wireframe', '{contour_name}')."
+            "tip": f"Threshold {vortex['threshold']:.2f} is auto-computed. Say 'show more structures' or 'show fewer structures' to adjust, or 'make it wireframe' to change style."
         }
 
     def show_streamlines(
@@ -379,9 +428,11 @@ class CFDWorkflows:
             stream_name = "Streamlines_wake"
             stream = simple.StreamTracer(Input=proxy, registrationName=stream_name)
             stream.SeedType = "Point Cloud"
-            stream.SeedType.Center = seed["center"]
-            stream.SeedType.Radius = seed["radius"]
-            stream.SeedType.NumberOfPoints = num_points
+            stream.SeedType.Set(
+                Center=seed["center"],
+                Radius=seed["radius"],
+                NumberOfPoints=num_points,
+            )
             stream.MaximumStreamlineLength = seed["max_length"]
             stream.Vectors = ['POINTS', vel_field]
             simple.UpdatePipeline(proxy=stream)
@@ -419,6 +470,9 @@ class CFDWorkflows:
             "proxy_name": stream_name,
             "seed_source": seed_source or "wake (auto)",
             "provenance": provenance,
+            "ontology_hints": self._ontology_hints([
+                "causal_relationships.drag_increase",
+            ]),
             "tip": tip,
         }
 
@@ -578,7 +632,228 @@ class CFDWorkflows:
             "span_axis": span_axis,
             "streamwise_axis": streamwise_axis,
             "provenance": provenance,
-            "tip": f"To refine: update_color('{slice_name}', field_name='pressure') to recolor, or update_representation('Surface With Edges', '{slice_name}') to show mesh."
+            "ontology_hints": self._ontology_hints([
+                "causal_relationships.drag_increase",
+            ]),
+            "tip": f"To refine: say 'color by pressure' to recolor, or 'show mesh edges' to show mesh on '{slice_name}'."
+        }
+
+    def show_schlieren(
+        self,
+        field: str = "Density",
+        log_scale: bool = True,
+        on_slice: bool = True,
+        slice_normal: str = "z",
+    ) -> dict:
+        """
+        Show Schlieren visualization (density gradient magnitude).
+        
+        Schlieren imaging reveals shocks, shear layers, and expansion fans
+        in compressible flows by visualizing |∇ρ|.
+        
+        Args:
+            field: Field to compute gradient of (default: "Density")
+            log_scale: Use log scale for better shock visibility (default: True)
+            on_slice: If True, show on a slice; if False, volume render (default: True)
+            slice_normal: Normal direction for slice: "x", "y", or "z" (default: "z")
+            
+        Returns:
+            Dict with visualization info
+        """
+        view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        
+        # Clear analysis log for fresh provenance
+        self._mcp.clear_analysis_log()
+        
+        # Compute Schlieren field
+        result = self._mcp.compute_schlieren(
+            proxy_name=None,
+            field=field,
+            log_scale=log_scale,
+        )
+        
+        if "error" in result:
+            return result
+        
+        schlieren_proxy = simple.FindSource(result["proxy_name"])
+        field_name = result["field_name"]
+        
+        if on_slice:
+            # Create a slice through the center
+            bounds = schlieren_proxy.GetDataInformation().GetBounds()
+            center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
+            
+            normal_map = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}
+            normal_vec = normal_map.get(slice_normal.lower(), [0, 0, 1])
+            
+            slice_name = f"Schlieren_Slice"
+            slice_filter = simple.Slice(Input=schlieren_proxy, registrationName=slice_name)
+            slice_filter.SliceType = 'Plane'
+            slice_filter.SliceType.Origin = center
+            slice_filter.SliceType.Normal = normal_vec
+            simple.UpdatePipeline(proxy=slice_filter)
+            
+            display_proxy = slice_filter
+            output_name = slice_name
+        else:
+            display_proxy = schlieren_proxy
+            output_name = result["proxy_name"]
+        
+        # Show with grayscale colormap (traditional Schlieren look)
+        display = simple.Show(display_proxy, view)
+        display.Representation = "Surface"
+        simple.ColorBy(display, ('POINTS', field_name))
+        
+        # Apply grayscale colormap
+        lut = simple.GetColorTransferFunction(field_name)
+        lut.ApplyPreset('Grayscale', True)
+        
+        # Set range
+        field_range = result["field_range"]
+        lut.RescaleTransferFunction(field_range[0], field_range[1])
+        
+        display.SetScalarBarVisibility(view, True)
+        
+        # Set view perpendicular to slice
+        if on_slice:
+            self._mcp.set_view(direction=f"-{slice_normal}")
+        
+        simple.ResetCamera(view)
+        simple.Render(view)
+        
+        # Build provenance
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(display_proxy),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {
+                "color_by": field_name,
+                "colormap": "Grayscale",
+                "log_scale": log_scale,
+            }
+        }
+        
+        self._register_provenance(output_name, provenance)
+        self._notify_pipeline_changed()
+        
+        return {
+            "status": "created",
+            "type": "schlieren",
+            "proxy_name": output_name,
+            "field_name": field_name,
+            "field_range": field_range,
+            "log_scale": log_scale,
+            "provenance": provenance,
+            "description": "Schlieren visualization showing density gradient magnitude",
+            "tip": "Bright regions indicate strong density gradients (shocks, shear layers)."
+        }
+
+    def show_shadowgraph(
+        self,
+        field: str = "Density",
+        on_slice: bool = True,
+        slice_normal: str = "z",
+    ) -> dict:
+        """
+        Show Shadowgraph visualization (Laplacian of density).
+        
+        Shadowgraph imaging shows the second derivative of density (∇²ρ),
+        highlighting shock edges more sharply than Schlieren.
+        
+        Args:
+            field: Field to compute Laplacian of (default: "Density")
+            on_slice: If True, show on a slice; if False, volume render (default: True)
+            slice_normal: Normal direction for slice: "x", "y", or "z" (default: "z")
+            
+        Returns:
+            Dict with visualization info
+        """
+        view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        
+        # Clear analysis log for fresh provenance
+        self._mcp.clear_analysis_log()
+        
+        # Compute Shadowgraph field
+        result = self._mcp.compute_shadowgraph(
+            proxy_name=None,
+            field=field,
+        )
+        
+        if "error" in result:
+            return result
+        
+        shadowgraph_proxy = simple.FindSource(result["proxy_name"])
+        field_name = result["field_name"]
+        
+        if on_slice:
+            # Create a slice through the center
+            bounds = shadowgraph_proxy.GetDataInformation().GetBounds()
+            center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
+            
+            normal_map = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}
+            normal_vec = normal_map.get(slice_normal.lower(), [0, 0, 1])
+            
+            slice_name = f"Shadowgraph_Slice"
+            slice_filter = simple.Slice(Input=shadowgraph_proxy, registrationName=slice_name)
+            slice_filter.SliceType = 'Plane'
+            slice_filter.SliceType.Origin = center
+            slice_filter.SliceType.Normal = normal_vec
+            simple.UpdatePipeline(proxy=slice_filter)
+            
+            display_proxy = slice_filter
+            output_name = slice_name
+        else:
+            display_proxy = shadowgraph_proxy
+            output_name = result["proxy_name"]
+        
+        # Show with grayscale colormap
+        display = simple.Show(display_proxy, view)
+        display.Representation = "Surface"
+        simple.ColorBy(display, ('POINTS', field_name))
+        
+        # Apply grayscale colormap
+        lut = simple.GetColorTransferFunction(field_name)
+        lut.ApplyPreset('Grayscale', True)
+        
+        # Set range (symmetric around zero for Laplacian)
+        field_range = result["field_range"]
+        max_abs = max(abs(field_range[0]), abs(field_range[1]))
+        lut.RescaleTransferFunction(-max_abs, max_abs)
+        
+        display.SetScalarBarVisibility(view, True)
+        
+        # Set view perpendicular to slice
+        if on_slice:
+            self._mcp.set_view(direction=f"-{slice_normal}")
+        
+        simple.ResetCamera(view)
+        simple.Render(view)
+        
+        # Build provenance
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(display_proxy),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {
+                "color_by": field_name,
+                "colormap": "Grayscale",
+            }
+        }
+        
+        self._register_provenance(output_name, provenance)
+        self._notify_pipeline_changed()
+        
+        return {
+            "status": "created",
+            "type": "shadowgraph",
+            "proxy_name": output_name,
+            "field_name": field_name,
+            "field_range": field_range,
+            "provenance": provenance,
+            "description": "Shadowgraph visualization showing Laplacian of density",
+            "tip": "Shows shock edges more sharply than Schlieren."
         }
 
     def show_histogram(
@@ -784,6 +1059,10 @@ class CFDWorkflows:
             "delta_star_mm": round(bl_data["delta_star"] * 1000, 3),
             "theta_mm": round(bl_data["theta"] * 1000, 3),
             "shape_factor": round(bl_data["shape_factor"], 3),
+            "ontology_hints": self._ontology_hints([
+                "flow_features.boundary_layer.metrics.shape_factor",
+                "flow_features.boundary_layer.design_relevance",
+            ]),
         }
 
     def _show_boundary_layer_multi(self, stations: list, span_fraction: float = 0.5,
@@ -918,6 +1197,10 @@ class CFDWorkflows:
             "span_fraction": span_fraction,
             "profiles": results,
             "errors": errors if errors else None,
+            "ontology_hints": self._ontology_hints([
+                "flow_features.boundary_layer.metrics.shape_factor",
+                "flow_features.boundary_layer.design_relevance",
+            ]),
         }
 
     def create_section_debug_chart(self, bl_results: list = None, title: str = None) -> dict:
@@ -1170,6 +1453,10 @@ class CFDWorkflows:
                 "orange": "transitional (2.0 < H < 3.5)",
                 "blue": "turbulent (H < 2.0)"
             },
+            "ontology_hints": self._ontology_hints([
+                "flow_features.boundary_layer.metrics.shape_factor",
+                "flow_features.boundary_layer.design_relevance",
+            ]),
             "tip": "Camera is set to frame all probes. Call save_all_charts() for BL charts, then save_screenshot() directly (do NOT call set_view first)."
         }
 
@@ -1232,35 +1519,245 @@ class CFDWorkflows:
                 "vortex_points": n_points,
                 "bounds": bounds
             },
-            "tip": "To refine: update_representation('Points', 'VortexCores') to show as points, or update_color('VortexCores', field_name='Velocity') to color by velocity."
+            "tip": "To refine: say 'show as points' or 'color vortex cores by velocity'."
         }
         
         return result
 
+    def show_force_surface(self, margin_frac: float = 0.02) -> dict:
+        """
+        Show the surface used for force integration, colored by body_mask.
+
+        Green (body_mask=1) cells were included in the force integration.
+        Red (body_mask=0) cells were excluded as farfield boundary faces.
+
+        Use this to verify the body_mask threshold is capturing the right surface.
+        Adjust margin_frac (default 0.02 = 2% of domain extent) if cells are
+        incorrectly included or excluded.
+
+        Args:
+            margin_frac: Fraction of domain extent used as exclusion margin (default 0.02)
+
+        Returns:
+            Dict with proxy_name, num_total_cells, margin_frac
+        """
+        from trame_llm.paraview import ensure_flat_input, safe_delete
+
+        view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        if proxy is None:
+            return {"error": "No data source found"}
+
+        self._mcp.hide_all()
+
+        flat_proxy, _, cleanup = ensure_flat_input(proxy)
+        surface = simple.ExtractSurface(Input=flat_proxy)
+        simple.UpdatePipeline(proxy=surface)
+        normals = simple.SurfaceNormals(Input=surface)
+        normals.ComputeCellNormals = 1
+        simple.UpdatePipeline(proxy=normals)
+
+        # Tag cells with body_mask scalar via ProgrammableFilter directly
+        # (run_server_script forces vtkTable output; we need vtkPolyData passthrough)
+        script = f"""
+import numpy as np
+from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+
+inp = inputs[0].VTKObject
+output.ShallowCopy(inp)
+
+n_cells = inp.GetNumberOfCells()
+centers = np.zeros((n_cells, 3))
+for i in range(n_cells):
+    cell = inp.GetCell(i)
+    pts = vtk_to_numpy(cell.GetPoints().GetData())
+    centers[i] = pts.mean(axis=0)
+
+bounds = inp.GetBounds()
+margin_frac = {margin_frac}
+mask = np.ones(n_cells, dtype=np.float32)
+for ax in range(3):
+    lo = bounds[ax*2]     + margin_frac * (bounds[ax*2+1] - bounds[ax*2])
+    hi = bounds[ax*2+1]   - margin_frac * (bounds[ax*2+1] - bounds[ax*2])
+    mask *= ((centers[:, ax] > lo) & (centers[:, ax] < hi)).astype(np.float32)
+
+arr = numpy_to_vtk(mask, deep=True)
+arr.SetName("body_mask")
+output.GetCellData().AddArray(arr)
+"""
+        tagged = simple.ProgrammableFilter(
+            Input=normals,
+            registrationName="ForceIntegrationSurface",
+        )
+        tagged.Script = script
+        tagged.OutputDataSetType = "vtkPolyData"
+        simple.UpdatePipeline(proxy=tagged)
+
+        n_total = int(tagged.GetDataInformation().GetNumberOfCells())
+
+        # Show colored by body_mask
+        display = simple.Show(tagged, view)
+        simple.ColorBy(display, ('CELLS', 'body_mask'))
+        lut = simple.GetColorTransferFunction('body_mask')
+        lut.RGBPoints = [0.0, 0.8, 0.2, 0.2,   # red = excluded farfield
+                         1.0, 0.2, 0.8, 0.2]    # green = included body
+        lut.ColorSpace = 'RGB'
+        display.SetScalarBarVisibility(view, True)
+        simple.ResetCamera(view)
+        simple.Render(view)
+
+        # Clean up intermediates; keep tagged surface visible
+        safe_delete(normals)
+        if cleanup:
+            safe_delete(cleanup)
+
+        self._notify_pipeline_changed()
+
+        return {
+            "status": "created",
+            "proxy_name": "ForceIntegrationSurface",
+            "margin_frac": margin_frac,
+            "num_total_cells": n_total,
+            "tip": "Green = included in force integration. Red = excluded as farfield. "
+                   "Adjust margin_frac if cells are wrong.",
+        }
+
     def show_forces(self) -> dict:
         """
         Show force distribution along the body.
-        
+
+        Builds the body surface pipeline once and shares it across:
+        - Force distribution chart (drag + lift vs. chordwise position)
+        - Force integration (total Cd, Cl, drag, lift)
+        - Projected area computation (stencil + render cross-check)
+        - ForceIntegrationSurface proxy (tagged green/red, left hidden in pipeline)
+
         Returns:
-            Dict with force distribution info
+            Dict with force distribution info, integrated Cl/Cd/lift/drag,
+            area comparison, and area_image path.
         """
-        # Find data reader name
+        from trame_llm.paraview import ensure_flat_input, safe_delete
+
         proxy = self._get_data_reader()
         if proxy is None:
             return {"error": "No data reader found"}
-        
+
         proxy_name = None
         for name, p in simple.GetSources().items():
             if p == proxy:
                 proxy_name = name[0]
                 break
-        
-        result = self._mcp.create_force_distribution_chart(proxy_name=proxy_name)
-        
+
+        view = simple.GetActiveView()
+
+        # Remove previous ForceIntegrationSurface and its pipeline if present,
+        # so we don't accumulate stale proxies across repeated show_forces calls.
+        prev = simple.FindSource("ForceIntegrationSurface")
+        if prev is not None:
+            # Walk up the input chain and collect all temporary ancestors
+            # (they were all created by the previous show_forces call)
+            to_delete = []
+            cur = prev
+            while cur is not None:
+                to_delete.append(cur)
+                inp = getattr(cur, 'Input', None)
+                cur = inp if inp is not None else None
+                # Stop at the data reader — don't delete the original source
+                if cur is not None and cur == proxy:
+                    break
+            for p in to_delete:
+                try:
+                    simple.Delete(p)
+                except Exception:
+                    pass
+        # ExtractSurface → Clip (body bounds) → ExtractSurface (polydata) → SurfaceNormals
+        # All analysis functions reuse shared_normals; projected area reuses body_surf.
+        body_bounds, _ = self._mcp._get_body_bounds(proxy)
+        flat_proxy, _, cleanup = ensure_flat_input(proxy)
+        full_surf = simple.ExtractSurface(Input=flat_proxy)
+        simple.UpdatePipeline(proxy=full_surf)
+        body_clip = simple.Clip(Input=full_surf)
+        body_clip.ClipType = 'Box'
+        body_clip.ClipType.Bounds = [
+            body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+            body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+            body_bounds[4] - 0.01, body_bounds[5] + 0.01,
+        ]
+        body_clip.Invert = 1
+        simple.UpdatePipeline(proxy=body_clip)
+        body_surf = simple.ExtractSurface(Input=body_clip)  # vtkPolyData
+        simple.UpdatePipeline(proxy=body_surf)
+        shared_normals = simple.SurfaceNormals(Input=body_surf)
+        shared_normals.ComputeCellNormals = 1
+        simple.UpdatePipeline(proxy=shared_normals)
+
+        # ── ForceIntegrationSurface: tag cells with body_mask, leave hidden ──
+        margin_frac = 0.02
+        tag_script = f"""
+import numpy as np
+from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+inp = inputs[0].VTKObject
+output.ShallowCopy(inp)
+n_cells = inp.GetNumberOfCells()
+centers = np.zeros((n_cells, 3))
+for i in range(n_cells):
+    cell = inp.GetCell(i)
+    pts = vtk_to_numpy(cell.GetPoints().GetData())
+    centers[i] = pts.mean(axis=0)
+bounds = inp.GetBounds()
+mf = {margin_frac}
+mask = np.ones(n_cells, dtype=np.float32)
+for ax in range(3):
+    lo = bounds[ax*2]   + mf*(bounds[ax*2+1]-bounds[ax*2])
+    hi = bounds[ax*2+1] - mf*(bounds[ax*2+1]-bounds[ax*2])
+    mask *= ((centers[:,ax]>lo)&(centers[:,ax]<hi)).astype(np.float32)
+arr = numpy_to_vtk(mask, deep=True)
+arr.SetName("body_mask")
+output.GetCellData().AddArray(arr)
+"""
+        try:
+            tagged = simple.ProgrammableFilter(
+                Input=shared_normals,
+                registrationName="ForceIntegrationSurface",
+            )
+            tagged.Script = tag_script
+            tagged.OutputDataSetType = "vtkPolyData"
+            simple.UpdatePipeline(proxy=tagged)
+            display = simple.Show(tagged, view)
+            simple.ColorBy(display, ('CELLS', 'body_mask'))
+            lut = simple.GetColorTransferFunction('body_mask')
+            lut.RGBPoints = [0.0, 0.8, 0.2, 0.2, 1.0, 0.2, 0.8, 0.2]
+            lut.ColorSpace = 'RGB'
+            simple.Hide(tagged, view)
+        except Exception as e:
+            import logging
+            logging.warning(f"[show_forces] Could not build ForceIntegrationSurface: {e}")
+
+        # ── Force distribution chart (reuses shared_normals) ─────────────────
+        result = self._mcp.create_force_distribution_chart(
+            proxy_name=proxy_name,
+            _shared_normals=shared_normals,
+        )
+
+        # ── Force integration for Cl/Cd (reuses shared_normals + body_surf) ──
+        forces = self._mcp.compute_forces(
+            proxy_name=proxy_name,
+            _shared_normals=shared_normals,
+            _shared_body_surf=body_surf,
+        )
+
+        # ── Clean up shared pipeline (keep ForceIntegrationSurface) ──────────
+        safe_delete(shared_normals)
+        safe_delete(body_surf)
+        safe_delete(body_clip)
+        safe_delete(full_surf)
+        if cleanup:
+            safe_delete(cleanup)
+
         if "error" in result:
             return result
-        
-        # Create chart data proxy (vtkTable)
+
+        # ── Chart ─────────────────────────────────────────────────────────────
         chart_proxy_name = self._create_chart_table(
             chart_type="force_distribution",
             title=result.get("title", "Force Distribution"),
@@ -1271,26 +1768,51 @@ class CFDWorkflows:
                 "y_label": result.get("y_label", "Force"),
             },
             metadata={
-                "force_axis": result.get("force_axis"),
+                "force_axis":        result.get("force_axis"),
+                "lift_axis":         result.get("lift_axis"),
                 "distribution_axis": result.get("distribution_axis"),
-                "total_force": result.get("total_force"),
+                "total_drag":        result.get("total_drag"),
+                "total_lift":        result.get("total_lift"),
             }
         )
-        
-        # Render the chart from proxy
         self._render_chart(chart_proxy_name)
-        
-        # Return summary with proxy reference (no raw data)
+        self._notify_pipeline_changed()
+
+        area_image = forces.get("area_image") if "error" not in forces else None
+
+        # Render the silhouette image in the chart drawer
+        if area_image:
+            self._render_chart_direct({
+                "chart_type": "projected_area_image",
+                "title":      "Frontal Area Silhouette",
+                "data":       {"image_path": area_image},
+            })
+
         return {
-            "status": "created",
-            "chart_proxy": chart_proxy_name,
-            "title": result.get("title"),
-            "force_axis": result.get("force_axis"),
+            "status":            "created",
+            "chart_proxy":       chart_proxy_name,
+            "title":             result.get("title"),
+            "force_axis":        result.get("force_axis"),
+            "lift_axis":         result.get("lift_axis"),
             "distribution_axis": result.get("distribution_axis"),
-            "total_force": round(result.get("total_force", 0), 6),
-            "num_bins": result.get("num_bins"),
-            "num_body_cells": result.get("num_body_cells"),
+            "total_drag":        round(result.get("total_drag", 0), 6),
+            "total_lift":        round(result.get("total_lift", 0), 6),
+            "num_bins":          result.get("num_bins"),
+            "num_body_cells":    result.get("num_body_cells"),
+            "drag":   round(forces.get("drag_force", 0), 6) if "error" not in forces else None,
+            "lift":   round(forces.get("lift_force", 0), 6) if "error" not in forces else None,
+            "Cd":     round(forces.get("Cd", 0), 6)         if "error" not in forces else None,
+            "Cl":     round(forces.get("Cl", 0), 6)         if "error" not in forces else None,
+            "reference_area": forces.get("reference_area")  if "error" not in forces else None,
+            "area_image":     area_image,
+            "pipeline":       "ForceIntegrationSurface added (hidden) — show/hide via pipeline browser",
+            "ontology_hints": self._ontology_hints([
+                "causal_relationships.drag_increase",
+                "causal_relationships.lift_change",
+            ]),
         }
+
+
 
     def analyze_data(self) -> dict:
         """
