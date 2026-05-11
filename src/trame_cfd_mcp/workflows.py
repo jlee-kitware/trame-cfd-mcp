@@ -663,12 +663,17 @@ class CFDWorkflows:
         view = simple.GetActiveView()
         proxy = self._get_data_reader()
         
+        if proxy is None:
+            return {"error": "No data source found. Load data first."}
+        
+        proxy_name = self._get_proxy_name(proxy)
+        
         # Clear analysis log for fresh provenance
         self._mcp.clear_analysis_log()
         
         # Compute Schlieren field
         result = self._mcp.compute_schlieren(
-            proxy_name=None,
+            proxy_name=proxy_name,
             field=field,
             log_scale=log_scale,
         )
@@ -772,12 +777,17 @@ class CFDWorkflows:
         view = simple.GetActiveView()
         proxy = self._get_data_reader()
         
+        if proxy is None:
+            return {"error": "No data source found. Load data first."}
+        
+        proxy_name = self._get_proxy_name(proxy)
+        
         # Clear analysis log for fresh provenance
         self._mcp.clear_analysis_log()
         
         # Compute Shadowgraph field
         result = self._mcp.compute_shadowgraph(
-            proxy_name=None,
+            proxy_name=proxy_name,
             field=field,
         )
         
