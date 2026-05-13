@@ -33,19 +33,30 @@ else:
     normals = vtk_to_numpy(normals_vtk)       # (N_cells, 3)
     pressure = vtk_to_numpy(p_vtk)             # (N_cells,) or (N_pts,)
 
-    # Compute per-cell area
+    # Compute per-cell area and center, then apply body mask to exclude farfield faces
     n_cells = inp.GetNumberOfCells()
-    areas = np.zeros(n_cells)
+    areas   = np.zeros(n_cells)
+    centers = np.zeros((n_cells, 3))
     for i in range(n_cells):
         cell = inp.GetCell(i)
+        pts = vtk_to_numpy(cell.GetPoints().GetData())
+        centers[i] = pts.mean(axis=0)
         if hasattr(cell, 'ComputeArea'):
             areas[i] = cell.ComputeArea()
         else:
-            pts = vtk_to_numpy(cell.GetPoints().GetData())
             if len(pts) >= 3:
                 v1 = pts[1] - pts[0]
                 v2 = pts[2] - pts[0]
                 areas[i] = 0.5 * np.linalg.norm(np.cross(v1, v2))
+
+    # Exclude farfield faces (same margin strategy as force_distribution.py)
+    bounds = inp.GetBounds()
+    margin_frac = 0.02
+    body_mask = np.ones(n_cells, dtype=bool)
+    for ax in range(3):
+        lo = bounds[ax * 2]     + margin_frac * (bounds[ax * 2 + 1] - bounds[ax * 2])
+        hi = bounds[ax * 2 + 1] - margin_frac * (bounds[ax * 2 + 1] - bounds[ax * 2])
+        body_mask &= (centers[:, ax] > lo) & (centers[:, ax] < hi)
 
     # If pressure is point data, average to cells
     if not use_cell_pressure:
@@ -56,8 +67,13 @@ else:
             cell_pressure[i] = np.mean(pressure[ids])
         pressure = cell_pressure
 
-    # Force = sum(p * normal * area) over all cells
-    force_density = pressure[:, np.newaxis] * normals * areas[:, np.newaxis]
+    # Apply body mask before integration
+    normals  = normals[body_mask]
+    pressure = pressure[body_mask]
+    areas    = areas[body_mask]
+
+    # Force = -sum(p * normal * area) — pressure acts inward, normals are outward
+    force_density = -pressure[:, np.newaxis] * normals * areas[:, np.newaxis]
     F = force_density.sum(axis=0)   # [Fx, Fy, Fz]
 
     drag = F[STREAMWISE_IDX]
@@ -76,4 +92,4 @@ else:
     _add_scalar(tbl, "Cl",  Cl)
     _add_scalar(tbl, "reference_area",       REFERENCE_AREA)
     _add_scalar(tbl, "freestream_velocity",  FREESTREAM_VELOCITY)
-    _add_scalar(tbl, "total_surface_area",   float(areas.sum()))
+    _add_scalar(tbl, "total_surface_area",   float(areas.sum()))  # body cells only

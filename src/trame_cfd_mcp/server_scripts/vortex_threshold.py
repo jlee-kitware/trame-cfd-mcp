@@ -33,7 +33,7 @@ else:
         if len(positive) > 0:
             threshold = float(np.percentile(positive, PERCENTILE))
         else:
-            threshold = max(0.0, field_max * 0.01)
+            threshold = np.maximum(0.0, field_max * 0.01)
 
     _add_scalar(tbl, "threshold",  threshold)
     _add_scalar(tbl, "field_min",  field_min)

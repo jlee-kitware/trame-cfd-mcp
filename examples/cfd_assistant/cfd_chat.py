@@ -197,6 +197,32 @@ def main():
                 mode='markers', name='Probe Points', marker=dict(color='red', size=8),
             ))
             fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        elif chart_type == "projected_area_image":
+            img_path = data.get("image_path", "")
+            try:
+                import base64
+                from PIL import Image as PILImage
+                with open(img_path, "rb") as fh:
+                    raw = fh.read()
+                b64 = base64.b64encode(raw).decode("utf-8")
+                # Get actual image dimensions so Plotly fills the widget correctly
+                import io
+                pil_img = PILImage.open(io.BytesIO(raw))
+                iw, ih = pil_img.size
+                fig.add_layout_image(dict(
+                    source=f"data:image/png;base64,{b64}",
+                    xref="x", yref="y",
+                    x=0, y=ih, sizex=iw, sizey=ih,
+                    xanchor="left", yanchor="top",
+                    layer="below",
+                    sizing="stretch",
+                ))
+                fig.update_xaxes(visible=False, range=[0, iw])
+                fig.update_yaxes(visible=False, range=[0, ih], scaleanchor="x", scaleratio=1)
+                fig.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+            except Exception as e:
+                fig.add_annotation(text=f"Image load failed: {e}", x=0.5, y=0.5,
+                                   xref="paper", yref="paper", showarrow=False)
         else:
             # Generic
             x = data.get("x", [])
