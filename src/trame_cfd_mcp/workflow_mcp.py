@@ -11,12 +11,30 @@ import os
 from paraview import simple
 from .cfd_analysis import CFDAnalysis
 from .workflows import CFDWorkflows
+from .topology_analysis import TopologyAnalysis
+from .topology_workflows import TopologyWorkflows
 
 
 # Load ontology at module level
 _ONTOLOGY_PATH = os.path.join(os.path.dirname(__file__), "ontology.json")
 with open(_ONTOLOGY_PATH) as f:
     CFD_ONTOLOGY = json.load(f)
+
+# Merge the topology (TTK) domain ontology so its hints resolve in the same
+# validated dict. Authored as a separate file (separate domain), unified at load.
+_TOPOLOGY_ONTOLOGY_PATH = os.path.join(os.path.dirname(__file__), "topology_ontology.json")
+try:
+    with open(_TOPOLOGY_ONTOLOGY_PATH) as f:
+        _TOPOLOGY_ONTOLOGY = json.load(f)
+    for _k, _v in _TOPOLOGY_ONTOLOGY.items():
+        if _k in ("version", "domain"):
+            continue
+        if isinstance(_v, dict) and isinstance(CFD_ONTOLOGY.get(_k), dict):
+            CFD_ONTOLOGY[_k].update(_v)   # merge sub-keys, don't clobber CFD content
+        else:
+            CFD_ONTOLOGY[_k] = _v
+except FileNotFoundError:
+    pass
 
 
 class WorkflowMCP:
@@ -40,6 +58,10 @@ class WorkflowMCP:
             ontology=CFD_ONTOLOGY,
         )
         self._ontology = CFD_ONTOLOGY
+        self._topology = TopologyAnalysis()
+        self._topology_workflows = TopologyWorkflows(
+            self._workflows, self._topology, app=app,
+        )
         print(f"[WorkflowMCP] Initialized with app={app is not None}, has_render={hasattr(app, 'render_analysis_chart') if app else False}")
     
     @property
@@ -624,6 +646,16 @@ Try the fallback tools first, and only ask the user if you truly cannot proceed.
 - show_boundary_layer(x_location=0.5) - Show boundary layer profile
 - show_flow_topology() - Show vortex core lines
 
+== TOPOLOGY TOOLS (TTK; for scalar-field topology, any domain) ==
+
+- show_persistence_diagram(field) - Birth/death pairs; reveals the signal-vs-noise gap
+- show_critical_points(field) - Minima, saddles, maxima (colored by CriticalType)
+- show_morse_smale(field) - Separatrix skeleton + critical points (structural decomposition)
+- show_simplified(field, persistence_threshold) - Denoise by cancelling low-persistence pairs
+
+  Typical chain for "find the significant features": show_persistence_diagram to see the
+  gap, then show_simplified with a threshold in the gap, then show_critical_points.
+
 == REFINEMENT TOOLS (use after show_* to tweak) ==
 
 After a workflow runs, it returns proxy_name and parameters. Use these to refine:
@@ -746,6 +778,12 @@ do not summarize or repeat them in your response unless the user asks.
                 self._workflows.show_boundary_layer,
                 self._workflows.show_boundary_layer_context,
                 self._workflows.show_flow_topology,
+
+                # Topology (TTK) domain workflows
+                self._topology_workflows.show_persistence_diagram,
+                self._topology_workflows.show_critical_points,
+                self._topology_workflows.show_morse_smale,
+                self._topology_workflows.show_simplified,
                 
                 # Refinement tools (from base MCP)
                 self._base_mcp.reset_camera,

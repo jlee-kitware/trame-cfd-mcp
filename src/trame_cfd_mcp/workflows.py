@@ -411,9 +411,9 @@ class CFDWorkflows:
                 return {"error": f"Seed source '{seed_source}' not found in pipeline"}
 
             stream_name = f"Streamlines_{seed_source}"
-            stream = simple.StreamTracer(
+            stream = simple.StreamTracerWithCustomSource(
                 Input=proxy,
-                Source=seed_proxy,
+                SeedSource=seed_proxy,
                 registrationName=stream_name,
             )
             stream.Vectors = ['POINTS', vel_field]
