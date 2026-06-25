@@ -5,8 +5,13 @@ High-level tools only - LLM reasons about what to do, workflows execute determin
 """
 import sys
 import asyncio
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-cfd-mcp/src')
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-llm/src')
+import pathlib
+_repo_src = pathlib.Path(__file__).parent.parent.parent / 'src'
+if _repo_src.exists():
+    sys.path.insert(0, str(_repo_src))
+_trame_llm = os.environ.get('TRAME_LLM_SRC')
+if _trame_llm:
+    sys.path.insert(0, _trame_llm)
 
 from dotenv import load_dotenv
 load_dotenv()

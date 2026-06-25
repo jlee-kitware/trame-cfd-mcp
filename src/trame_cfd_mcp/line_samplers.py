@@ -18,6 +18,7 @@ import numpy as np
 # Optional ParaView import - only needed for create_probe_line()
 try:
     from paraview import simple
+    from trame_llm.paraview import safe_delete, fetch_data, is_remote, create_polyline_source
     PARAVIEW_AVAILABLE = True
 except ImportError:
     PARAVIEW_AVAILABLE = False
@@ -62,7 +63,6 @@ class LineSampler(ABC):
             return {"error": "ParaView not available"}
         
         from vtk.util.numpy_support import vtk_to_numpy
-        import vtk
         
         # Generate sample positions
         y_values = self.generate(probe_length)
@@ -74,28 +74,8 @@ class LineSampler(ABC):
         # Create points along the line
         points_3d = np.array([start_point + y * direction for y in y_values])
         
-        # Create VTK polydata for the sample line
-        vtk_points = vtk.vtkPoints()
-        for pt in points_3d:
-            vtk_points.InsertNextPoint(pt[0], pt[1], pt[2])
-        
-        # Create a polyline connecting the points
-        polyline = vtk.vtkPolyLine()
-        polyline.GetPointIds().SetNumberOfIds(n_points)
-        for i in range(n_points):
-            polyline.GetPointIds().SetId(i, i)
-        
-        cells = vtk.vtkCellArray()
-        cells.InsertNextCell(polyline)
-        
-        polydata = vtk.vtkPolyData()
-        polydata.SetPoints(vtk_points)
-        polydata.SetLines(cells)
-        
-        # Wrap in TrivialProducer to use with ParaView
-        producer = simple.TrivialProducer(registrationName="SampleLine")
-        producer.GetClientSideObject().SetOutput(polydata)
-        simple.UpdatePipeline(proxy=producer)
+        # Create polyline source (TrivialProducer in-process, ProgrammableSource for pvserver)
+        producer = create_polyline_source(points_3d, name="SampleLine")
         
         # Resample the data onto our custom line
         resampled = simple.ResampleWithDataset(
@@ -105,19 +85,19 @@ class LineSampler(ABC):
         simple.UpdatePipeline(proxy=resampled)
         
         # Extract the sampled values
-        resampled_data = resampled.GetClientSideObject().GetOutputDataObject(0)
+        resampled_data = fetch_data(resampled)
         
         field_array = resampled_data.GetPointData().GetArray(field_name)
         if field_array is None:
-            simple.Delete(resampled)
-            simple.Delete(producer)
+            safe_delete(resampled)
+            safe_delete(producer)
             return {"error": f"Field '{field_name}' not found in resampled data"}
         
         values = vtk_to_numpy(field_array)
         
         # Cleanup
-        simple.Delete(resampled)
-        simple.Delete(producer)
+        safe_delete(resampled)
+        safe_delete(producer)
         
         return {
             "y": y_values,

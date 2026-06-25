@@ -1,13 +1,22 @@
+import logging
 #!/usr/bin/env python
 """
 CFD Analysis Chat - Interactive visualization with optional Catalyst Live.
 
 Usage:
-    # Load static data file
+    # Load static data file (in-process)
     pvpython cfd_chat.py data.vtm
+    
+    # Connect to pvserver (client-server, local or remote)
+    # Start pvserver first: pvserver (default port 11111)
+    # Or with custom port: pvserver --server-port=22222
+    pvpython cfd_chat.py --pvserver=localhost:11111 data.vtm
     
     # Connect to live simulation
     pvpython cfd_chat.py --live --host localhost --port 22222
+    
+    # pvserver + live simulation
+    pvpython cfd_chat.py --pvserver=localhost:11111 --live
     
     # Both: load file and enable live connection
     pvpython cfd_chat.py data.vtm --live
@@ -39,8 +48,15 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-cfd-mcp/src')
-sys.path.insert(0, '/Users/jeff.lee/gitsync/trame-llm/src')
+# Add src to path if running from examples directory (development mode)
+import pathlib
+_repo_src = pathlib.Path(__file__).parent.parent.parent / 'src'
+if _repo_src.exists():
+    sys.path.insert(0, str(_repo_src))
+# trame-llm: install via pip or set TRAME_LLM_SRC env var
+_trame_llm = os.environ.get('TRAME_LLM_SRC')
+if _trame_llm:
+    sys.path.insert(0, _trame_llm)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -70,7 +86,19 @@ def main():
     parser.add_argument('--live', action='store_true', help='Enable Catalyst Live')
     parser.add_argument('--host', default='localhost', help='Catalyst host')
     parser.add_argument('--port', type=int, default=22222, help='Catalyst port')
-    args = parser.parse_args()
+    parser.add_argument('--pvserver', default=None, help='pvserver host:port (e.g. localhost:11111)')
+    args, remaining = parser.parse_known_args()
+    
+    # Strip our args from sys.argv so trame's parser only sees its own args
+    sys.argv = [sys.argv[0]] + remaining
+    
+    # Connect to pvserver if specified (must happen before any pipeline operations)
+    remote = False
+    if args.pvserver:
+        sv_host, sv_port = args.pvserver.split(":")
+        simple.Connect(sv_host, int(sv_port))
+        remote = True
+        print(f"Connected to pvserver at {args.pvserver}")
     
     data_file = args.data_file
     if data_file is None and not args.live:
@@ -79,14 +107,25 @@ def main():
         if os.path.exists(default_file):
             data_file = default_file
     
-    if data_file and os.path.exists(data_file):
-        reader = simple.OpenDataFile(data_file)
-        simple.UpdatePipeline()
-        simple.Show()
-        simple.ResetCamera()
-        print(f"Loaded: {data_file}")
-    elif data_file:
-        print(f"Warning: File not found: {data_file}")
+    if data_file:
+        # Resolve to absolute path — pvserver needs a path valid on its filesystem.
+        # For co-located pvserver (same machine), this just works.
+        # For remote pvserver, the user must provide a server-accessible path.
+        data_file = os.path.abspath(data_file)
+        
+        if not remote and not os.path.exists(data_file):
+            print(f"Warning: File not found: {data_file}")
+        else:
+            try:
+                reader = simple.OpenDataFile(data_file)
+                simple.UpdatePipeline()
+                simple.Show()
+                simple.ResetCamera()
+                print(f"Loaded: {data_file}")
+            except Exception as e:
+                print(f"Error loading {data_file}: {e}")
+                if remote:
+                    print("  (path must be accessible from the pvserver filesystem)")
     
     app = Lite()
     ctrl = app.server.controller
@@ -100,6 +139,8 @@ def main():
     app.state.live_port = args.port
     app.state.monitoring_active = False
     app.state.analysis_chart_active = False  # True when showing analysis chart (not live)
+    app.state.simulation_paused = False
+    app.state.step_count = 5  # Default step count
     
     # Store chart figures directly - we'll create multiple widget slots
     app.chart_figures = []  # List of Plotly figure objects for analysis charts
@@ -156,6 +197,32 @@ def main():
                 mode='markers', name='Probe Points', marker=dict(color='red', size=8),
             ))
             fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        elif chart_type == "projected_area_image":
+            img_path = data.get("image_path", "")
+            try:
+                import base64
+                from PIL import Image as PILImage
+                with open(img_path, "rb") as fh:
+                    raw = fh.read()
+                b64 = base64.b64encode(raw).decode("utf-8")
+                # Get actual image dimensions so Plotly fills the widget correctly
+                import io
+                pil_img = PILImage.open(io.BytesIO(raw))
+                iw, ih = pil_img.size
+                fig.add_layout_image(dict(
+                    source=f"data:image/png;base64,{b64}",
+                    xref="x", yref="y",
+                    x=0, y=ih, sizex=iw, sizey=ih,
+                    xanchor="left", yanchor="top",
+                    layer="below",
+                    sizing="stretch",
+                ))
+                fig.update_xaxes(visible=False, range=[0, iw])
+                fig.update_yaxes(visible=False, range=[0, ih], scaleanchor="x", scaleratio=1)
+                fig.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+            except Exception as e:
+                fig.add_annotation(text=f"Image load failed: {e}", x=0.5, y=0.5,
+                                   xref="paper", yref="paper", showarrow=False)
         else:
             # Generic
             x = data.get("x", [])
@@ -196,21 +263,21 @@ def main():
         from paraview import servermanager
         from vtk.util.numpy_support import vtk_to_numpy
         
-        print(f"[render_chart_from_proxy] Fetching proxy_name={proxy_name}")
+        logging.debug(f"[render_chart_from_proxy] Fetching proxy_name={proxy_name}")
         if not PLOTLY_AVAILABLE:
-            print("[render_chart_from_proxy] Plotly not available")
+            logging.debug("[render_chart_from_proxy] Plotly not available")
             return
         
         # Get the proxy
         proxy = simple.FindSource(proxy_name)
         if proxy is None:
-            print(f"[render_chart_from_proxy] Proxy {proxy_name} not found")
+            logging.debug(f"[render_chart_from_proxy] Proxy {proxy_name} not found")
             return
         
         # Fetch the data
         data = servermanager.Fetch(proxy)
         if data is None:
-            print(f"[render_chart_from_proxy] Failed to fetch data from {proxy_name}")
+            logging.debug(f"[render_chart_from_proxy] Failed to fetch data from {proxy_name}")
             return
         
         # Get chart metadata from field data
@@ -226,8 +293,23 @@ def main():
         title = get_string_field("chart_title")
         x_label = get_string_field("x_label")
         y_label = get_string_field("y_label")
+
+        # Check workflow metadata dict (primary source, works in pvserver mode)
+        if hasattr(app, '_workflow_mcp') and app._workflow_mcp:
+            meta = app._workflow_mcp._workflows.get_chart_metadata(proxy_name)
+            if meta:
+                chart_type = meta.get("chart_type", chart_type) or chart_type
+                title = meta.get("chart_title", title) or title
+                x_label = meta.get("x_label", x_label) or x_label
+                y_label = meta.get("y_label", y_label) or y_label
+
+        # Fall back to parsing chart_type from proxy name (Chart_N_type)
+        if not chart_type and "_" in proxy_name:
+            parts = proxy_name.split("_", 2)
+            if len(parts) >= 3:
+                chart_type = parts[2]
         
-        print(f"[render_chart_from_proxy] chart_type={chart_type}, title={title}")
+        logging.debug(f"[render_chart_from_proxy] chart_type={chart_type}, title={title}")
         
         # Build chart data from table columns
         chart_data = {
@@ -283,7 +365,7 @@ def main():
             app.state.live_chart_status = f"Showing {len(app.chart_figures)} chart(s)"
         
         update_all_chart_widgets()
-        print(f"[render_chart_from_proxy] Added chart from {proxy_name}, total: {len(app.chart_figures)}")
+        logging.debug(f"[render_chart_from_proxy] Added chart from {proxy_name}, total: {len(app.chart_figures)}")
     
     # Legacy function for direct chart data (still useful for some cases)
     def render_analysis_chart(chart_data: dict):
@@ -356,12 +438,17 @@ def main():
                         app.state.monitoring_active = False
                         app.state.live_chart_status = "Simulation ended"
                     chat_mcp._monitoring_active = False
-                    print("[Live] Connection to simulation dropped")
+                    logging.debug("[Live] Connection to simulation dropped")
                     return
                 
                 # Sync monitoring_active state with chat_mcp
                 if app.state.monitoring_active != chat_mcp._monitoring_active:
                     app.state.monitoring_active = chat_mcp._monitoring_active
+                
+                # Sync live_connected state (LLM may connect/disconnect via MCP)
+                link_alive = chat_mcp.is_connection_alive()
+                if app.state.live_connected != link_alive:
+                    app.state.live_connected = link_alive
                 
                 # Skip live chart updates if showing an analysis chart
                 if app.state.analysis_chart_active:
@@ -376,6 +463,10 @@ def main():
                             paused = chat_mcp._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
                         except:
                             pass
+                    
+                    # Sync pause state to UI (picks up breakpoint-triggered pauses)
+                    if app.state.simulation_paused != paused:
+                        app.state.simulation_paused = paused
                     
                     # Always update chart - whether paused or running
                     # Get data and update Plotly figure
@@ -445,6 +536,7 @@ def main():
     
     base_mcp = ParaViewMCP(app)
     workflow_mcp = WorkflowMCP(base_mcp, app=app)
+    app._workflow_mcp = workflow_mcp  # expose for render_chart_from_proxy
     chat_mcp = CFDChatMCP(
         workflow_mcp, 
         llm_client,
@@ -466,10 +558,38 @@ def main():
     def toggle_live_connection():
         if app.state.live_connected:
             chat_mcp.disconnect_live()
-            app.state.live_connected = False
+            with app.state:
+                app.state.live_connected = False
+                app.state.simulation_paused = False
         else:
             result = chat_mcp.connect_live()
-            app.state.live_connected = result.get("status") == "connected"
+            with app.state:
+                app.state.live_connected = result.get("status") == "connected"
+                app.state.simulation_paused = result.get("paused", False)
+
+    def toggle_pause():
+        if not app.state.live_connected:
+            return
+        if app.state.simulation_paused:
+            chat_mcp.resume_simulation()
+            app.state.simulation_paused = False
+        else:
+            chat_mcp.pause_simulation()
+            chat_mcp.clear_breakpoint()  # Cancel any pending step/breakpoint
+            app.state.simulation_paused = True
+
+    def step_forward():
+        if not app.state.live_connected:
+            return
+        count = int(app.state.step_count or 5)
+        result = chat_mcp.step_simulation(count)
+        if result.get("status") == "error":
+            logging.debug(f"[Live] Step failed: {result}")
+            return
+        app.state.simulation_paused = False
+        # Auto-open chart panel so user sees residuals
+        if not app.state.chart_drawer_open:
+            app.state.chart_drawer_open = True
     
     # State for chart panel position and collapse
     app.state.setdefault("chart_collapsed", False)
@@ -603,8 +723,8 @@ def main():
                 title="Live Residual Chart",
             )
             
-            # Live connection button
-            with html.Div(v_if="live_enabled"):
+            # Live connection and transport controls
+            with html.Div(v_if="live_enabled", style="display: flex; gap: 4px; align-items: center;"):
                 v3.VBtn(
                     icon=("live_connected ? 'mdi-broadcast' : 'mdi-broadcast-off'",),
                     click=toggle_live_connection,
@@ -613,6 +733,32 @@ def main():
                     size="small",
                     title=("live_connected ? 'Connected' : 'Click to connect'",),
                 )
+                # Transport controls - only visible when connected
+                with html.Div(v_show="live_connected", style="display: flex; gap: 2px; align-items: center;"):
+                    v3.VBtn(
+                        icon=("simulation_paused ? 'mdi-play' : 'mdi-pause'",),
+                        click=(toggle_pause,),
+                        color=("simulation_paused ? 'success' : 'warning'",),
+                        variant="elevated",
+                        size="small",
+                        title=("simulation_paused ? 'Resume' : 'Pause'",),
+                    )
+                    v3.VTextField(
+                        v_model=("step_count",),
+                        type="number",
+                        density="compact",
+                        variant="outlined",
+                        hide_details=True,
+                        style="width: 60px; max-width: 60px;",
+                        bg_color="white",
+                    )
+                    v3.VBtn(
+                        icon="mdi-skip-forward",
+                        click=(step_forward,),
+                        variant="elevated",
+                        size="small",
+                        title="Step N iterations",
+                    )
         
         llm.Chat(
             app_name="cfd",

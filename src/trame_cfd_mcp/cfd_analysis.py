@@ -13,9 +13,21 @@ Methods include:
 """
 
 from paraview import simple
+from trame_llm.paraview import (
+    safe_delete, ensure_flat_input,
+    get_field_names, run_server_script, fetch_table,
+    fetch_data,  # retained for Catalyst Live path only
+)
 import numpy as np
 import json
 from pathlib import Path
+
+# Directory containing server-side analysis scripts
+_SCRIPTS_DIR = Path(__file__).parent / "server_scripts"
+
+def _script(name: str) -> str:
+    """Return absolute path to a server analysis script."""
+    return str(_SCRIPTS_DIR / name)
 
 
 # Semantic field type patterns for field resolution
@@ -160,107 +172,44 @@ class CFDAnalysis:
         # If it's not a known semantic type, assume it's already a field name
         if field_type not in FIELD_TYPE_PATTERNS:
             return field_type
-        
+
         patterns = FIELD_TYPE_PATTERNS[field_type]
-        
-        # Get available fields from proxy
-        data = proxy.GetClientSideObject().GetOutputDataObject(0)
-        
-        # Handle composite datasets (multiblock, partitioned)
-        if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-            if data.IsA("vtkPartitionedDataSet"):
-                block = data.GetPartition(0) if data.GetNumberOfPartitions() > 0 else None
-            else:
-                block = data.GetBlock(0)
-            while block and block.IsA("vtkMultiBlockDataSet"):
-                block = block.GetBlock(0)
-            if block:
-                data = block
-        
-        # Collect all field names
-        all_fields = []
-        for data_arrays in [data.GetPointData(), data.GetCellData()]:
-            for i in range(data_arrays.GetNumberOfArrays()):
-                all_fields.append(data_arrays.GetArrayName(i))
-        
+
+        # Use metadata only — no data movement
+        info = get_field_names(proxy)
+        all_fields = list(info["point"].keys()) + list(info["cell"].keys())
+
         # First pass: exact match (case-insensitive)
         for name in all_fields:
-            name_lower = name.lower()
             for pattern in patterns:
-                if pattern.lower() == name_lower:
+                if pattern.lower() == name.lower():
                     return name
-        
-        # Second pass: pattern is a substring, but only for longer patterns (avoid "u" matching "Turbulence")
+
+        # Second pass: substring match for patterns >= 3 chars
         for name in all_fields:
-            name_lower = name.lower()
             for pattern in patterns:
-                # Only use substring matching for patterns >= 3 chars
-                if len(pattern) >= 3 and pattern.lower() in name_lower:
+                if len(pattern) >= 3 and pattern.lower() in name.lower():
                     return name
-        
-        # Fallback: return first pattern as best guess
+
         return patterns[0]
     
-    def _get_leaf_data(self, data):
-        """
-        Get first leaf dataset from potentially nested multiblock data.
-        
-        Args:
-            data: VTK data object (may be multiblock)
-            
-        Returns:
-            First non-multiblock dataset found, or None
-        """
-        if data is None:
-            return None
-            
-        # If not multiblock, return as-is
-        if not data.IsA("vtkMultiBlockDataSet"):
-            return data
-        
-        # Recursively search blocks
-        n_blocks = data.GetNumberOfBlocks()
-        for i in range(n_blocks):
-            block = data.GetBlock(i)
-            if block is not None:
-                result = self._get_leaf_data(block)
-                if result is not None:
-                    return result
-        
-        return None
-    
     def _get_available_fields(self, proxy) -> dict:
-        """
-        Get available fields and their types from proxy.
-        
-        Returns:
-            Dict mapping semantic type to actual field name, plus all field names
-        """
-        data = proxy.GetClientSideObject().GetOutputDataObject(0)
-        
-        # Handle multiblock - get first leaf
-        data = self._get_leaf_data(data)
-        
-        if data is None:
-            return {"all_fields": [], "resolved": {}}
-        
-        result = {"all_fields": [], "resolved": {}}
-        
-        for data_arrays in [data.GetPointData(), data.GetCellData()]:
-            for i in range(data_arrays.GetNumberOfArrays()):
-                name = data_arrays.GetArrayName(i)
-                result["all_fields"].append(name)
-                
-                # Try to match to semantic type
-                name_lower = name.lower()
-                for field_type, patterns in FIELD_TYPE_PATTERNS.items():
-                    for pattern in patterns:
-                        if pattern.lower() == name_lower or pattern.lower() in name_lower:
-                            result["resolved"][field_type] = name
-                            break
-        
+        """Get available fields and their types from proxy using metadata only."""
+        info = get_field_names(proxy)
+        all_fields = list(info["point"].keys()) + list(info["cell"].keys())
+
+        result = {"all_fields": all_fields, "resolved": {}}
+        for semantic, patterns in FIELD_TYPE_PATTERNS.items():
+            for name in all_fields:
+                for pattern in patterns:
+                    if pattern.lower() == name.lower():
+                        result["resolved"][semantic] = name
+                        break
+                if semantic in result["resolved"]:
+                    break
+
         return result
-    
+
     def get_visibility_state(self) -> dict:
         """Get visibility state of all proxies in the current view."""
         view = simple.GetActiveView()
@@ -279,6 +228,66 @@ class CFDAnalysis:
     # =========================================================================
     # DATA VALIDATION AND CHARACTERIZATION
     # =========================================================================
+
+    # Common velocity field names across CFD solvers
+    _VELOCITY_NAMES = [
+        "Velocity", "velocity", "U", "u", "V", "vel", "Vel",
+        "VELOCITY", "flow_velocity", "FlowVelocity",
+    ]
+
+    def _find_velocity_array(self, data):
+        """Find velocity array in point data by searching common names and 3-component vectors."""
+        pd = data.GetPointData()
+        if pd is None:
+            return None, None
+        
+        # Try common names first
+        for name in self._VELOCITY_NAMES:
+            arr = pd.GetArray(name)
+            if arr is not None and arr.GetNumberOfComponents() == 3:
+                return arr, name
+        
+        # Fall back: first 3-component array (likely velocity)
+        for i in range(pd.GetNumberOfArrays()):
+            arr = pd.GetArray(i)
+            if arr is not None and arr.GetNumberOfComponents() == 3:
+                name = pd.GetArrayName(i)
+                print(f"[_find_velocity_array] No standard name found, using 3-component array '{name}'")
+                return arr, name
+        
+        return None, None
+
+    # Common pressure field names across CFD solvers
+    _PRESSURE_NAMES = [
+        "p", "P", "Pressure", "pressure", "PRESSURE",
+        "StaticPressure", "static_pressure", "press",
+        "Total Pressure", "total_pressure", "Pt",
+    ]
+
+    def _find_pressure_array(self, data):
+        """Find pressure array in point or cell data by searching common names and scalars."""
+        for getter in [data.GetPointData, data.GetCellData]:
+            arrays = getter()
+            if arrays is None:
+                continue
+            # Try common names first
+            for name in self._PRESSURE_NAMES:
+                arr = arrays.GetArray(name)
+                if arr is not None and arr.GetNumberOfComponents() == 1:
+                    association = "POINTS" if getter == data.GetPointData else "CELLS"
+                    return arr, name, association
+        return None, None, None
+
+    def _find_field(self, data, field_name: str):
+        """Find a named field in point or cell data, return (array, actual_name, association)."""
+        for getter, assoc in [(data.GetPointData, "POINTS"), (data.GetCellData, "CELLS")]:
+            arrays = getter()
+            if arrays is None:
+                continue
+            arr = arrays.GetArray(field_name)
+            if arr is not None:
+                return arr, field_name, assoc
+        return None, None, None
     
     def _get_body_bounds(self, proxy, clip_margin: float = 0.05):
         """
@@ -354,12 +363,12 @@ class CFDAnalysis:
             # Always clean up temporary filters — delete child before parent
             if clip is not None:
                 try:
-                    simple.Delete(clip)
+                    safe_delete(clip)
                 except:
                     pass
             if surface is not None:
                 try:
-                    simple.Delete(surface)
+                    safe_delete(surface)
                 except:
                     pass
             # Restore active source
@@ -383,23 +392,46 @@ class CFDAnalysis:
         """
         readers = []
         filters = []
-        
+
+        skip_types = ['ProgrammableSource']  # internal chart proxies
+
         for name, proxy in simple.GetSources().items():
             proxy_name = name[0]
             proxy_type = proxy.GetXMLName()
-            
-            # Check if it's a reader (data source) or filter
-            if 'Reader' in proxy_type or proxy_type in ['OpenDataFile', 'XMLMultiBlockDataReader', 
-                'XMLUnstructuredGridReader', 'XMLPolyDataReader', 'LegacyVTKReader',
-                'EnSightReader', 'PVDReader', 'CGNSReader', 'ExodusIIReader']:
-                readers.append({"name": proxy_name, "type": proxy_type})
+
+            # Skip internal proxies (chart tables etc.)
+            if proxy_name.startswith("Chart_") or proxy_name.startswith("_"):
+                continue
+
+            # Get point count from metadata — no data movement
+            try:
+                di = proxy.GetDataInformation()
+                n_points = di.GetNumberOfPoints()
+                n_cells  = di.GetNumberOfCells()
+            except Exception:
+                n_points = n_cells = 0
+
+            entry = {
+                "name": proxy_name,
+                "type": proxy_type,
+                "num_points": n_points,
+                "num_cells": n_cells,
+            }
+
+            if ('Reader' in proxy_type or proxy_type in [
+                'OpenDataFile', 'XMLMultiBlockDataReader', 'XMLUnstructuredGridReader',
+                'XMLPolyDataReader', 'LegacyVTKReader', 'EnSightReader', 'PVDReader',
+                'CGNSReader', 'ExodusIIReader',
+            ]):
+                readers.append(entry)
             else:
-                filters.append({"name": proxy_name, "type": proxy_type})
-        
+                filters.append(entry)
+
         return {
             "readers": readers,
             "filters": filters,
-            "active_source": simple.GetActiveSource().GetXMLName() if simple.GetActiveSource() else None
+            "active_source": simple.GetActiveSource().GetXMLName() if simple.GetActiveSource() else None,
+            "tip": "Any filter with num_points > 0 can be used as seed_source in show_streamlines().",
         }
     
     def characterize_dataset(self, proxy_name: str = None) -> dict:
@@ -425,43 +457,22 @@ class CFDAnalysis:
         try:
             simple.UpdatePipeline(proxy=proxy)
             
-            # Get data object - handle multiblock
-            raw_data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            data = self._get_leaf_data(raw_data)
-            
-            if data is None:
-                return {"error": "No data found in dataset"}
-            
-            # Collect all arrays
-            point_arrays = {}
-            cell_arrays = {}
-            
-            pd = data.GetPointData()
-            for i in range(pd.GetNumberOfArrays()):
-                arr = pd.GetArray(i)
-                name = arr.GetName()
-                point_arrays[name] = {
-                    "components": arr.GetNumberOfComponents(),
-                    "range": [arr.GetRange(c) for c in range(arr.GetNumberOfComponents())]
-                }
-            
-            cd = data.GetCellData()
-            for i in range(cd.GetNumberOfArrays()):
-                arr = cd.GetArray(i)
-                name = arr.GetName()
-                cell_arrays[name] = {
-                    "components": arr.GetNumberOfComponents(),
-                    "range": [arr.GetRange(c) for c in range(arr.GetNumberOfComponents())]
-                }
-            
+            # Use metadata only — no data movement
+            info = get_field_names(proxy)
+            point_arrays = {k: {"components": v} for k, v in info["point"].items()}
+            cell_arrays  = {k: {"components": v} for k, v in info["cell"].items()}
+            bounds = info["bounds"]
+
             # Resolve semantic fields
             all_names = list(point_arrays.keys()) + list(cell_arrays.keys())
             resolved = {}
             for field_type, patterns in FIELD_TYPE_PATTERNS.items():
                 for name in all_names:
-                    name_lower = name.lower()
                     for pattern in patterns:
-                        if pattern.lower() == name_lower or pattern.lower() in name_lower:
+                        if pattern.lower() == name.lower():
+                            resolved[field_type] = name
+                            break
+                        if len(pattern) >= 3 and pattern.lower() in name.lower():
                             resolved[field_type] = name
                             break
                     if field_type in resolved:
@@ -497,10 +508,9 @@ class CFDAnalysis:
                 if name_lower in ['u', 'v', 'w'] or name in ['u', 'v', 'w']:
                     velocity_components.append(name)
             
-            # Get geometry info
-            bounds = data.GetBounds()
-            num_points = data.GetNumberOfPoints()
-            num_cells = data.GetNumberOfCells()
+            di = proxy.GetDataInformation()
+            num_points = di.GetNumberOfPoints()
+            num_cells  = di.GetNumberOfCells()
             
             # Recommendations based on available data
             recommendations = []
@@ -643,18 +653,10 @@ class CFDAnalysis:
             # Check if velocity vector already exists
             if "velocity" in fields["resolved"]:
                 vel_name = fields["resolved"]["velocity"]
-                # Verify it's 3-component
-                raw_data = proxy.GetClientSideObject().GetOutputDataObject(0)
-                data = self._get_leaf_data(raw_data)
-                
-                if data is None:
-                    return {"error": "No data found in dataset"}
-                
-                arr = data.GetPointData().GetArray(vel_name)
-                if arr is None:
-                    arr = data.GetCellData().GetArray(vel_name)
-                
-                if arr and arr.GetNumberOfComponents() == 3:
+                # Verify it's 3-component using metadata only
+                info = get_field_names(proxy)
+                ncomp = info["point"].get(vel_name) or info["cell"].get(vel_name, 0)
+                if ncomp == 3:
                     return {
                         "status": "exists",
                         "velocity_array": vel_name,
@@ -871,41 +873,27 @@ class CFDAnalysis:
         resolved_field = self._resolve_field_type(field, proxy)
         
         try:
-            # Handle multiblock - merge first for consistent processing
-            simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            
-            if data is None:
-                return {"error": "No data available from proxy"}
-            
-            # Check if multiblock and merge if needed
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge_input = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge_input)
-                data = merge_input.GetClientSideObject().GetOutputDataObject(0)
-                cleanup_input_merge = merge_input
-            else:
-                cleanup_input_merge = None
-                
-            if data is None:
+            flat_proxy, _, cleanup_input_merge = ensure_flat_input(proxy)
+
+            # Check field type from metadata — no data movement
+            info = get_field_names(flat_proxy)
+            ncomp = info["point"].get(resolved_field) or info["cell"].get(resolved_field)
+            if ncomp is None:
                 if cleanup_input_merge:
-                    simple.Delete(cleanup_input_merge)
-                return {"error": "No data available after merge"}
-            
-            # Check field type
-            arr = data.GetPointData().GetArray(resolved_field)
-            if arr is None:
-                arr = data.GetCellData().GetArray(resolved_field)
+                    safe_delete(cleanup_input_merge)
+                return {"error": f"Field '{field}' not found"}
+
+            is_vector = ncomp > 1
             
             if arr is None:
                 if cleanup_input_merge:
-                    simple.Delete(cleanup_input_merge)
+                    safe_delete(cleanup_input_merge)
                 return {"error": f"Field '{field}' not found"}
             
             is_vector = arr.GetNumberOfComponents() > 1
             
             # Use the merged data as input if we merged
-            threshold_source = cleanup_input_merge if cleanup_input_merge else proxy
+            threshold_source = flat_proxy
             
             if is_vector:
                 # Need Calculator to compute magnitude
@@ -930,58 +918,44 @@ class CFDAnalysis:
                 thresh.UpperThreshold = 1e30
             thresh.ThresholdMethod = "Between"
             simple.UpdatePipeline(proxy=thresh)
-            
-            # Get result
-            result_data = thresh.GetClientSideObject().GetOutputDataObject(0)
-            
-            # Handle multiblock
-            if result_data.IsA("vtkMultiBlockDataSet"):
-                merge = simple.MergeBlocks(Input=thresh)
-                simple.UpdatePipeline(proxy=merge)
-                result_data = merge.GetClientSideObject().GetOutputDataObject(0)
-                cleanup_merge = merge
-            else:
-                cleanup_merge = None
-            
-            num_points = result_data.GetNumberOfPoints()
-            
-            if num_points == 0:
-                # Cleanup
-                if cleanup_merge:
-                    simple.Delete(cleanup_merge)
-                simple.Delete(thresh)
+
+            # Compute centroid server-side — no data movement
+            centroid_pf = run_server_script(
+                thresh, _script("centroid.py"),
+                name="_threshold_centroid",
+            )
+            kpi = fetch_table(centroid_pf)
+            safe_delete(centroid_pf)
+
+            if kpi.get("error") or kpi.get("num_points", 0) == 0:
+                safe_delete(thresh)
                 if is_vector:
-                    simple.Delete(calc)
+                    safe_delete(calc)
                 if cleanup_input_merge:
-                    simple.Delete(cleanup_input_merge)
+                    safe_delete(cleanup_input_merge)
                 return {
                     "error": f"No points found where {field} {'<' if below else '>'} {threshold}",
                     "field": field,
                     "threshold": threshold,
-                    "below": below
+                    "below": below,
                 }
-            
-            # Compute centroid
-            from vtk.util.numpy_support import vtk_to_numpy
-            bounds = result_data.GetBounds()
-            points = vtk_to_numpy(result_data.GetPoints().GetData())
-            centroid = points.mean(axis=0).tolist()
-            
+
+            bounds   = [kpi["xmin"], kpi["xmax"], kpi["ymin"], kpi["ymax"], kpi["zmin"], kpi["zmax"]]
+            centroid = [kpi["cx"], kpi["cy"], kpi["cz"]]
+
             # Cleanup
-            if cleanup_merge:
-                simple.Delete(cleanup_merge)
-            simple.Delete(thresh)
+            safe_delete(thresh)
             if is_vector:
-                simple.Delete(calc)
+                safe_delete(calc)
             if cleanup_input_merge:
-                simple.Delete(cleanup_input_merge)
-            
+                safe_delete(cleanup_input_merge)
+
             return {
-                "location": centroid,
-                "num_points": num_points,
-                "bounds": list(bounds),
-                "field": field,
-                "threshold": threshold,
+                "location":   centroid,
+                "num_points": int(kpi["num_points"]),
+                "bounds":     bounds,
+                "field":      field,
+                "threshold":  threshold,
                 "condition": f"{field} {'<' if below else '>'} {threshold}"
             }
             
@@ -1029,20 +1003,12 @@ class CFDAnalysis:
             extracted = simple.ExtractSelection(Input=proxy, Selection=selection)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutputDataObject(0)
-            
-            # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge = simple.MergeBlocks(Input=extracted)
-                simple.UpdatePipeline(proxy=merge)
-                merged_data = merge.GetClientSideObject().GetOutputDataObject(0)
-                num_selected = merged_data.GetNumberOfPoints() if field_type == "POINT" else merged_data.GetNumberOfCells()
-                simple.Delete(merge)
-            else:
-                num_selected = data.GetNumberOfPoints() if field_type == "POINT" else data.GetNumberOfCells()
-            
-            simple.Delete(extracted)
-            
+            # Get count from metadata — no data movement
+            di = extracted.GetDataInformation()
+            num_selected = (di.GetNumberOfPoints() if field_type == "POINT"
+                           else di.GetNumberOfCells())
+            safe_delete(extracted)
+
             return {
                 "query": query,
                 "field_type": field_type,
@@ -1073,37 +1039,25 @@ class CFDAnalysis:
             extracted = simple.ExtractSelection(Input=proxy)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutputDataObject(0)
-            
-            # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge = simple.MergeBlocks(Input=extracted)
-                simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutputDataObject(0)
-                cleanup_merge = merge
-            else:
-                cleanup_merge = None
-            
-            num_points = data.GetNumberOfPoints()
-            
+            num_points = extracted.GetDataInformation().GetNumberOfPoints()
+
             if num_points == 0:
-                if cleanup_merge:
-                    simple.Delete(cleanup_merge)
-                simple.Delete(extracted)
+                safe_delete(extracted)
                 return {"error": "No selection or empty selection"}
-            
-            # Compute centroid and bounds (vectorized)
-            from vtk.util.numpy_support import vtk_to_numpy
-            bounds = data.GetBounds()
-            points = vtk_to_numpy(data.GetPoints().GetData())
-            centroid = points.mean(axis=0).tolist()
-            
+
+            # Compute centroid server-side
+            c_pf = run_server_script(extracted, _script("centroid.py"), name="_sel_centroid")
+            kpi = fetch_table(c_pf)
+            safe_delete(c_pf)
             if cleanup_merge:
-                simple.Delete(cleanup_merge)
-            simple.Delete(extracted)
-            
+                safe_delete(cleanup_merge)
+            safe_delete(extracted)
+
+            centroid = [kpi["cx"], kpi["cy"], kpi["cz"]]
+            bounds   = [kpi["xmin"], kpi["xmax"], kpi["ymin"], kpi["ymax"], kpi["zmin"], kpi["zmax"]]
+
             return {
-                "num_points": num_points,
+                "num_points": int(kpi["num_points"]),
                 "centroid": centroid,
                 "bounds": {
                     "x": [bounds[0], bounds[1]],
@@ -1150,40 +1104,28 @@ class CFDAnalysis:
             extracted = simple.ExtractSelection(Input=proxy, Selection=selection)
             simple.UpdatePipeline(proxy=extracted)
             
-            data = extracted.GetClientSideObject().GetOutputDataObject(0)
-            
-            # Handle multiblock
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge = simple.MergeBlocks(Input=extracted)
-                simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutputDataObject(0)
-                cleanup_merge = merge
-            else:
-                cleanup_merge = None
-            
-            num_points = data.GetNumberOfPoints()
-            
+            num_points = extracted.GetDataInformation().GetNumberOfPoints()
+
             if num_points == 0:
-                if cleanup_merge:
-                    simple.Delete(cleanup_merge)
-                simple.Delete(extracted)
+                safe_delete(extracted)
                 return {"error": "No points match query", "query": query}
-            
-            # Compute centroid
-            from vtk.util.numpy_support import vtk_to_numpy
-            bounds = data.GetBounds()
-            points = vtk_to_numpy(data.GetPoints().GetData())
-            centroid = points.mean(axis=0).tolist()
-            
+
+            # Compute centroid server-side
+            c_pf = run_server_script(extracted, _script("centroid.py"), name="_query_centroid")
+            kpi = fetch_table(c_pf)
+            safe_delete(c_pf)
             if cleanup_merge:
-                simple.Delete(cleanup_merge)
-            simple.Delete(extracted)
-            
+                safe_delete(cleanup_merge)
+            safe_delete(extracted)
+
+            centroid = [kpi["cx"], kpi["cy"], kpi["cz"]]
+            bounds   = [kpi["xmin"], kpi["xmax"], kpi["ymin"], kpi["ymax"], kpi["zmin"], kpi["zmax"]]
+
             return {
-                "location": centroid,
-                "num_points": num_points,
-                "bounds": list(bounds),
-                "query": query
+                "location":   centroid,
+                "num_points": int(kpi["num_points"]),
+                "bounds":     bounds,
+                "query":      query,
             }
         except Exception as e:
             return {"error": str(e), "query": query}
@@ -1206,58 +1148,37 @@ class CFDAnalysis:
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
-        # Resolve semantic field type to actual field name
+
         field_name = self._resolve_field_type(field, proxy)
-        
-        arr, data = self._get_array(proxy, field_name)
-        if arr is None:
+        info = get_field_names(proxy)
+        location = "POINTS" if field_name in info["point"] else "CELLS"
+
+        flat_proxy, _, cleanup = ensure_flat_input(proxy)
+        pf = run_server_script(
+            flat_proxy, _script("find_region.py"),
+            params={
+                "FIELD_NAME": field_name,
+                "MODE": "min",
+                "LOCATION": location,
+                "EXCLUDE_BOUNDARY_FRACTION": 0.05 if exclude_boundaries else 0.0,
+            },
+            name="_find_min",
+        )
+        kpi = fetch_table(pf)
+        safe_delete(pf)
+        if cleanup:
+            safe_delete(cleanup)
+
+        if "error" in kpi:
             return {"error": f"Field '{field}' (resolved: '{field_name}') not found"}
-        
-        # Compute magnitude if vector
-        if arr.ndim > 1 and arr.shape[1] > 1:
-            mag = np.linalg.norm(arr, axis=1)
-        else:
-            mag = arr.flatten()
-        
-        if exclude_boundaries:
-            bounds = data.GetBounds()
-            margin = 0.05
-            x_margin = (bounds[1] - bounds[0]) * margin
-            y_margin = (bounds[3] - bounds[2]) * margin
-            z_margin = (bounds[5] - bounds[4]) * margin if bounds[5] != bounds[4] else 0
-            
-            # Get all points as numpy array (vectorized)
-            from vtk.util.numpy_support import vtk_to_numpy
-            points = vtk_to_numpy(data.GetPoints().GetData())
-            
-            # Vectorized boundary check
-            valid_mask = (
-                (points[:, 0] >= bounds[0] + x_margin) & (points[:, 0] <= bounds[1] - x_margin) &
-                (points[:, 1] >= bounds[2] + y_margin) & (points[:, 1] <= bounds[3] - y_margin)
-            )
-            if z_margin > 0:
-                valid_mask &= (points[:, 2] >= bounds[4] + z_margin) & (points[:, 2] <= bounds[5] - z_margin)
-            
-            valid_mask &= (mag > 1e-10)
-            
-            if not np.any(valid_mask):
-                idx = np.argmin(mag)
-            else:
-                masked_mag = np.where(valid_mask, mag, np.inf)
-                idx = np.argmin(masked_mag)
-        else:
-            idx = np.argmin(mag)
-        
-        location = list(data.GetPoint(idx))
-        value = float(mag[idx])
-        
+
+        loc = [kpi["loc_x"], kpi["loc_y"], kpi["loc_z"]]
         return {
-            "min_location": location,  # Specific key for workflow chaining
-            "location": location,       # Generic for compatibility
-            "value": value,
+            "min_location": loc,
+            "location": loc,
+            "value": kpi["value"],
             "field": field_name,
-            "type": "minimum"
+            "type": "minimum",
         }
     
     def find_maximum(self, field: str, proxy_name: str = None) -> dict:
@@ -1276,29 +1197,37 @@ class CFDAnalysis:
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
-        # Resolve semantic field type to actual field name
+
         field_name = self._resolve_field_type(field, proxy)
-        
-        arr, data = self._get_array(proxy, field_name)
-        if arr is None:
+        info = get_field_names(proxy)
+        location = "POINTS" if field_name in info["point"] else "CELLS"
+
+        flat_proxy, _, cleanup = ensure_flat_input(proxy)
+        pf = run_server_script(
+            flat_proxy, _script("find_region.py"),
+            params={
+                "FIELD_NAME": field_name,
+                "MODE": "max",
+                "LOCATION": location,
+                "EXCLUDE_BOUNDARY_FRACTION": 0.0,
+            },
+            name="_find_max",
+        )
+        kpi = fetch_table(pf)
+        safe_delete(pf)
+        if cleanup:
+            safe_delete(cleanup)
+
+        if "error" in kpi:
             return {"error": f"Field '{field}' (resolved: '{field_name}') not found"}
-        
-        if arr.ndim > 1 and arr.shape[1] > 1:
-            mag = np.linalg.norm(arr, axis=1)
-        else:
-            mag = arr.flatten()
-        
-        idx = np.argmax(mag)
-        location = list(data.GetPoint(idx))
-        value = float(mag[idx])
-        
+
+        loc = [kpi["loc_x"], kpi["loc_y"], kpi["loc_z"]]
         return {
-            "max_location": location,  # Specific key for workflow chaining
-            "location": location,       # Generic for compatibility
-            "value": value,
+            "max_location": loc,
+            "location": loc,
+            "value": kpi["value"],
             "field": field_name,
-            "type": "maximum"
+            "type": "maximum",
         }
     
     def find_high_gradient(self, field: str, proxy_name: str = None) -> dict:
@@ -1324,71 +1253,224 @@ class CFDAnalysis:
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
-        # Resolve semantic field type to actual field name
+
         resolved_field = self._resolve_field_type(field, proxy)
-        
-        # Remember active source
         original_active = simple.GetActiveSource()
-        
+
         try:
-            # Check if multiblock by trying to get the output type
-            simple.UpdatePipeline(proxy=proxy)
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge)
-                input_for_gradient = merge
-                cleanup_merge = merge
-            else:
-                input_for_gradient = proxy
-                cleanup_merge = None
-            
-            # Create Gradient filter
-            gradient = simple.Gradient(Input=input_for_gradient)
+            flat_proxy, _, cleanup_merge = ensure_flat_input(proxy)
+
+            gradient = simple.Gradient(Input=flat_proxy)
             gradient.ScalarArray = ['POINTS', resolved_field]
             gradient.ComputeGradient = 1
             gradient.ResultArrayName = "Gradient"
             simple.UpdatePipeline(proxy=gradient)
-            
-            # Get gradient array
-            arr, grad_data = self._get_array(gradient, "Gradient")
-            
-            if arr is None:
-                simple.Delete(gradient)
-                if cleanup_merge:
-                    simple.Delete(cleanup_merge)
-                return {"error": f"Could not compute gradient of '{resolved_field}'"}
-            
-            # Compute gradient magnitude
-            if arr.ndim > 1:
-                grad_mag = np.linalg.norm(arr, axis=1)
-            else:
-                grad_mag = np.abs(arr.flatten())
-            
-            idx = np.argmax(grad_mag)
-            location = list(grad_data.GetPoint(idx))
-            value = float(grad_mag[idx])
-            
-            # Cleanup
-            simple.Delete(gradient)
+
+            pf = run_server_script(
+                gradient, _script("find_region.py"),
+                params={
+                    "FIELD_NAME": "Gradient",
+                    "MODE": "max",
+                    "LOCATION": "POINTS",
+                    "EXCLUDE_BOUNDARY_FRACTION": 0.0,
+                },
+                name="_find_high_gradient",
+            )
+            kpi = fetch_table(pf)
+            safe_delete(pf)
+            safe_delete(gradient)
             if cleanup_merge:
-                simple.Delete(cleanup_merge)
-            
-            # Restore active source
+                safe_delete(cleanup_merge)
             simple.SetActiveSource(original_active)
-            
+
+            if "error" in kpi:
+                return {"error": f"Could not compute gradient of '{resolved_field}'"}
+
+            loc = [kpi["loc_x"], kpi["loc_y"], kpi["loc_z"]]
             return {
-                "high_gradient_location": location,  # Specific key for workflow chaining
-                "location": location,                 # Generic for compatibility
-                "gradient_magnitude": value,
+                "high_gradient_location": loc,
+                "location": loc,
+                "gradient_magnitude": kpi["value"],
                 "field": resolved_field,
-                "type": "high_gradient"
+                "type": "high_gradient",
             }
         except Exception as e:
             simple.SetActiveSource(original_active)
             return {"error": str(e), "field": field}
+
+    def compute_schlieren(
+        self,
+        proxy_name: str = None,
+        field: str = "Density",
+        log_scale: bool = True,
+    ) -> dict:
+        """
+        Compute Schlieren visualization field (density gradient magnitude).
+        
+        Schlieren imaging visualizes density gradients in compressible flows,
+        revealing shocks, shear layers, and expansion fans. This computes
+        |∇ρ| (gradient magnitude of density).
+        
+        For shadowgraph (∇²ρ), use compute_shadowgraph instead.
+        
+        Args:
+            proxy_name: Source proxy name (default: active source)
+            field: Field to compute gradient of (default: "Density")
+            log_scale: If True, compute log10(|∇ρ| + epsilon) for better
+                       dynamic range across shocks (default: True)
+        
+        Returns:
+            Dict with:
+            - proxy_name: Name of the output proxy with Schlieren field
+            - field_name: "Schlieren" or "Schlieren_log"
+            - field_range: [min, max] of the computed field
+            - suggested_colormap: Recommended colormap for visualization
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        original_active = simple.GetActiveSource()
+        
+        try:
+            # Resolve field name
+            resolved_field = self._resolve_field_type(field, proxy)
+            if resolved_field is None:
+                return {"error": f"Field '{field}' not found"}
+            
+            # Flatten if composite
+            flat_proxy, _, _ = ensure_flat_input(proxy)
+            
+            # Compute gradient
+            gradient = simple.Gradient(Input=flat_proxy)
+            gradient.ScalarArray = ['POINTS', resolved_field]
+            gradient.ComputeGradient = 1
+            gradient.ResultArrayName = "DensityGradient"
+            
+            # Compute magnitude (and optionally log scale)
+            if log_scale:
+                field_name = "Schlieren_log"
+                # Add small epsilon to avoid log(0)
+                calc = simple.Calculator(Input=gradient)
+                calc.Function = "log10(mag(DensityGradient) + 1e-10)"
+                calc.ResultArrayName = field_name
+                output_proxy = calc
+            else:
+                field_name = "Schlieren"
+                calc = simple.Calculator(Input=gradient)
+                calc.Function = "mag(DensityGradient)"
+                calc.ResultArrayName = field_name
+                output_proxy = calc
+            
+            # Register with meaningful name
+            schlieren_name = f"Schlieren_{resolved_field}"
+            simple.RenameSource(schlieren_name, output_proxy)
+            simple.UpdatePipeline(proxy=output_proxy)
+            
+            # Get field range
+            data_info = output_proxy.GetDataInformation()
+            array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+            if array_info:
+                field_range = list(array_info.GetComponentRange(0))
+            else:
+                field_range = [0.0, 1.0]
+            
+            simple.SetActiveSource(original_active)
+            
+            return {
+                "proxy_name": schlieren_name,
+                "field_name": field_name,
+                "field_range": field_range,
+                "log_scale": log_scale,
+                "source_field": resolved_field,
+                "suggested_colormap": "Grayscale",  # Traditional Schlieren look
+                "description": f"Schlieren field computed from {resolved_field} gradient"
+            }
+            
+        except Exception as e:
+            simple.SetActiveSource(original_active)
+            return {"error": str(e)}
+
+    def compute_shadowgraph(
+        self,
+        proxy_name: str = None,
+        field: str = "Density",
+    ) -> dict:
+        """
+        Compute Shadowgraph visualization field (Laplacian of density).
+        
+        Shadowgraph imaging visualizes the second derivative of density (∇²ρ),
+        which highlights edges of shocks more sharply than Schlieren.
+        
+        Args:
+            proxy_name: Source proxy name (default: active source)
+            field: Field to compute Laplacian of (default: "Density")
+        
+        Returns:
+            Dict with:
+            - proxy_name: Name of the output proxy with Shadowgraph field
+            - field_name: "Shadowgraph"
+            - field_range: [min, max] of the computed field
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        original_active = simple.GetActiveSource()
+        
+        try:
+            # Resolve field name
+            resolved_field = self._resolve_field_type(field, proxy)
+            if resolved_field is None:
+                return {"error": f"Field '{field}' not found"}
+            
+            # Flatten if composite
+            flat_proxy, _, _ = ensure_flat_input(proxy)
+            
+            # Compute gradient (first derivative)
+            gradient1 = simple.Gradient(Input=flat_proxy)
+            gradient1.ScalarArray = ['POINTS', resolved_field]
+            gradient1.ComputeGradient = 1
+            gradient1.ComputeDivergence = 0
+            gradient1.ResultArrayName = "Grad1"
+            
+            # Compute divergence of gradient = Laplacian
+            gradient2 = simple.Gradient(Input=gradient1)
+            gradient2.ScalarArray = ['POINTS', 'Grad1']
+            gradient2.ComputeGradient = 0
+            gradient2.ComputeDivergence = 1
+            gradient2.DivergenceArrayName = "Shadowgraph"
+            
+            output_proxy = gradient2
+            field_name = "Shadowgraph"
+            
+            # Register with meaningful name
+            shadowgraph_name = f"Shadowgraph_{resolved_field}"
+            simple.RenameSource(shadowgraph_name, output_proxy)
+            simple.UpdatePipeline(proxy=output_proxy)
+            
+            # Get field range
+            data_info = output_proxy.GetDataInformation()
+            array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+            if array_info:
+                field_range = list(array_info.GetComponentRange(0))
+            else:
+                field_range = [0.0, 1.0]
+            
+            simple.SetActiveSource(original_active)
+            
+            return {
+                "proxy_name": shadowgraph_name,
+                "field_name": field_name,
+                "field_range": field_range,
+                "source_field": resolved_field,
+                "suggested_colormap": "Grayscale",
+                "description": f"Shadowgraph (Laplacian) computed from {resolved_field}"
+            }
+            
+        except Exception as e:
+            simple.SetActiveSource(original_active)
+            return {"error": str(e)}
     
     def field_statistics(self, field: str, proxy_name: str = None) -> dict:
         """
@@ -1404,33 +1486,40 @@ class CFDAnalysis:
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
-        # Resolve semantic field type to actual field name
+
         field_name = self._resolve_field_type(field, proxy)
-        
-        arr, data = self._get_array(proxy, field_name)
-        if arr is None:
-            return {"error": f"Field '{field}' (resolved: '{field_name}') not found"}
-        
-        result = {"field": field_name, "num_points": len(arr)}
-        
-        if arr.ndim > 1 and arr.shape[1] > 1:
-            mag = np.linalg.norm(arr, axis=1)
+
+        # Determine location from metadata
+        info = get_field_names(proxy)
+        location = "POINTS" if field_name in info["point"] else "CELLS"
+
+        pf = run_server_script(
+            proxy, _script("field_statistics.py"),
+            params={"FIELD_NAME": field_name, "LOCATION": location},
+            name=f"_stats_{field_name}",
+        )
+        kpi = fetch_table(pf)
+        safe_delete(pf)
+
+        if "error" in kpi:
+            return {"error": f"Field '{field}' (resolved: '{field_name}') not found on server"}
+
+        result = {"field": field_name, "num_points": int(kpi.get("num_points", 0))}
+        if kpi.get("is_vector", 0):
             result["magnitude"] = {
-                "min": float(np.min(mag)),
-                "max": float(np.max(mag)),
-                "mean": float(np.mean(mag)),
-                "std": float(np.std(mag)),
+                "min":  kpi["mag_min"],
+                "max":  kpi["mag_max"],
+                "mean": kpi["mag_mean"],
+                "std":  kpi["mag_std"],
             }
-            result["components"] = arr.shape[1]
+            result["components"] = sum(1 for k in kpi if k.startswith("min_"))
         else:
-            arr = arr.flatten()
-            result["min"] = float(np.min(arr))
-            result["max"] = float(np.max(arr))
-            result["mean"] = float(np.mean(arr))
-            result["std"] = float(np.std(arr))
+            result["min"]  = kpi["min"]
+            result["max"]  = kpi["max"]
+            result["mean"] = kpi["mean"]
+            result["std"]  = kpi["std"]
             result["components"] = 1
-        
+
         return result
     
     def field_histogram(
@@ -1455,30 +1544,34 @@ class CFDAnalysis:
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
+
         field_name = self._resolve_field_type(field, proxy)
-        arr, data = self._get_array(proxy, field_name)
-        if arr is None:
-            return {"error": f"Field '{field}' not found"}
-        
-        # Use magnitude for vectors
-        if arr.ndim > 1 and arr.shape[1] > 1:
-            arr = np.linalg.norm(arr, axis=1)
-            field_name = f"{field_name} Magnitude"
-        else:
-            arr = arr.flatten()
-        
-        counts, bin_edges = np.histogram(arr, bins=num_bins)
-        
+        info = get_field_names(proxy)
+        location = "POINTS" if field_name in info["point"] else "CELLS"
+
+        pf = run_server_script(
+            proxy, _script("field_histogram.py"),
+            params={"FIELD_NAME": field_name, "LOCATION": location, "NUM_BINS": num_bins},
+            name=f"_hist_{field_name}",
+        )
+        kpi = fetch_table(pf)
+        safe_delete(pf)
+
+        if "error" in kpi:
+            return {"error": f"Field '{field}' not found on server"}
+
+        bin_centers = kpi["bin_center"] if isinstance(kpi["bin_center"], list) else [kpi["bin_center"]]
+        counts = kpi["count"] if isinstance(kpi["count"], list) else [kpi["count"]]
+
         return {
             "field": field_name,
-            "num_points": len(arr),
-            "bin_edges": bin_edges.tolist(),
-            "counts": counts.tolist(),
-            "min": float(arr.min()),
-            "max": float(arr.max()),
-            "mean": float(arr.mean()),
-            "std": float(arr.std()),
+            "num_points": int(kpi.get("num_points", 0)),
+            "bin_edges": [b - (bin_centers[1] - bin_centers[0]) / 2 for b in bin_centers] + [bin_centers[-1] + (bin_centers[-1] - bin_centers[-2]) / 2] if len(bin_centers) > 1 else bin_centers,
+            "counts": [int(c) for c in counts],
+            "min":  kpi["min"],
+            "max":  kpi["max"],
+            "mean": kpi["mean"],
+            "std":  kpi["std"],
         }
     
     def compute_vortex_field(
@@ -1508,20 +1601,35 @@ class CFDAnalysis:
             - Use proxy_name as input to create("Contour")
             - Use threshold for Isosurfaces property
         """
-        from vtk.util.numpy_support import vtk_to_numpy
-        
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
         
         try:
-            # Merge blocks for gradient computation
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
+            # Flatten if composite (reuses existing MergeBlocks if present)
+            flat_proxy, _, _flat_cleanup = ensure_flat_input(proxy)
+
+            # Find velocity field name from metadata — no data movement
+            info = get_field_names(flat_proxy)
+            vel_name = None
+            for name in self._VELOCITY_NAMES:
+                if name in info["point"]:
+                    vel_name = name
+                    break
+            if vel_name is None:
+                # Fall back to first 3-component point field
+                for name, ncomp in info["point"].items():
+                    if ncomp == 3:
+                        vel_name = name
+                        break
+            if vel_name is None:
+                if _flat_cleanup:
+                    safe_delete(_flat_cleanup)
+                return {"error": "No velocity field found for vortex detection"}
             
             # Compute gradient with appropriate fields
-            gradient = simple.Gradient(Input=merge)
-            gradient.ScalarArray = ['POINTS', 'Velocity']
+            gradient = simple.Gradient(Input=flat_proxy)
+            gradient.ScalarArray = ['POINTS', vel_name]
             
             if method == "q_criterion":
                 gradient.ComputeQCriterion = 1
@@ -1536,7 +1644,8 @@ class CFDAnalysis:
                 gradient.ResultArrayName = "VelocityGradient"
                 field_name = "Lambda2"
             else:
-                simple.Delete(merge)
+                if _flat_cleanup:
+                    safe_delete(_flat_cleanup)
                 return {"error": f"Unknown method: {method}. Use 'q_criterion', 'vorticity', or 'lambda2'"}
             
             simple.UpdatePipeline(proxy=gradient)
@@ -1588,42 +1697,29 @@ out.GetPointData().AddArray(arr)
             else:
                 output_proxy = gradient
             
-            # Get field array for threshold calculation
-            output_data = output_proxy.GetClientSideObject().GetOutputDataObject(0)
-            field_vtk = output_data.GetPointData().GetArray(field_name)
-            if field_vtk is None:
+            # Compute threshold server-side — only scalar KPIs come back
+            thresh_pf = run_server_script(
+                output_proxy, _script("vortex_threshold.py"),
+                params={"FIELD_NAME": field_name, "METHOD": method, "PERCENTILE": percentile},
+                name=f"_thresh_{field_name}",
+            )
+            kpi = fetch_table(thresh_pf)
+            safe_delete(thresh_pf)
+
+            if "error" in kpi:
                 return {"error": f"Could not compute {field_name}"}
-            
-            field_array = vtk_to_numpy(field_vtk)
-            field_min, field_max = float(field_array.min()), float(field_array.max())
-            
-            # Compute threshold (ANALYSIS DECISION - log it)
-            if method == "lambda2":
-                threshold = 0.01 * field_min
-                self._log_analysis(
-                    "auto_threshold",
-                    method="fraction_of_min",
-                    fraction=0.01,
-                    input_field=field_name,
-                    field_range=[field_min, field_max],
-                    result=float(threshold)
-                )
-            else:
-                positive_vals = field_array[field_array > 0]
-                if len(positive_vals) > 0:
-                    threshold = float(np.percentile(positive_vals, percentile))
-                else:
-                    threshold = max(0.0, field_max * 0.01)
-                self._log_analysis(
-                    "auto_threshold",
-                    method="percentile",
-                    percentile=percentile,
-                    input_field=field_name,
-                    field_range=[field_min, field_max],
-                    positive_count=int(len(positive_vals)),
-                    total_count=int(len(field_array)),
-                    result=float(threshold)
-                )
+
+            threshold  = float(kpi["threshold"])
+            field_min  = float(kpi["field_min"])
+            field_max  = float(kpi["field_max"])
+
+            self._log_analysis(
+                "auto_threshold",
+                method="server_side",
+                input_field=field_name,
+                field_range=[field_min, field_max],
+                result=threshold,
+            )
             
             # Get output proxy name
             output_name = self._get_source_name(output_proxy)
@@ -1631,7 +1727,10 @@ out.GetPointData().AddArray(arr)
             # Hide intermediate filters
             view = simple.GetActiveView()
             if view:
-                for p in [merge, gradient]:
+                intermediates = [gradient]
+                if flat_proxy is not proxy:
+                    intermediates.append(flat_proxy)
+                for p in intermediates:
                     if p and p != output_proxy:
                         rep = simple.GetRepresentation(p, view)
                         if rep:
@@ -1659,7 +1758,9 @@ out.GetPointData().AddArray(arr)
         density: float = 1.0,
         streamwise_axis: str = "x",
         lift_axis: str = "y",
-        proxy_name: str = None
+        proxy_name: str = None,
+        _shared_normals=None,
+        _shared_body_surf=None,
     ) -> dict:
         """
         Compute aerodynamic forces (drag/lift) by integrating pressure on surfaces.
@@ -1678,216 +1779,144 @@ out.GetPointData().AddArray(arr)
         Returns:
             Dict with drag, lift forces and coefficients
         """
-        from vtk.util.numpy_support import vtk_to_numpy
-        
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
+
         try:
             simple.UpdatePipeline(proxy=proxy)
-            
-            # Merge blocks if multiblock
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge_input = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge_input)
-            else:
-                merge_input = proxy
-            
-            # Extract surfaces
-            surface = simple.ExtractSurface(Input=merge_input)
-            simple.UpdatePipeline(proxy=surface)
-            
-            # Compute normals
-            normals = simple.SurfaceNormals(Input=surface)
-            normals.ComputeCellNormals = 1
-            simple.UpdatePipeline(proxy=normals)
-            
-            surf_data = normals.GetClientSideObject().GetOutputDataObject(0)
-            
-            # Handle multiblock by merging
-            if surf_data.IsA("vtkMultiBlockDataSet"):
-                merge = simple.MergeBlocks(Input=normals)
-                simple.UpdatePipeline(proxy=merge)
-                surf_data = merge.GetClientSideObject().GetOutputDataObject(0)
-            else:
-                merge = None
-            
-            # Get pressure (cell data after surface extraction)
-            pressure_array = surf_data.GetCellData().GetArray("p")
-            if pressure_array is None:
-                pressure_array = surf_data.GetCellData().GetArray("Pressure")
-            if pressure_array is None:
-                # Try point data and use cell centers
-                pressure_array = surf_data.GetPointData().GetArray("p")
-                if pressure_array is None:
-                    pressure_array = surf_data.GetPointData().GetArray("Pressure")
-            
-            if pressure_array is None:
-                if merge:
-                    simple.Delete(merge)
-                simple.Delete(normals)
-                simple.Delete(surface)
-                if merge_input != proxy:
-                    simple.Delete(merge_input)
-                return {"error": "No pressure field found (tried 'p' and 'Pressure')"}
-            
-            pressure = vtk_to_numpy(pressure_array)
-            
-            # Get surface normals (cell data)
-            normal_array = surf_data.GetCellData().GetArray("Normals")
-            if normal_array is None:
-                if merge:
-                    simple.Delete(merge)
-                simple.Delete(normals)
-                simple.Delete(surface)
-                if merge_input != proxy:
-                    simple.Delete(merge_input)
-                return {"error": "Could not compute surface normals"}
-            
-            surf_normals = vtk_to_numpy(normal_array)
-            
-            # Compute cell areas
-            num_cells = surf_data.GetNumberOfCells()
-            areas = np.zeros(num_cells)
-            for i in range(num_cells):
-                cell = surf_data.GetCell(i)
-                if cell.GetCellType() == 5:  # VTK_TRIANGLE
-                    pts = vtk_to_numpy(cell.GetPoints().GetData())
-                    v1 = pts[1] - pts[0]
-                    v2 = pts[2] - pts[0]
-                    areas[i] = 0.5 * np.linalg.norm(np.cross(v1, v2))
-                elif cell.GetCellType() == 9:  # VTK_QUAD
-                    pts = vtk_to_numpy(cell.GetPoints().GetData())
-                    v1 = pts[2] - pts[0]
-                    v2 = pts[3] - pts[1]
-                    areas[i] = 0.5 * np.linalg.norm(np.cross(v1, v2))
-                else:
-                    # Approximate with bounding box for other types
-                    bounds = [0.0] * 6
-                    cell.GetBounds(bounds)
-                    areas[i] = (bounds[1]-bounds[0]) * (bounds[3]-bounds[2])
-            
-            # Handle pressure being point data (interpolate to cells)
-            if len(pressure) != num_cells:
-                # Point data - need to average to cells
-                cell_pressure = np.zeros(num_cells)
-                for i in range(num_cells):
-                    cell = surf_data.GetCell(i)
-                    pt_ids = [cell.GetPointId(j) for j in range(cell.GetNumberOfPoints())]
-                    cell_pressure[i] = np.mean([pressure[pid] for pid in pt_ids])
-                pressure = cell_pressure
-            
-            # Axis mapping
+
+            # Auto-detect streamwise/lift axes if needed
             axis_map = {"x": 0, "y": 1, "z": 2}
             drag_idx = axis_map.get(streamwise_axis.lower(), 0)
             lift_idx = axis_map.get(lift_axis.lower(), 1)
-            
-            # Integrate: F = -∫ p * n * dA (negative because pressure acts inward)
-            # Drag = force in streamwise direction
-            # Lift = force in lift direction
-            force_x = -np.sum(pressure * surf_normals[:, 0] * areas)
-            force_y = -np.sum(pressure * surf_normals[:, 1] * areas)
-            force_z = -np.sum(pressure * surf_normals[:, 2] * areas)
-            
-            forces = [force_x, force_y, force_z]
-            drag = forces[drag_idx]
-            lift = forces[lift_idx]
-            
-            # Get reference values if not provided
+
+            # Auto-detect freestream velocity from metadata + server script
             if freestream_velocity is None:
-                # Use max velocity magnitude as reference
-                vel_array = surf_data.GetPointData().GetArray("Velocity")
-                if vel_array is None:
-                    # Try from original proxy
-                    orig_data = proxy.GetClientSideObject().GetOutputDataObject(0)
-                    if orig_data.IsA("vtkMultiBlockDataSet"):
-                        orig_data = orig_data.GetBlock(0)
-                    vel_array = orig_data.GetPointData().GetArray("Velocity")
-                
-                if vel_array is not None:
-                    vel = vtk_to_numpy(vel_array)
-                    freestream_velocity = float(np.max(np.linalg.norm(vel, axis=1)))
+                stats = self.field_statistics("velocity", proxy_name=proxy_name)
+                if "error" not in stats:
+                    freestream_velocity = float(stats["magnitude"]["max"])
                 else:
                     freestream_velocity = 1.0
-            
+
+            # Auto-detect reference area via raster projected area.
+            # SaveScreenshot renders server-side; with --force-offscreen-rendering
+            # on pvserver this produces no Cocoa window on macOS.
+            area_image_path = None
             if reference_area is None:
-                # Compute actual projected frontal area via rasterization
-                # This is more accurate than bounding box approximation
                 flow_dir = [0, 0, 0]
                 flow_dir[drag_idx] = 1.0
                 area_result = self.compute_projected_area(
                     flow_direction=flow_dir,
-                    resolution=1024,  # Lower res for speed, still accurate
-                    proxy_name=proxy_name
+                    resolution=1024,
+                    proxy_name=proxy_name,
+                    _shared_body_surf=_shared_body_surf,
                 )
                 if "error" not in area_result:
-                    reference_area = area_result["area"]
+                    reference_area  = area_result["area"]
+                    area_image_path = area_result.get("area_image")
                 else:
-                    # Fallback to bounding box estimate
-                    body_bounds, _ = self._get_body_bounds(proxy)
-                    if drag_idx == 0:  # streamwise = x
-                        reference_area = (body_bounds[3] - body_bounds[2]) * (body_bounds[5] - body_bounds[4])
-                    elif drag_idx == 1:  # streamwise = y
-                        reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[5] - body_bounds[4])
-                    else:  # streamwise = z
-                        reference_area = (body_bounds[1] - body_bounds[0]) * (body_bounds[3] - body_bounds[2])
-            
-            # Compute coefficients: C = F / (0.5 * ρ * V² * A)
-            dynamic_pressure = 0.5 * density * freestream_velocity ** 2
-            if dynamic_pressure > 1e-10 and reference_area > 1e-10:
-                Cd = drag / (dynamic_pressure * reference_area)
-                Cl = lift / (dynamic_pressure * reference_area)
+                    area_image_path = None
+                    reference_area  = None
+
+            # Bounding box fallback if all area computations failed
+            if reference_area is None:
+                body_bounds_fb, _ = self._get_body_bounds(proxy)
+                if drag_idx == 0:
+                    reference_area = (body_bounds_fb[3] - body_bounds_fb[2]) * (body_bounds_fb[5] - body_bounds_fb[4])
+                elif drag_idx == 1:
+                    reference_area = (body_bounds_fb[1] - body_bounds_fb[0]) * (body_bounds_fb[5] - body_bounds_fb[4])
+                else:
+                    reference_area = (body_bounds_fb[1] - body_bounds_fb[0]) * (body_bounds_fb[3] - body_bounds_fb[2])
+
+            # Find pressure field name from metadata
+            info = get_field_names(proxy)
+            pres_name = None
+            for name in ["p", "P", "Pressure", "pressure", "StaticPressure", "static_pressure"]:
+                if name in info["point"] or name in info["cell"]:
+                    pres_name = name
+                    break
+            if pres_name is None:
+                return {"error": f"No pressure field found. Available: {list(info['point'].keys()) + list(info['cell'].keys())}"}
+
+            # Build surface pipeline — reuse shared normals proxy if provided
+            if _shared_normals is not None:
+                normals_filter = _shared_normals
+                surface = None
+                flat_proxy = None
+                cleanup = None
             else:
-                Cd = Cl = float('nan')
-            
-            # Cleanup
-            if merge:
-                simple.Delete(merge)
-            simple.Delete(normals)
-            simple.Delete(surface)
-            if merge_input != proxy:
-                simple.Delete(merge_input)
-            
+                flat_proxy, _, cleanup = ensure_flat_input(proxy)
+                surface = simple.ExtractSurface(Input=flat_proxy)
+                simple.UpdatePipeline(proxy=surface)
+                normals_filter = simple.SurfaceNormals(Input=surface)
+                normals_filter.ComputeCellNormals = 1
+                simple.UpdatePipeline(proxy=normals_filter)
+
+            # Run integration entirely server-side
+            pf = run_server_script(
+                normals_filter, _script("force_integration.py"),
+                params={
+                    "PRESSURE_FIELD":       pres_name,
+                    "STREAMWISE_IDX":       drag_idx,
+                    "LIFT_IDX":             lift_idx,
+                    "FREESTREAM_VELOCITY":  freestream_velocity,
+                    "REFERENCE_AREA":       reference_area,
+                    "DENSITY":              density,
+                },
+                name="_force_integration",
+            )
+            kpi = fetch_table(pf)
+
+            # Clean up — don't delete shared proxies owned by caller
+            safe_delete(pf)
+            if _shared_normals is None:
+                safe_delete(normals_filter)
+                if surface:
+                    safe_delete(surface)
+                if cleanup:
+                    safe_delete(cleanup)
+
+            if "error" in kpi:
+                return {"error": f"Force integration failed on server. Pressure field: {pres_name}"}
+
             result = {
-                "drag_force": float(drag),
-                "lift_force": float(lift),
-                "force_x": float(force_x),
-                "force_y": float(force_y),
-                "force_z": float(force_z),
-                "Cd": float(Cd),
-                "Cl": float(Cl),
-                "freestream_velocity": float(freestream_velocity),
-                "reference_area": float(reference_area),
-                "density": float(density),
-                "total_surface_area": float(np.sum(areas)),
-                "num_surface_cells": int(num_cells),
-                "streamwise_axis": streamwise_axis,
-                "lift_axis": lift_axis,
+                "drag_force":         kpi["drag"],
+                "lift_force":         kpi["lift"],
+                "force_x":            kpi["Fx"],
+                "force_y":            kpi["Fy"],
+                "force_z":            kpi["Fz"],
+                "Cd":                 kpi["Cd"],
+                "Cl":                 kpi["Cl"],
+                "freestream_velocity": kpi["freestream_velocity"],
+                "reference_area":     kpi["reference_area"],
+                "density":            density,
+                "total_surface_area": kpi["total_surface_area"],
+                "streamwise_axis":    streamwise_axis,
+                "lift_axis":          lift_axis,
+                "area_image":         area_image_path,
             }
-            
+
             self._log_analysis(
                 "force_computation",
-                Cd=float(Cd),
-                Cl=float(Cl),
-                drag_force=float(drag),
-                lift_force=float(lift),
-                reference_area=float(reference_area),
-                freestream_velocity=float(freestream_velocity)
+                Cd=kpi["Cd"],
+                Cl=kpi["Cl"],
+                drag_force=kpi["drag"],
+                lift_force=kpi["lift"],
             )
-            
+
             return result
-            
+
         except Exception as e:
             return {"error": str(e)}
-    
+
     def compute_force_distribution(
         self,
         force_axis: str = "auto",
         distribution_axis: str = "auto",
         num_bins: int = 40,
-        proxy_name: str = None
+        proxy_name: str = None,
+        _shared_normals=None,
     ) -> dict:
         """
         Compute force distribution along an axis (ANALYSIS ONLY - no visualization).
@@ -1914,321 +1943,256 @@ out.GetPointData().AddArray(arr)
         Returns:
             {stations, sectional_force, accumulated_force, total_force, ...}
         """
-        from vtk.util.numpy_support import vtk_to_numpy
-        
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
+
         try:
             simple.UpdatePipeline(proxy=proxy)
-            
-            # Auto-detect streamwise and span directions
-            streamwise_axis = None
-            span_axis = None
-            
-            if force_axis in ("auto", "streamwise", "drag") or distribution_axis in ("auto", "streamwise", "span"):
-                streamwise_result = self.detect_streamwise_direction(proxy_name=proxy_name)
-                if "error" in streamwise_result:
-                    return {"error": f"Could not detect streamwise direction: {streamwise_result['error']}"}
-                
-                streamwise = streamwise_result["streamwise"]
-                streamwise_axis = streamwise[-1].lower()
-                
-                bounds = proxy.GetDataInformation().GetBounds()
-                extents = {
-                    "x": bounds[1] - bounds[0],
-                    "y": bounds[3] - bounds[2],
-                    "z": bounds[5] - bounds[4],
-                }
-                perp_axes = [a for a in ["x", "y", "z"] if a != streamwise_axis]
-                span_axis = max(perp_axes, key=lambda a: extents[a])
-            
-            # Resolve force_axis
-            if force_axis in ("auto", "streamwise", "drag"):
-                force_axis = streamwise_axis
-            elif force_axis == "lift":
-                perp_axes = [a for a in ["x", "y", "z"] if a != streamwise_axis]
-                force_axis = "y" if "y" in perp_axes else perp_axes[0]
-            
-            # Resolve distribution_axis
-            if distribution_axis in ("auto", "streamwise"):
-                distribution_axis = streamwise_axis
-            elif distribution_axis == "span":
-                distribution_axis = span_axis
-            
-            # Merge if multiblock
-            data = proxy.GetClientSideObject().GetOutputDataObject(0)
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-                merge_input = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge_input)
-            else:
-                merge_input = proxy
-            
-            # Extract surface and compute normals
-            surface = simple.ExtractSurface(Input=merge_input)
-            simple.UpdatePipeline(proxy=surface)
-            
-            normals_filter = simple.SurfaceNormals(Input=surface)
-            normals_filter.ComputeCellNormals = 1
-            simple.UpdatePipeline(proxy=normals_filter)
-            
-            surf_data = normals_filter.GetClientSideObject().GetOutputDataObject(0)
-            num_cells = surf_data.GetNumberOfCells()
-            
-            # Get pressure
-            pressure = surf_data.GetPointData().GetArray('p')
-            if pressure is None:
-                pressure = surf_data.GetPointData().GetArray('Pressure')
-            if pressure is None:
-                simple.Delete(normals_filter)
-                simple.Delete(surface)
-                if merge_input != proxy:
-                    simple.Delete(merge_input)
-                return {"error": "No pressure field found"}
-            
-            pressure = vtk_to_numpy(pressure)
-            surf_normals = vtk_to_numpy(surf_data.GetCellData().GetArray('Normals'))
-            
-            # Compute cell centers, areas, and pressures
-            centers = np.zeros((num_cells, 3))
-            areas = np.zeros(num_cells)
-            cell_pressure = np.zeros(num_cells)
-            
-            for i in range(num_cells):
-                cell = surf_data.GetCell(i)
-                pts = vtk_to_numpy(cell.GetPoints().GetData())
-                centers[i] = pts.mean(axis=0)
-                
-                if cell.GetCellType() == 5:  # Triangle
-                    v1, v2 = pts[1] - pts[0], pts[2] - pts[0]
-                    areas[i] = 0.5 * np.linalg.norm(np.cross(v1, v2))
-                elif cell.GetCellType() == 9:  # Quad
-                    v1, v2 = pts[2] - pts[0], pts[3] - pts[1]
-                    areas[i] = 0.5 * np.linalg.norm(np.cross(v1, v2))
-                
-                pt_ids = [cell.GetPointId(j) for j in range(cell.GetNumberOfPoints())]
-                cell_pressure[i] = np.mean([pressure[pid] for pid in pt_ids])
-            
-            # Filter for body cells (not at domain boundaries)
-            bounds = surf_data.GetBounds()
-            eps = 0.3
-            body_mask = (
-                (centers[:, 0] > bounds[0] + eps) & (centers[:, 0] < bounds[1] - eps) &
-                (centers[:, 1] > bounds[2] + eps) & (centers[:, 1] < bounds[3] - eps) &
-                (centers[:, 2] > bounds[4] + eps) & (centers[:, 2] < bounds[5] - eps)
-            )
-            
-            # Cleanup filters
-            simple.Delete(normals_filter)
-            simple.Delete(surface)
-            if merge_input != proxy:
-                simple.Delete(merge_input)
-            
-            if body_mask.sum() == 0:
-                return {"error": "No body cells found (all cells at boundaries)"}
-            
-            # Compute force distribution
             axis_map = {"x": 0, "y": 1, "z": 2}
+
+            # Resolve semantic axes using server-side streamwise detection
+            if force_axis in ("auto", "streamwise", "drag", "lift") or \
+               distribution_axis in ("auto", "streamwise", "span"):
+                sw = self.detect_streamwise_direction(proxy_name=proxy_name)
+                if "error" in sw:
+                    return sw
+                sw_axis = sw["streamwise"][-1].lower()
+                bounds = proxy.GetDataInformation().GetBounds()
+                extents = {"x": bounds[1]-bounds[0], "y": bounds[3]-bounds[2], "z": bounds[5]-bounds[4]}
+                perp = [a for a in "xyz" if a != sw_axis]
+                span_ax = max(perp, key=lambda a: extents[a])
+
+                if force_axis in ("auto", "streamwise", "drag"):
+                    force_axis = sw_axis
+                elif force_axis == "lift":
+                    force_axis = "y" if "y" in perp else perp[0]
+                if distribution_axis in ("auto", "streamwise"):
+                    distribution_axis = sw_axis
+                elif distribution_axis == "span":
+                    distribution_axis = span_ax
+
             force_idx = axis_map.get(force_axis.lower(), 0)
-            dist_idx = axis_map.get(distribution_axis.lower(), 0)
-            
-            force_per_cell = -cell_pressure * surf_normals[:, force_idx] * areas
-            
-            pos_body = centers[body_mask, dist_idx]
-            force_body = force_per_cell[body_mask]
-            
-            pos_min, pos_max = pos_body.min(), pos_body.max()
-            bin_edges = np.linspace(pos_min, pos_max, num_bins + 1)
-            bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-            
-            binned_force = np.zeros(num_bins)
-            for i in range(num_bins):
-                mask = (pos_body >= bin_edges[i]) & (pos_body < bin_edges[i+1])
-                binned_force[i] = force_body[mask].sum()
-            
-            accumulated = np.cumsum(binned_force)
-            
+            dist_idx  = axis_map.get(distribution_axis.lower(), 0)
+            # Lift axis: perpendicular to both streamwise and distribution axes
+            all_axes = ["x", "y", "z"]
+            lift_axis_name = next(a for a in all_axes
+                                  if a != force_axis.lower() and a != distribution_axis.lower())
+            lift_idx = axis_map.get(lift_axis_name, 1)
+
+            # Find pressure field from metadata
+            info = get_field_names(proxy)
+            pres_name = None
+            for name in ["p", "P", "Pressure", "pressure", "StaticPressure"]:
+                if name in info["point"] or name in info["cell"]:
+                    pres_name = name
+                    break
+            if pres_name is None:
+                return {"error": "No pressure field found"}
+
+            # Build surface pipeline — reuse shared normals proxy if provided
+            if _shared_normals is not None:
+                normals_filter = _shared_normals
+                surface = None
+                flat_proxy = None
+                cleanup = None
+            else:
+                flat_proxy, _, cleanup = ensure_flat_input(proxy)
+                surface = simple.ExtractSurface(Input=flat_proxy)
+                simple.UpdatePipeline(proxy=surface)
+                normals_filter = simple.SurfaceNormals(Input=surface)
+                normals_filter.ComputeCellNormals = 1
+                simple.UpdatePipeline(proxy=normals_filter)
+            num_body_cells = int(normals_filter.GetDataInformation().GetNumberOfCells())
+
+            pf = run_server_script(
+                normals_filter, _script("force_distribution.py"),
+                params={
+                    "PRESSURE_FIELD": pres_name,
+                    "FORCE_IDX":      force_idx,
+                    "LIFT_IDX":       lift_idx,
+                    "DIST_IDX":       dist_idx,
+                    "NUM_BINS":       num_bins,
+                },
+                name="_force_dist",
+            )
+            kpi = fetch_table(pf)
+            safe_delete(pf)
+            if _shared_normals is None:
+                safe_delete(normals_filter)
+                if surface:
+                    safe_delete(surface)
+                if cleanup:
+                    safe_delete(cleanup)
+
+            if "error" in kpi:
+                return {"error": "Force distribution failed on server"}
+
+            stations          = kpi["station"] if isinstance(kpi["station"], list) else [kpi["station"]]
+            sectional_drag    = kpi["sectional_drag"] if isinstance(kpi["sectional_drag"], list) else [kpi["sectional_drag"]]
+            accumulated_drag  = kpi["accumulated_drag"] if isinstance(kpi["accumulated_drag"], list) else [kpi["accumulated_drag"]]
+            sectional_lift    = kpi["sectional_lift"] if isinstance(kpi["sectional_lift"], list) else [kpi["sectional_lift"]]
+            accumulated_lift  = kpi["accumulated_lift"] if isinstance(kpi["accumulated_lift"], list) else [kpi["accumulated_lift"]]
+
             return {
-                "force_axis": force_axis,
+                "force_axis":        force_axis,
+                "lift_axis":         lift_axis_name,
                 "distribution_axis": distribution_axis,
-                "stations": bin_centers.tolist(),
-                "sectional_force": binned_force.tolist(),
-                "accumulated_force": accumulated.tolist(),
-                "total_force": float(accumulated[-1]),
-                "position_range": [float(pos_min), float(pos_max)],
-                "num_body_cells": int(body_mask.sum()),
-                "num_bins": num_bins,
+                "stations":          stations,
+                "sectional_drag":    sectional_drag,
+                "accumulated_drag":  accumulated_drag,
+                "sectional_lift":    sectional_lift,
+                "accumulated_lift":  accumulated_lift,
+                "total_drag":        float(kpi["total_drag"]),
+                "total_lift":        float(kpi["total_lift"]),
+                "position_range":    [float(stations[0]), float(stations[-1])],
+                "num_bins":          num_bins,
+                "num_body_cells":    int(kpi.get("num_body_cells", 0)),
             }
-            
+
         except Exception as e:
             return {"error": str(e)}
     
     def compute_projected_area(
         self,
         flow_direction: list = None,
-        resolution: int = 2048,
-        proxy_name: str = None
+        resolution: int = 1024,
+        proxy_name: str = None,
+        _shared_body_surf=None,
     ) -> dict:
         """
-        Compute projected frontal area via rasterization and pixel counting.
-        
-        Renders the body surface with orthographic projection aligned with the
-        flow direction, then counts non-background pixels to compute area.
-        This handles complex geometries, hidden surfaces, and concavities correctly.
-        
+        Compute projected frontal area via offscreen render + SaveScreenshot.
+
+        Renders the body surface with orthographic projection along the flow
+        direction, counts non-background pixels, multiplies by pixel area.
+        Saves the silhouette image to output/projected_area.png.
+
         Args:
-            flow_direction: Flow direction vector [x, y, z] (default: [1, 0, 0])
-            resolution: Render resolution (default: 2048, higher = more accurate)
+            flow_direction: Flow direction [x,y,z] (default [1,0,0])
+            resolution: Image resolution (default 1024)
             proxy_name: Source proxy name
-            
+            _shared_body_surf: Pre-built body surface proxy (vtkPolyData).
+                               When provided, skips surface extraction.
+
         Returns:
-            Dict with:
-            - area: Projected frontal area in model units squared
-            - pixel_count: Number of covered pixels
-            - pixel_size: Size of each pixel in model units
-            - flow_direction: Normalized flow direction used
+            Dict with area, pixel_count, pixel_size, area_image path.
         """
-        import numpy as np
-        from vtk import vtkWindowToImageFilter
-        from vtk.util.numpy_support import vtk_to_numpy
-        
+        import numpy as np, os
+
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
-        # Default flow direction
+
         if flow_direction is None:
             flow_direction = [1.0, 0.0, 0.0]
         flow = np.array(flow_direction, dtype=float)
         flow = flow / np.linalg.norm(flow)
-        
+        streamwise_idx = int(np.argmax(np.abs(flow)))
+
         try:
-            # Get body bounds
+            main_view = simple.GetActiveView()
             body_bounds, _ = self._get_body_bounds(proxy)
-            
-            # Extract surface first, then clip to body region
-            # (Clipping volume mesh doesn't isolate body surface correctly)
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
-            
-            surf = simple.ExtractSurface(Input=merge)
-            simple.UpdatePipeline(proxy=surf)
-            
-            # Clip surface to body region
-            clip = simple.Clip(Input=surf)
-            clip.ClipType = 'Box'
-            clip.ClipType.Bounds = [
-                body_bounds[0] - 0.01, body_bounds[1] + 0.01,
-                body_bounds[2] - 0.01, body_bounds[3] + 0.01,
-                body_bounds[4] - 0.01, body_bounds[5] + 0.01
-            ]
-            clip.Invert = 1  # Keep inside
-            simple.UpdatePipeline(proxy=clip)
-            
-            # Create offscreen render view
+
+            if _shared_body_surf is not None:
+                body_surf = _shared_body_surf
+                merge = surf = clip = cleanup_merge = None
+            else:
+                merge, _, cleanup_merge = ensure_flat_input(proxy)
+                surf = simple.ExtractSurface(Input=merge)
+                simple.UpdatePipeline(proxy=surf)
+                clip = simple.Clip(Input=surf)
+                clip.ClipType = 'Box'
+                clip.ClipType.Bounds = [
+                    body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+                    body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+                    body_bounds[4] - 0.01, body_bounds[5] + 0.01,
+                ]
+                clip.Invert = 1
+                simple.UpdatePipeline(proxy=clip)
+                body_surf = simple.ExtractSurface(Input=clip)
+                simple.UpdatePipeline(proxy=body_surf)
+
             view = simple.CreateView('RenderView')
             view.ViewSize = [resolution, resolution]
             view.Background = [0, 0, 0]
-            view.UseColorPaletteForBackground = 0  # Use explicit black background
-            view.OrientationAxesVisibility = 0     # Hide orientation widget
-            
-            # Display with flat white color (no lighting effects)
-            display = simple.Show(clip, view)
+            view.UseColorPaletteForBackground = 0
+            view.OrientationAxesVisibility = 0
+
+            display = simple.Show(body_surf, view)
             display.Representation = 'Surface'
             display.DiffuseColor = [1, 1, 1]
             display.AmbientColor = [1, 1, 1]
             display.Specular = 0
             display.Ambient = 1.0
             display.Diffuse = 0.0
-            
-            # Orthographic projection
             view.CameraParallelProjection = 1
-            
-            # Camera alignment - look along flow direction
+
             cx = 0.5 * (body_bounds[0] + body_bounds[1])
             cy = 0.5 * (body_bounds[2] + body_bounds[3])
             cz = 0.5 * (body_bounds[4] + body_bounds[5])
             center = np.array([cx, cy, cz])
-            
-            # Place camera far upstream
-            distance = 10.0
-            camera_pos = center - flow * distance
-            
-            view.CameraPosition = camera_pos.tolist()
+            cam_flow = np.zeros(3); cam_flow[streamwise_idx] = 1.0
+            view.CameraPosition = (center - cam_flow * 10.0).tolist()
             view.CameraFocalPoint = center.tolist()
-            
-            # Choose view-up automatically (perpendicular to flow)
+
             up_guess = np.array([0, 0, 1])
-            if abs(np.dot(up_guess, flow)) > 0.9:
+            if abs(np.dot(up_guess, cam_flow)) > 0.9:
                 up_guess = np.array([0, 1, 0])
-            
-            right = np.cross(flow, up_guess)
-            up = np.cross(right, flow)
+            right = np.cross(cam_flow, up_guess)
+            up = np.cross(right, cam_flow)
             up = up / np.linalg.norm(up)
-            
             view.CameraViewUp = up.tolist()
-            
-            # Set parallel scale to fit body with margin
-            # Parallel scale = half the height of visible region
-            span_y = body_bounds[3] - body_bounds[2]
-            span_z = body_bounds[5] - body_bounds[4]
-            parallel_scale = max(span_y, span_z) * 0.6
-            view.CameraParallelScale = parallel_scale
-            height = view.ViewSize[1]
-            
+
+            all_axes = [0, 1, 2]
+            proj_axes = [a for a in all_axes if a != streamwise_idx]
+            span0 = body_bounds[proj_axes[0]*2+1] - body_bounds[proj_axes[0]*2]
+            span1 = body_bounds[proj_axes[1]*2+1] - body_bounds[proj_axes[1]*2]
+            parallel_scale = np.maximum(span0, span1) * 0.6
+            view.CameraParallelScale = float(parallel_scale)
+            pixel_size = 2.0 * float(parallel_scale) / resolution
+
             simple.SetActiveView(view)
-            simple.Render(view)
-            
-            # Capture image
-            w2i = vtkWindowToImageFilter()
-            w2i.SetInput(view.GetRenderWindow())
-            w2i.Update()
-            
-            image = w2i.GetOutput()
-            dims = image.GetDimensions()
-            vtk_array = image.GetPointData().GetScalars()
-            np_img = vtk_to_numpy(vtk_array)
-            
-            # Reshape image (may be RGB or RGBA)
-            n_components = vtk_array.GetNumberOfComponents()
-            np_img = np_img.reshape(dims[1], dims[0], n_components)
-            
-            # Count non-background pixels (threshold > 10 to avoid noise)
-            mask = np_img[:, :, 0] > 10
-            covered_pixels = int(np.count_nonzero(mask))
-            
-            # Convert to area
-            pixel_size = 2.0 * parallel_scale / height
-            area = covered_pixels * pixel_size * pixel_size
-            
-            # Cleanup
-            simple.Delete(view)
-            simple.Delete(surf)
-            simple.Delete(clip)
-            simple.Delete(merge)
-            
-            result = {
-                "area": float(area),
-                "pixel_count": covered_pixels,
-                "pixel_size": float(pixel_size),
-                "resolution": resolution,
+            os.makedirs("output", exist_ok=True)
+            artifact_path = os.path.abspath("output/projected_area.png")
+            simple.SaveScreenshot(artifact_path, view, ImageResolution=[resolution, resolution])
+
+            from vtk import vtkPNGReader
+            reader = vtkPNGReader()
+            reader.SetFileName(artifact_path)
+            reader.Update()
+            from vtk.util.numpy_support import vtk_to_numpy as _v2n
+            img = reader.GetOutput()
+            scalars = _v2n(img.GetPointData().GetScalars())
+            n_comp = img.GetPointData().GetScalars().GetNumberOfComponents()
+            covered = int(np.count_nonzero(scalars.reshape(-1, n_comp)[:, 0] > 10))
+            area = covered * pixel_size * pixel_size
+
+            safe_delete(view)
+            if _shared_body_surf is None:
+                safe_delete(body_surf)
+                if clip: safe_delete(clip)
+                if surf: safe_delete(surf)
+                if cleanup_merge: safe_delete(cleanup_merge)
+            if main_view:
+                simple.SetActiveView(main_view)
+
+            self._log_analysis("projected_area", area=area,
+                               flow_axis=["x","y","z"][streamwise_idx],
+                               pixel_count=covered)
+
+            return {
+                "area":        area,
+                "pixel_count": covered,
+                "pixel_size":  pixel_size,
+                "resolution":  resolution,
                 "flow_direction": flow.tolist(),
-                "body_bounds": body_bounds
+                "body_bounds": body_bounds,
+                "area_image":  artifact_path,
             }
-            
-            self._log_analysis(
-                "projected_area",
-                area=float(area),
-                flow_direction=flow.tolist(),
-                resolution=resolution
-            )
-            
-            return result
-            
+
         except Exception as e:
             return {"error": str(e)}
-    
+
     def compute_flow_topology(
         self,
         proxy_name: str = None
@@ -2251,53 +2215,53 @@ out.GetPointData().AddArray(arr)
             - n_points: Number of points on core lines
             - bounds: Spatial extent of vortex cores
         """
-        import numpy as np
-        from vtk.util.numpy_support import vtk_to_numpy
-        
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
+
         try:
-            # Merge blocks first
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
+            # Flatten composite data if needed
+            merge, _, cleanup_merge = ensure_flat_input(proxy)
             
-            # Check for velocity field
-            data = merge.GetClientSideObject().GetOutput()
-            vel = data.GetPointData().GetArray('Velocity')
-            if vel is None:
-                simple.Delete(merge)
-                return {"error": "No Velocity field found"}
-            
+            # Check for velocity field using metadata — no data movement
+            info = get_field_names(merge)
+            vel_name = None
+            for name in self._VELOCITY_NAMES:
+                if name in info["point"]:
+                    vel_name = name
+                    break
+            if vel_name is None:
+                for name, ncomp in info["point"].items():
+                    if ncomp == 3:
+                        vel_name = name
+                        break
+            if vel_name is None:
+                if cleanup_merge:
+                    safe_delete(cleanup_merge)
+                return {"error": "No velocity field found"}
+
             # Run VortexCores filter
             vortex = simple.VortexCores(Input=merge)
-            vortex.VectorField = ['POINTS', 'Velocity']
+            vortex.VectorField = ['POINTS', vel_name]
             simple.UpdatePipeline(proxy=vortex)
-            
-            # Get output
-            cores = vortex.GetClientSideObject().GetOutput()
-            
-            n_points = cores.GetNumberOfPoints()
-            n_cores = cores.GetNumberOfCells()
-            
-            # Get bounds if we have points
-            bounds = None
+
+            # Get output info from metadata — no data movement
+            vortex_info = vortex.GetDataInformation()
+            n_points = vortex_info.GetNumberOfPoints()
+            n_cores  = vortex_info.GetNumberOfCells()
             if n_points > 0:
-                pts = vtk_to_numpy(cores.GetPoints().GetData())
+                b = vortex_info.GetBounds()
                 bounds = {
-                    "x": [float(pts[:,0].min()), float(pts[:,0].max())],
-                    "y": [float(pts[:,1].min()), float(pts[:,1].max())],
-                    "z": [float(pts[:,2].min()), float(pts[:,2].max())]
+                    "x": [float(b[0]), float(b[1])],
+                    "y": [float(b[2]), float(b[3])],
+                    "z": [float(b[4]), float(b[5])],
                 }
-            
-            # Keep filter alive for visualization (don't delete yet)
-            # The workflow will handle cleanup
-            simple.Delete(merge)
-            
+
+            if cleanup_merge:
+                safe_delete(cleanup_merge)
+
             return {
-                "vortex_cores": cores,
-                "vortex_filter": vortex,  # Keep reference for visualization
+                "vortex_filter": vortex,
                 "n_cores": n_cores,
                 "n_points": n_points,
                 "bounds": bounds
@@ -2369,7 +2333,8 @@ out.GetPointData().AddArray(arr)
         force_axis: str = "auto",
         distribution_axis: str = "auto",
         num_bins: int = 40,
-        proxy_name: str = None
+        proxy_name: str = None,
+        _shared_normals=None,
     ) -> dict:
         """
         Compute force distribution along an axis and return Plotly-compatible data.
@@ -2388,40 +2353,41 @@ out.GetPointData().AddArray(arr)
             force_axis=force_axis,
             distribution_axis=distribution_axis,
             num_bins=num_bins,
-            proxy_name=proxy_name
+            proxy_name=proxy_name,
+            _shared_normals=_shared_normals,
         )
-        
+
         if "error" in dist_data:
             return dist_data
         
         try:
             stations = dist_data["stations"]
-            sectional = dist_data["sectional_force"]
-            accumulated = dist_data["accumulated_force"]
-            
-            force_names = {"x": "Drag", "y": "Lift", "z": "Side Force"}
-            force_name = force_names.get(dist_data["force_axis"].lower(), "Force")
-            
-            # Return Plotly-compatible chart data
+            dist_axis_label = dist_data["distribution_axis"].upper()
+
+            # Return Plotly-compatible chart data with both drag and lift distributions
             return {
                 "status": "created",
                 "chart_type": "force_distribution",
-                "title": f"Accumulated {force_name} Distribution",
-                "x_label": f'{dist_data["distribution_axis"].upper()} Position',
-                "y_label": force_name,
+                "title": f"Accumulated Drag and Lift Distribution",
+                "x_label": f'{dist_axis_label} Position',
+                "y_label": "Force",
                 "data": {
                     "x": stations if isinstance(stations, list) else stations.tolist(),
                     "series": {
-                        "Accumulated Force": accumulated if isinstance(accumulated, list) else accumulated.tolist(),
-                        "Sectional Force": sectional if isinstance(sectional, list) else sectional.tolist(),
+                        "Accumulated_Drag":  dist_data["accumulated_drag"] if isinstance(dist_data["accumulated_drag"], list) else dist_data["accumulated_drag"].tolist(),
+                        "Sectional_Drag":    dist_data["sectional_drag"]   if isinstance(dist_data["sectional_drag"],   list) else dist_data["sectional_drag"].tolist(),
+                        "Accumulated_Lift":  dist_data["accumulated_lift"] if isinstance(dist_data["accumulated_lift"], list) else dist_data["accumulated_lift"].tolist(),
+                        "Sectional_Lift":    dist_data["sectional_lift"]   if isinstance(dist_data["sectional_lift"],   list) else dist_data["sectional_lift"].tolist(),
                     }
                 },
-                "force_axis": dist_data["force_axis"],
+                "force_axis":        dist_data["force_axis"],
+                "lift_axis":         dist_data["lift_axis"],
                 "distribution_axis": dist_data["distribution_axis"],
-                "total_force": dist_data["total_force"],
-                "position_range": dist_data["position_range"],
-                "num_bins": dist_data["num_bins"],
-                "num_body_cells": dist_data["num_body_cells"],
+                "total_drag":        dist_data["total_drag"],
+                "total_lift":        dist_data["total_lift"],
+                "position_range":    dist_data["position_range"],
+                "num_bins":          dist_data["num_bins"],
+                "num_body_cells":    dist_data["num_body_cells"],
             }
             
         except Exception as e:
@@ -2534,105 +2500,83 @@ out.GetPointData().AddArray(arr)
         Returns:
             Dict with streamwise direction (+x, -x, +y, -y, +z, -z) and confidence
         """
-        from vtk.util.numpy_support import vtk_to_numpy
-        
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
+
         try:
             simple.UpdatePipeline(proxy=proxy)
-            
-            # Merge blocks if needed
-            cso = proxy.GetClientSideObject()
-            if hasattr(cso, 'GetOutput'):
-                data = cso.GetOutput()
-            else:
-                data = cso.GetOutputDataObject(0)
-            
-            print(f"[detect_streamwise] Initial data type: {data.GetClassName()}")
-            
-            # Handle composite datasets (MultiBlock, Partitioned)
-            if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet") or data.IsA("vtkPartitionedDataSetCollection"):
-                print(f"[detect_streamwise] Merging composite dataset")
-                merge = simple.MergeBlocks(Input=proxy)
-                simple.UpdatePipeline(proxy=merge)
-                data = merge.GetClientSideObject().GetOutputDataObject(0)
-                print(f"[detect_streamwise] After merge: {data.GetClassName()}")
-            else:
-                merge = None
-            
-            # Get velocity array
-            print(f"[detect_streamwise] Getting Velocity from {data.GetClassName()}, has PointData: {data.GetPointData() is not None}")
-            if data.GetPointData():
-                print(f"[detect_streamwise] PointData has {data.GetPointData().GetNumberOfArrays()} arrays")
-                for i in range(data.GetPointData().GetNumberOfArrays()):
-                    print(f"[detect_streamwise]   Array {i}: {data.GetPointData().GetArrayName(i)}")
-            vel_array = data.GetPointData().GetArray("Velocity")
-            if vel_array is None:
-                if merge:
-                    simple.Delete(merge)
-                return {"error": "No Velocity field found"}
-            
-            vel = vtk_to_numpy(vel_array)
-            
-            # Compute magnitude-weighted average direction
-            mag = np.linalg.norm(vel, axis=1, keepdims=True)
-            mag = np.where(mag > 1e-10, mag, 1e-10)  # avoid division by zero
-            
-            # Weight by magnitude squared (emphasize high-speed regions)
-            weights = mag.flatten() ** 2
-            weighted_vel = vel * weights[:, np.newaxis]
-            total_weight = np.sum(weights)
-            if total_weight < 1e-20:
-                if merge:
-                    simple.Delete(merge)
-                return {"error": "All velocity magnitudes near zero — cannot determine flow direction"}
-            avg_direction = np.sum(weighted_vel, axis=0) / total_weight
-            norm = np.linalg.norm(avg_direction)
-            if norm < 1e-20:
-                if merge:
-                    simple.Delete(merge)
-                return {"error": "Velocity directions cancel out — no dominant flow direction"}
-            avg_direction = avg_direction / norm
-            
-            if merge:
-                simple.Delete(merge)
-            
-            # Find closest axis-aligned direction
-            axes = {
-                "+x": np.array([1, 0, 0]),
-                "-x": np.array([-1, 0, 0]),
-                "+y": np.array([0, 1, 0]),
-                "-y": np.array([0, -1, 0]),
-                "+z": np.array([0, 0, 1]),
-                "-z": np.array([0, 0, -1]),
-            }
-            
-            best_dir = None
-            best_dot = -1
-            for name, axis in axes.items():
-                dot = np.dot(avg_direction, axis)
-                if dot > best_dot:
-                    best_dot = dot
-                    best_dir = name
-            
-            result = {
-                "streamwise": best_dir,
-                "direction_vector": avg_direction.tolist(),
-                "confidence": float(best_dot)  # 1.0 = perfectly aligned with axis
-            }
-            
-            self._log_analysis(
-                "streamwise_direction",
-                streamwise=best_dir,
-                confidence=float(best_dot)
+
+            # Find velocity field name from metadata
+            flat_proxy, _, cleanup = ensure_flat_input(proxy)
+            info = get_field_names(flat_proxy)
+            vel_name = None
+            for name in self._VELOCITY_NAMES:
+                if name in info["point"]:
+                    vel_name = name
+                    break
+            if vel_name is None:
+                for name, ncomp in info["point"].items():
+                    if ncomp == 3:
+                        vel_name = name
+                        break
+            if cleanup:
+                safe_delete(cleanup)
+            if vel_name is None:
+                return {"error": f"No velocity field found. Available: {list(info['point'].keys())}"}
+
+            # Run detection server-side
+            pf = run_server_script(
+                proxy, _script("detect_streamwise.py"),
+                params={"VELOCITY_FIELD": vel_name},
+                name="_detect_streamwise",
             )
-            
-            return result
+            kpi = fetch_table(pf)
+            safe_delete(pf)
+
+            if "error" in kpi:
+                return {"error": "Streamwise detection failed on server"}
+
+            streamwise    = kpi["streamwise"]
+            axis_name     = kpi["axis_name"]
+            freestream    = float(kpi["freestream_velocity"])
+            axis_idx      = int(kpi["streamwise_axis"])
+            direction_sign = int(kpi["direction_sign"])
+
+            # Derive span and vertical axes
+            all_axes = ["x", "y", "z"]
+            remaining = [a for a in all_axes if a != axis_name]
+            body_bounds, body_diag = self._get_body_bounds(proxy)
+            spans = {a: body_bounds[2 * all_axes.index(a) + 1] - body_bounds[2 * all_axes.index(a)]
+                     for a in remaining}
+            span_axis = max(spans, key=spans.get)
+            vertical_axis = [a for a in remaining if a != span_axis][0]
+            body_center = [
+                0.5 * (body_bounds[0] + body_bounds[1]),
+                0.5 * (body_bounds[2] + body_bounds[3]),
+                0.5 * (body_bounds[4] + body_bounds[5]),
+            ]
+
+            self._log_analysis(
+                "streamwise_detection",
+                method="server_side_mean_velocity",
+                velocity_field=vel_name,
+                result=streamwise,
+            )
+
+            return {
+                "streamwise": streamwise,
+                "span_axis": span_axis,
+                "vertical_axis": vertical_axis,
+                "velocity_field": vel_name,
+                "freestream_velocity": freestream,
+                "body_center": body_center,
+                "body_bounds": list(body_bounds),
+                "confidence": float(kpi.get("direction_sign", 1)),
+            }
         except Exception as e:
             return {"error": str(e)}
-    
+
     def detect_span_direction(self, proxy_name: str = None) -> dict:
         """
         Detect the spanwise direction based on body geometry and flow direction.
@@ -2687,6 +2631,7 @@ out.GetPointData().AddArray(arr)
                 "body_bounds": list(body_bounds),
                 "body_center": body_center,
                 "span_extent": extents[span_axis],
+                "velocity_field": streamwise_result.get("velocity_field", "Velocity"),
             }
             
             self._log_analysis(
@@ -2805,122 +2750,78 @@ out.GetPointData().AddArray(arr)
         proxy = self._get_proxy(proxy_name)
         if proxy is None:
             return {"error": "No proxy found"}
-        
-        original_source = simple.GetActiveSource()  # Save for restore
-        
+
         try:
-            # Get velocity statistics to determine freestream
-            stats = self.field_statistics("velocity", proxy_name=proxy_name)
-            if "error" in stats:
-                return stats
-            
-            v_freestream = stats["magnitude"]["max"]
-            v_threshold = velocity_deficit * v_freestream
-            
-            # Get streamwise direction to constrain search to downstream region
+            # All heavy lifting runs server-side — only scalar KPIs come back
+
+            # Get streamwise direction (server-side)
             streamwise_result = self.detect_streamwise_direction(proxy_name=proxy_name)
-            streamwise = streamwise_result.get("streamwise", "x")
-            
-            # Get body bounds to know where "downstream" starts
-            body_bounds, _ = self._get_body_bounds(proxy)
-            
-            # Determine streamwise axis and downstream clip plane
+            if "error" in streamwise_result:
+                return streamwise_result
+            streamwise    = streamwise_result["streamwise"]
+            vel_name      = streamwise_result["velocity_field"]
+            v_freestream  = streamwise_result["freestream_velocity"]
+
             axis_map = {"x": 0, "+x": 0, "-x": 0,
                         "y": 1, "+y": 1, "-y": 1,
                         "z": 2, "+z": 2, "-z": 2}
-            stream_idx = axis_map.get(streamwise.lower(), 0)
-            is_positive = not streamwise.startswith("-")
-            
-            body_extent = body_bounds[stream_idx * 2 + 1] - body_bounds[stream_idx * 2]
-            
-            if is_positive:
-                trailing_edge = body_bounds[stream_idx * 2 + 1]
-                # Clip origin: 25% upstream from trailing edge into the body
-                clip_coord = trailing_edge - body_extent * 0.25
-                normal = [0, 0, 0]
-                normal[stream_idx] = 1.0  # keep downstream (+) side
+            stream_idx    = axis_map.get(streamwise.lower(), 0)
+            stream_sign   = -1 if streamwise.startswith("-") else 1
+
+            # Body bounds from metadata
+            body_bounds, _ = self._get_body_bounds(proxy)
+            if stream_sign > 0:
+                trailing_edge = float(body_bounds[stream_idx * 2 + 1])
             else:
-                trailing_edge = body_bounds[stream_idx * 2]
-                clip_coord = trailing_edge + body_extent * 0.25
-                normal = [0, 0, 0]
-                normal[stream_idx] = -1.0  # keep downstream (-) side
-            
-            origin = list(body_bounds[0::2])  # [xmin, ymin, zmin] as starting point
-            origin[stream_idx] = clip_coord
-            
-            # Clip data to downstream region, then query velocity deficit there
-            downstream_clip = simple.Clip(Input=proxy)
-            downstream_clip.ClipType = 'Plane'
-            downstream_clip.ClipType.Origin = origin
-            downstream_clip.ClipType.Normal = normal
-            downstream_clip.Invert = 0  # keep the normal side (downstream)
-            simple.UpdatePipeline(proxy=downstream_clip)
-            
-            # Hide clip from view — this is just for analysis
-            view = simple.GetActiveView()
-            if view:
-                try:
-                    simple.Hide(downstream_clip, view)
-                except:
-                    pass
-            
-            # Get the clip proxy name for find_by_query
-            clip_name = None
-            for name, p in simple.GetSources().items():
-                if p == downstream_clip:
-                    clip_name = name[0]
-                    break
-            
-            # Query velocity deficit in the downstream-only region using view-independent method
-            try:
-                centroid_result = self.find_by_threshold("Velocity", v_threshold, below=True, proxy_name=clip_name)
-            finally:
-                # Always clean up the temporary clip
-                try:
-                    simple.Delete(downstream_clip)
-                except:
-                    pass
-            
-            if "error" in centroid_result:
-                # Fall back to global deficit query (maybe unusual geometry)
-                centroid_result = self.find_by_threshold("Velocity", v_threshold, below=True, proxy_name=proxy_name)
-            
-            if "error" in centroid_result:
-                if original_source:
-                    simple.SetActiveSource(original_source)
+                trailing_edge = float(body_bounds[stream_idx * 2])
+
+            pf = run_server_script(
+                proxy, _script("detect_wake.py"),
+                params={
+                    "VELOCITY_FIELD":    vel_name,
+                    "VELOCITY_DEFICIT":  velocity_deficit,
+                    "STREAMWISE_IDX":    stream_idx,
+                    "STREAMWISE_SIGN":   stream_sign,
+                    "TRAILING_EDGE_COORD": trailing_edge,
+                },
+                name="_detect_wake",
+            )
+            kpi = fetch_table(pf)
+            safe_delete(pf)
+
+            if "error" in kpi:
                 return {
-                    "error": f"No wake region found with velocity < {velocity_deficit*100:.0f}% of freestream",
+                    "error": f"No wake found with velocity < {velocity_deficit*100:.0f}% of freestream",
                     "freestream_velocity": v_freestream,
-                    "threshold": v_threshold
                 }
-            
-            if original_source:
-                simple.SetActiveSource(original_source)
-            
-            # Log the wake detection analysis
+
+            centroid = [kpi["wake_x"], kpi["wake_y"], kpi["wake_z"]]
+            bounds   = [kpi["wake_xmin"], kpi["wake_xmax"],
+                        kpi["wake_ymin"], kpi["wake_ymax"],
+                        kpi["wake_zmin"], kpi["wake_zmax"]]
+
             result = {
-                "wake_centroid": centroid_result.get("location", centroid_result.get("centroid")),
-                "wake_bounds": centroid_result.get("bounds"),
-                "num_points": centroid_result.get("num_points", centroid_result.get("count", 0)),
-                "freestream_velocity": v_freestream,
-                "velocity_threshold": v_threshold,
+                "wake_centroid":          centroid,
+                "wake_bounds":            bounds,
+                "num_points":             int(kpi["num_wake_points"]),
+                "freestream_velocity":    float(kpi["freestream_velocity"]),
+                "velocity_threshold":     velocity_deficit * float(kpi["freestream_velocity"]),
                 "velocity_deficit_fraction": velocity_deficit,
-                "streamwise": streamwise,
-                "trailing_edge_coord": trailing_edge
+                "streamwise":             streamwise,
+                "trailing_edge_coord":    trailing_edge,
             }
-            
+
             self._log_analysis(
                 "wake_detection",
                 velocity_deficit_fraction=velocity_deficit,
-                freestream_velocity=v_freestream,
-                velocity_threshold=v_threshold,
+                freestream_velocity=result["freestream_velocity"],
                 streamwise_direction=streamwise,
-                wake_centroid=result["wake_centroid"],
-                num_points=result["num_points"]
+                wake_centroid=centroid,
+                num_points=result["num_points"],
             )
-            
+
             return result
-            
+
         except Exception as e:
             return {"error": str(e)}
 
@@ -3331,7 +3232,7 @@ out.GetPointData().AddArray(arr)
                 proxy_type = proxy.__class__.__name__
                 if proxy_type not in reader_types:
                     try:
-                        simple.Delete(proxy)
+                        safe_delete(proxy)
                         deleted += 1
                     except:
                         pass
@@ -3683,56 +3584,23 @@ out.GetPointData().AddArray(arr)
                 return name[0]  # name is tuple (name, id)
         return None
     
-    def _get_array(self, proxy, field_name: str):
-        """Get VTK array as numpy array."""
-        from vtk.util.numpy_support import vtk_to_numpy
-        
-        simple.UpdatePipeline(proxy=proxy)
-        data = proxy.GetClientSideObject().GetOutputDataObject(0)
-        
-        merge = None
-        # Handle multiblock
-        if data.IsA("vtkMultiBlockDataSet") or data.IsA("vtkPartitionedDataSet"):
-            merge = simple.MergeBlocks(Input=proxy)
-            simple.UpdatePipeline(proxy=merge)
-            data = merge.GetClientSideObject().GetOutputDataObject(0)
-        
-        arr = data.GetPointData().GetArray(field_name)
-        if arr is None:
-            arr = data.GetCellData().GetArray(field_name)
-        
-        if arr is None:
-            if merge:
-                simple.Delete(merge)
-            return None, None
-        
-        # Copy the array before deleting merge
-        result = vtk_to_numpy(arr).copy()
-        
-        if merge:
-            simple.Delete(merge)
-        
-        return result, data
-
-
-    def compute_boundary_layer_profile(self, proxy=None, x_over_chord: float = 0.5, 
+    def compute_boundary_layer_profile(self, proxy=None, x_over_chord: float = 0.5,
                                         span_fraction: float = 0.5,
                                         probe_length: float = None, proxy_name: str = None,
-                                        sampler=None) -> dict:
+                                        _shared_surface=None) -> dict:
         """
         Compute boundary layer profile data at a given chordwise and spanwise location.
-        
-        Cuts a spanwise plane to get the airfoil section, then probes normal to the
-        surface at the specified x/c location. Uses multiple edge detection criteria 
-        (99% velocity, Haase diagnostic).
-        
+
+        Cuts a spanwise plane to get the airfoil section (client-side geometry, small),
+        then runs the velocity probe and BL integral computation server-side via
+        ProgrammableFilter (boundary_layer.py). No field data moves to the client.
+
         Args:
             proxy: Data proxy (default: active source)
-            x_over_chord: Chordwise location as fraction of chord (0=leading edge, 1=trailing edge)
-            span_fraction: Spanwise location as fraction of span (0=root/min, 1=tip/max, 0.5=mid-span)
-            probe_length: Probe distance (default: 30% of chord)
+            x_over_chord: Chordwise location as fraction of chord (0=LE, 1=TE)
+            span_fraction: Spanwise location as fraction of span (0=root, 1=tip)
+            probe_length: Probe distance into flow (default: 30% of chord)
             proxy_name: Proxy name for span detection
-            sampler: LineSampler instance for custom sampling distribution (default: BoundaryLayerSampler)
             
         Returns:
             Dict with profile data (y, u, u_normalized) and BL quantities
@@ -3751,9 +3619,8 @@ out.GetPointData().AddArray(arr)
         if proxy_name is None:
             proxy_name = proxy.GetGlobalIDAsString()
         
-        # Merge blocks
-        merge = simple.MergeBlocks(Input=proxy)
-        simple.UpdatePipeline(proxy=merge)
+        # Flatten composite data (reuses existing MergeBlocks if present)
+        merge, _, cleanup_merge = ensure_flat_input(proxy)
         
         # Get body bounds (excludes farfield)
         body_bounds, _ = self._get_body_bounds(proxy)
@@ -3767,6 +3634,7 @@ out.GetPointData().AddArray(arr)
         span_axis = span_info.get("span_axis", "y")
         vertical_axis = span_info.get("vertical_axis", "z")
         streamwise_axis = span_info.get("streamwise_axis", "x")
+        velocity_field = span_info.get("velocity_field", "Velocity")
         body_center = np.array(span_info["body_center"])
         
         axis_map = {"x": 0, "y": 1, "z": 2}
@@ -3797,17 +3665,38 @@ out.GetPointData().AddArray(arr)
         span_abs = span_min + span_fraction * span_extent
         
         # Step 1: Extract body surface and clip to body region
-        surface = simple.ExtractSurface(Input=merge)
-        simple.UpdatePipeline(proxy=surface)
-        
-        clip = simple.Clip(Input=surface)
-        clip.ClipType = 'Box'
-        clip.ClipType.Bounds = [
-            body_bounds[0] - 0.01, body_bounds[1] + 0.01,
-            body_bounds[2] - 0.01, body_bounds[3] + 0.01,
-            body_bounds[4] - 0.01, body_bounds[5] + 0.01
-        ]
-        clip.Invert = 1
+        if _shared_surface is not None:
+            clip = _shared_surface
+            surface = None
+            owns_surface = False
+        else:
+            # Check cache: reuse existing surface+clip for same proxy
+            cache = getattr(self, '_bl_surface_cache', None)
+            if cache and cache.get('proxy_id') == proxy.GetGlobalIDAsString():
+                clip = cache['clip']
+                surface = cache['surface']
+                owns_surface = False
+                pass  # reusing cached ExtractSurface+Clip
+            else:
+                pass  # creating new ExtractSurface+Clip
+                surface = simple.ExtractSurface(Input=merge)
+                simple.UpdatePipeline(proxy=surface)
+                
+                clip = simple.Clip(Input=surface)
+                clip.ClipType = 'Box'
+                clip.ClipType.Bounds = [
+                    body_bounds[0] - 0.01, body_bounds[1] + 0.01,
+                    body_bounds[2] - 0.01, body_bounds[3] + 0.01,
+                    body_bounds[4] - 0.01, body_bounds[5] + 0.01
+                ]
+                clip.Invert = 1
+                owns_surface = False  # cache owns it now
+                self._bl_surface_cache = {
+                    'proxy_id': proxy.GetGlobalIDAsString(),
+                    'clip': clip,
+                    'surface': surface,
+                    'merge_cleanup': cleanup_merge,
+                }
         simple.UpdatePipeline(proxy=clip)
         
         # Step 2: Cut with a plane at the span station to get airfoil section
@@ -3824,13 +3713,16 @@ out.GetPointData().AddArray(arr)
         plane_cut.SliceType.Normal = normal
         simple.UpdatePipeline(proxy=plane_cut)
         
-        cut_data = plane_cut.GetClientSideObject().GetOutputDataObject(0)
+        cut_data = fetch_data(plane_cut)
         
         def cleanup():
-            simple.Delete(plane_cut)
-            simple.Delete(clip)
-            simple.Delete(surface)
-            simple.Delete(merge)
+            safe_delete(plane_cut)
+            if owns_surface:
+                safe_delete(clip)
+                if surface is not None:
+                    safe_delete(surface)
+                if cleanup_merge:
+                    safe_delete(cleanup_merge)
             simple.SetActiveSource(original_active_source)
         
         if cut_data.GetNumberOfPoints() == 0:
@@ -3907,91 +3799,44 @@ out.GetPointData().AddArray(arr)
         # Normalize
         surface_normal = surface_normal / (np.linalg.norm(surface_normal) + 1e-10)
         
-        # Step 6: Sample velocity along probe line using configurable sampler
-        from trame_cfd_mcp.line_samplers import DEFAULT_BL_SAMPLER
-        
-        if sampler is None:
-            sampler = DEFAULT_BL_SAMPLER
-        
-        sample_result = sampler.sample_line(
-            data_proxy=merge,
-            start_point=surface_point,
-            direction=surface_normal,
-            probe_length=probe_length,
-            field_name="Velocity"
+        # Step 6: Run BL probe and computation server-side
+        # surface_point and surface_normal are small scalars — safe to inject
+        pf = run_server_script(
+            merge, _script("boundary_layer.py"),
+            params={
+                "VELOCITY_FIELD":   velocity_field,
+                "SURFACE_POINT":    surface_point.tolist(),
+                "SURFACE_NORMAL":   surface_normal.tolist(),
+                "PROBE_LENGTH":     float(probe_length),
+                "NUM_PROBE_POINTS": 200,
+            },
+            name="_bl_probe",
         )
-        
+        kpi = fetch_table(pf)
+        safe_delete(pf)
         cleanup()
-        
-        if "error" in sample_result:
-            return sample_result
-        
-        y = sample_result["y"]
-        velocity = sample_result["values"]
-        u = np.linalg.norm(velocity, axis=1)
-        
-        # Handle NaN at wall (no-slip)
-        n_nan = np.sum(np.isnan(u))
-        if n_nan > 0:
-            first_valid = np.where(~np.isnan(u))[0]
-            if len(first_valid) > 0 and first_valid[0] < len(u) // 4:
-                u[np.isnan(u)] = 0.0
-            else:
-                return {"error": f"Probe has {n_nan} NaN values away from wall"}
-        
-        if len(y) < 5:
-            return {"error": "Insufficient data points"}
-        
-        # Edge velocity (local max, not freestream)
-        u_edge = np.max(u)
-        u_edge_idx = np.argmax(u)
-        u_normalized = u / u_edge if u_edge > 0 else u
-        
-        # Edge detection: 99% criterion
-        delta_99_idx = np.where(u_normalized[:u_edge_idx+1] >= 0.99)[0]
-        delta_99 = y[delta_99_idx[0]] if len(delta_99_idx) > 0 else y[u_edge_idx]
-        
-        # Edge detection: Haase diagnostic
-        if len(y) > 2:
-            du_dy = np.abs(np.gradient(u, y))
-            diagnostic = y * du_dy
-            search_start = max(3, len(diagnostic) // 10)
-            search_end = min(u_edge_idx + 1, len(diagnostic))
-            if search_start < search_end:
-                max_idx = search_start + np.argmax(diagnostic[search_start:search_end])
-                delta_haase = 1.936 * y[max_idx]
-            else:
-                delta_haase = delta_99
-        else:
-            delta_haase = delta_99
-        
-        # Combined delta
-        if abs(delta_99 - delta_haase) / max(delta_99, delta_haase, 1e-10) < 0.5:
-            delta = (delta_99 + delta_haase) / 2
-            edge_method = "average(99%, Haase)"
-        else:
-            delta = min(delta_99, delta_haase)
-            edge_method = f"min(99%={delta_99:.4f}, Haase={delta_haase:.4f})"
-        
-        # Integral quantities within BL
-        bl_mask = y <= delta
-        y_bl = y[bl_mask]
-        u_bl = u_normalized[bl_mask]
-        
-        delta_star = np.trapz(1 - u_bl, y_bl) if len(y_bl) > 1 else 0.0
-        theta = np.trapz(u_bl * (1 - u_bl), y_bl) if len(y_bl) > 1 else 0.0
-        shape_factor = delta_star / theta if theta > 1e-10 else float('nan')
-        
+
+        if "error" in kpi:
+            return {"error": "Boundary layer probe failed on server"}
+
+        y           = kpi["y"] if isinstance(kpi["y"], list) else [kpi["y"]]
+        u           = kpi["u"] if isinstance(kpi["u"], list) else [kpi["u"]]
+        u_normalized = kpi["u_normalized"] if isinstance(kpi["u_normalized"], list) else [kpi["u_normalized"]]
+
+        delta        = float(kpi["delta"])
+        delta_star   = float(kpi["delta_star"])
+        theta        = float(kpi["theta"])
+        shape_factor = float(kpi["shape_factor"])
+        u_edge       = float(kpi["u_edge"])
+        u_edge_idx   = int(kpi["u_edge_idx"])
+
         result = {
-            "y": y.tolist(),
-            "u": u.tolist(),
-            "u_normalized": u_normalized.tolist(),
-            "u_edge": float(u_edge),
-            "u_edge_idx": int(u_edge_idx),
+            "y": y,
+            "u": u,
+            "u_normalized": u_normalized,
+            "u_edge": u_edge,
+            "u_edge_idx": u_edge_idx,
             "delta": float(delta),
-            "delta_99": float(delta_99),
-            "delta_haase": float(delta_haase),
-            "edge_method": edge_method,
             "delta_star": float(delta_star),
             "theta": float(theta),
             "shape_factor": float(shape_factor),

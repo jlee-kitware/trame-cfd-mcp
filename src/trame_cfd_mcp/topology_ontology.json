@@ -1,0 +1,60 @@
+{
+  "version": "0.1",
+  "domain": "topological_data_analysis",
+
+  "topology_features": {
+    "persistence_diagram": {
+      "description": "Birth-death pairs of topological features in a scalar field, computed by TTKPersistenceDiagram",
+      "interpretation": "Each pair is a topological feature (a connected component, loop, or void) born and destroyed as an isovalue sweeps the field. Persistence is death minus birth: the vertical distance of a point above the diagonal. High-persistence pairs are robust features; low-persistence pairs near the diagonal are noise.",
+      "methods": {
+        "min_saddle": "Pairs a minimum with a 1-saddle; captures connected components of sublevel sets (0-dimensional homology)",
+        "saddle_max": "Pairs a 2-saddle with a maximum; captures voids / top-dimensional features",
+        "saddle_saddle": "1-saddle to 2-saddle pairs; captures loops / tunnels (1-dimensional homology) in 3D"
+      },
+      "persistence_gap": "A clear gap in the sorted persistence values separates signal from noise. Choosing a simplification threshold inside that gap removes noise while preserving genuine features.",
+      "design_relevance": "The number of high-persistence pairs is the count of significant features in the field, independent of mesh resolution. Use it to decide a denoising threshold before extracting features."
+    },
+
+    "critical_points": {
+      "description": "Points where the gradient of the scalar field vanishes, computed by TTKScalarFieldCriticalPoints",
+      "interpretation": "Critical points organize the field's structure. Their type is stored in the CriticalType array.",
+      "types": {
+        "minima": "CriticalType 0: local minima (basins / sources of sublevel-set components)",
+        "1_saddles": "CriticalType 1: 1-saddles (merging of components, or loop creation)",
+        "2_saddles": "CriticalType 2: 2-saddles (relevant in 3D; loop destruction / void creation)",
+        "maxima": "CriticalType 3: local maxima (peaks)"
+      },
+      "euler_relation": "For a clean field the alternating count of critical points by index equals the Euler characteristic; large deviations indicate noise that simplification should remove.",
+      "design_relevance": "Counts of minima and maxima give the number of basins and peaks. In a CFD scalar field, maxima of pressure locate stagnation, minima locate suction cores."
+    },
+
+    "morse_smale_complex": {
+      "description": "Segmentation of the domain into regions of uniform gradient flow, plus the separatrix skeleton, computed by TTKMorseSmaleComplex",
+      "interpretation": "The complex partitions the domain by which extrema the gradient flow connects. Output port 0 is the critical points, port 1 the 1-separatrices (the skeleton of integral lines between saddles and extrema), port 3 the segmentation.",
+      "use": "The 1-separatrices form a compact structural skeleton of the field. The segmentation labels each region by its ascending/descending manifold, giving a feature-based decomposition.",
+      "design_relevance": "Provides a structural decomposition of a field into its constituent features without thresholding, useful for comparing structure across cases or timesteps."
+    },
+
+    "topological_simplification": {
+      "description": "Removal of low-persistence features below a threshold, computed by TTKTopologicalSimplificationByPersistence",
+      "interpretation": "Cancels critical-point pairs whose persistence is below the threshold, producing a denoised scalar field whose remaining topology reflects only significant features.",
+      "threshold_guidance": "Set the persistence threshold inside the persistence gap (see persistence_diagram). A relative threshold of a few percent of the field range is a common starting point; raise it to keep only the most prominent features.",
+      "design_relevance": "Denoising before feature extraction prevents spurious features (from mesh noise or solver residuals) from being reported as physical structures."
+    }
+  },
+
+  "analysis_recommendations": {
+    "feature_identification": {
+      "goal": "Find the significant features in a scalar field and separate them from noise",
+      "chain": ["compute_persistence", "compute_simplification", "compute_critical_points"],
+      "primary": "compute_persistence",
+      "rationale": "The persistence diagram reveals the signal/noise gap; simplification removes noise at that gap; critical points on the simplified field are the genuine features."
+    },
+    "structural_decomposition": {
+      "goal": "Decompose a field into its structural regions",
+      "chain": ["compute_morse_smale"],
+      "primary": "compute_morse_smale",
+      "rationale": "The Morse-Smale complex segments the domain and extracts the separatrix skeleton without requiring a threshold."
+    }
+  }
+}

@@ -11,12 +11,30 @@ import os
 from paraview import simple
 from .cfd_analysis import CFDAnalysis
 from .workflows import CFDWorkflows
+from .topology_analysis import TopologyAnalysis
+from .topology_workflows import TopologyWorkflows
 
 
 # Load ontology at module level
 _ONTOLOGY_PATH = os.path.join(os.path.dirname(__file__), "ontology.json")
 with open(_ONTOLOGY_PATH) as f:
     CFD_ONTOLOGY = json.load(f)
+
+# Merge the topology (TTK) domain ontology so its hints resolve in the same
+# validated dict. Authored as a separate file (separate domain), unified at load.
+_TOPOLOGY_ONTOLOGY_PATH = os.path.join(os.path.dirname(__file__), "topology_ontology.json")
+try:
+    with open(_TOPOLOGY_ONTOLOGY_PATH) as f:
+        _TOPOLOGY_ONTOLOGY = json.load(f)
+    for _k, _v in _TOPOLOGY_ONTOLOGY.items():
+        if _k in ("version", "domain"):
+            continue
+        if isinstance(_v, dict) and isinstance(CFD_ONTOLOGY.get(_k), dict):
+            CFD_ONTOLOGY[_k].update(_v)   # merge sub-keys, don't clobber CFD content
+        else:
+            CFD_ONTOLOGY[_k] = _v
+except FileNotFoundError:
+    pass
 
 
 class WorkflowMCP:
@@ -36,9 +54,14 @@ class WorkflowMCP:
         self._workflows = CFDWorkflows(
             self._analysis, 
             on_pipeline_changed=self._base_mcp.pipeline_changed,
-            app=app
+            app=app,
+            ontology=CFD_ONTOLOGY,
         )
         self._ontology = CFD_ONTOLOGY
+        self._topology = TopologyAnalysis()
+        self._topology_workflows = TopologyWorkflows(
+            self._workflows, self._topology, app=app,
+        )
         print(f"[WorkflowMCP] Initialized with app={app is not None}, has_render={hasattr(app, 'render_analysis_chart') if app else False}")
     
     @property
@@ -240,6 +263,69 @@ class WorkflowMCP:
             "tip": "Load with File > Load State in ParaView GUI, or simple.LoadState() in Python"
         }
     
+    def update_list_property(self, property_name: str, property_value=None, proxy_name: str = None) -> dict:
+        """Update array property and refresh pipeline browser."""
+        if property_value is None:
+            return {"error": "property_value is required"}
+        if not isinstance(property_value, list):
+            property_value = [float(property_value)]
+        result = self._base_mcp.update_list_property(property_name=property_name,
+                                                      property_value=property_value,
+                                                      proxy_name=proxy_name)
+        if "error" not in result:
+            self._notify_pipeline_and_panel()
+        return result
+
+    def update_representation(self, representation_type: str, proxy_name: str = None) -> dict:
+        """Update representation and refresh pipeline browser."""
+        result = self._base_mcp.update_representation(representation_type=representation_type,
+                                                       proxy_name=proxy_name)
+        if "error" not in result:
+            self._notify_pipeline_and_panel()
+        return result
+
+    def update_color(self, proxy_name: str = None, field_name: str = None) -> dict:
+        """Update coloring and refresh pipeline browser."""
+        result = self._base_mcp.update_color(proxy_name=proxy_name, field_name=field_name)
+        if "error" not in result:
+            self._notify_pipeline_and_panel()
+        return result
+
+    def _notify_pipeline_and_panel(self):
+        """Flush proxy state and force property panel refresh."""
+        active = simple.GetActiveSource()
+        if active is not None:
+            simple.UpdatePipeline(proxy=active)
+        self._base_mcp.pipeline_changed()
+        ctrl = self._base_mcp.app.ctrl
+        state = self._base_mcp.app.state
+        # Directly write ptc_yaml_props inside a state context so it flushes
+        # to the client. This replicates ProxyEditor._reset() which calls
+        # active_widget.update_ui(proxy) → state.ptc_yaml_props = "...".
+        # Using `with state:` ensures flush() is called on exit regardless
+        # of thread context.
+        if active is not None:
+            try:
+                lines = []
+                for prop_name in active.ListProperties():
+                    if prop_name.endswith("Info"):
+                        continue
+                    if not hasattr(active, prop_name):
+                        continue
+                    entry = f"{prop_name}: {getattr(active, prop_name)}"
+                    if ": <" in entry:
+                        continue
+                    lines.append(entry)
+                with state:
+                    state.ptc_yaml_props = ""  # clear first so the new value is always dirty
+                    state.ptc_yaml_props = "\n".join(lines)
+            except Exception:
+                pass
+        if ctrl.on_active_proxy_change.exists():
+            ctrl.on_active_proxy_change()
+        with state:
+            pass  # flush any remaining pending state
+
     def get_ontology(self) -> dict:
         """
         Get CFD domain knowledge for interpreting results.
@@ -430,32 +516,25 @@ class WorkflowMCP:
         """
         Delete a filter from the pipeline.
         
+        Checks for downstream consumers before deletion — if other filters
+        depend on this one, deletion is refused.
+        
         Use this to clean up unwanted visualizations and free resources.
         
         Args:
             proxy_name: Name of the filter to delete (from list_data)
             
         Returns:
-            Dict with status
+            Dict with status, or error if proxy has consumers
         """
-        try:
-            proxy = simple.FindSource(proxy_name)
-            if proxy is None:
-                return {"error": f"Filter '{proxy_name}' not found"}
-            
-            simple.Delete(proxy)
-            self._base_mcp.pipeline_changed()
-            
-            return {
-                "status": "deleted",
-                "proxy_name": proxy_name,
-            }
-        except Exception as e:
-            return {"error": str(e)}
+        return self._base_mcp.delete_proxy(proxy_name)
     
     def clear_all_filters(self) -> dict:
         """
         Delete all filters, keeping only the original data sources.
+        
+        Deletes in leaf-first order using consumer checks to avoid
+        breaking the pipeline DAG.
         
         Use this to reset the pipeline and free OpenGL resources.
         
@@ -463,35 +542,50 @@ class WorkflowMCP:
             Dict with list of deleted filters
         """
         deleted = []
+        errors = []
         try:
-            # Get all sources
-            sources = dict(simple.GetSources())
-            
-            # Find readers (data sources) vs filters
-            readers = set()
-            for name, proxy in sources.items():
-                proxy_type = proxy.GetXMLName()
-                if "Reader" in proxy_type or "Source" in proxy_type:
-                    readers.add(name)
-            
-            # Delete filters (non-readers) in reverse dependency order
-            for name, proxy in sources.items():
-                if name not in readers:
-                    try:
-                        simple.Delete(proxy)
-                        deleted.append(name[0])
-                    except:
-                        pass
+            # Iteratively delete leaf nodes until only readers remain.
+            # Each pass removes proxies with no consumers; repeat since
+            # deleting a leaf may make its parent a new leaf.
+            max_passes = 50  # Guard against infinite loops
+            for _ in range(max_passes):
+                sources = dict(simple.GetSources())
+                deleted_this_pass = False
+                
+                for name_tuple, proxy in list(sources.items()):
+                    info = self._base_mcp.proxy_info(name_tuple[0])
+                    if "error" in info:
+                        continue
+                    if info["is_reader"]:
+                        continue
+                    if info["can_delete"]:
+                        result = self._base_mcp.delete_proxy(name_tuple[0])
+                        if "error" not in result:
+                            deleted.append(name_tuple[0])
+                            deleted_this_pass = True
+                        else:
+                            errors.append(f"{name_tuple[0]}: {result['error']}")
+                
+                if not deleted_this_pass:
+                    break
             
             self._base_mcp.pipeline_changed()
             
-            return {
+            # Report remaining proxies
+            remaining = [
+                n[0] for n in simple.GetSources().keys()
+            ]
+            
+            result = {
                 "status": "cleared",
                 "deleted": deleted,
-                "remaining": [n[0] for n in readers],
+                "remaining": remaining,
             }
+            if errors:
+                result["errors"] = errors
+            return result
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "deleted_before_error": deleted}
     
     def hide_all_scalar_bars(self) -> dict:
         """
@@ -533,19 +627,34 @@ ALWAYS call list_data() first to see what data is loaded.
 == WORKFLOW PATTERN ==
 
 1. Create visualization with show_* tools (they return proxy_name and parameters)
-2. If user wants refinement, use the proxy_name with refinement tools
-3. Use get_ontology() to get domain knowledge for explanations
-4. Save with save_screenshot()
+2. If a show_* tool FAILS, fall back to general filter creation tools (create, find_or_create) — do NOT present long error diagnostics or ask the user to troubleshoot
+3. If user wants refinement, use the proxy_name with refinement tools
+4. Use get_ontology() to get domain knowledge for explanations
+5. Save with save_screenshot()
+
+KEEP RESPONSES CONCISE.  Never present numbered option lists when a tool fails.
+Try the fallback tools first, and only ask the user if you truly cannot proceed.
 
 == VISUALIZATION TOOLS (use these first) ==
 
-- show_vortices(method="q_criterion") - Show vortex structures
+- show_vortices(method="q_criterion") - Create vortex structure visualization (initial creation only —
+  to adjust an existing vortex visualization use update_list_property, not show_vortices again)
 - show_streamlines() - Show flow streamlines in wake region  
 - show_slice(location="wake") - Show slice through data
 - show_histogram(field="p") - Show field distribution chart
 - show_forces() - Show force distribution chart
 - show_boundary_layer(x_location=0.5) - Show boundary layer profile
 - show_flow_topology() - Show vortex core lines
+
+== TOPOLOGY TOOLS (TTK; for scalar-field topology, any domain) ==
+
+- show_persistence_diagram(field) - Birth/death pairs; reveals the signal-vs-noise gap
+- show_critical_points(field) - Minima, saddles, maxima (colored by CriticalType)
+- show_morse_smale(field) - Separatrix skeleton + critical points (structural decomposition)
+- show_simplified(field, persistence_threshold) - Denoise by cancelling low-persistence pairs
+
+  Typical chain for "find the significant features": show_persistence_diagram to see the
+  gap, then show_simplified with a threshold in the gap, then show_critical_points.
 
 == REFINEMENT TOOLS (use after show_* to tweak) ==
 
@@ -558,7 +667,8 @@ After a workflow runs, it returns proxy_name and parameters. Use these to refine
   → Change coloring to different field (e.g., "pressure", "Velocity")
   
 - update_list_property(property_name, property_value, proxy_name)
-  → Adjust thresholds: update_list_property("Isosurfaces", [new_values], proxy_name)
+  → Adjust thresholds: update_list_property("Isosurfaces", [new_value], proxy_name)
+  → property_value MUST be a list, e.g. [14.03] not 14.03
   → Lower threshold = more structures, higher = fewer
   
 - update_display_property(property_name, value, proxy_name)
@@ -573,11 +683,18 @@ After a workflow runs, it returns proxy_name and parameters. Use these to refine
 
 == REFINEMENT EXAMPLES ==
 
-User: "Show vortices" → call show_vortices() → returns {proxy_name: "Contour1", threshold: 28.0, ...}
-User: "Make them wireframe" → call update_representation("Wireframe", "Contour1")
-User: "Show more structures" → call update_list_property("Isosurfaces", [14.0], "Contour1")
-User: "Color by pressure" → call update_color("Contour1", "p")
-User: "Make them semi-transparent" → call update_display_property("Opacity", 0.5, "Contour1")
+After show_vortices() creates proxy "Vortices_q_criterion" with threshold=28.0:
+- "Show more structures" (lower threshold) → update_list_property("Isosurfaces", [14.0], "Vortices_q_criterion")
+- "Show fewer structures" (higher threshold) → update_list_property("Isosurfaces", [56.0], "Vortices_q_criterion")
+- "Make it wireframe" → update_representation("Wireframe", "Vortices_q_criterion")
+- "Color by pressure" → update_color("Vortices_q_criterion", "p")
+- "Make semi-transparent" → update_display_property("Opacity", 0.5, "Vortices_q_criterion")
+
+DO NOT call show_vortices again to adjust the threshold — that rebuilds the whole pipeline.
+Use update_list_property("Isosurfaces", [new_threshold], proxy_name) to adjust existing results.
+
+CRITICAL: When a user requests refinement, make the tool call immediately and silently.
+Do NOT output tool call syntax as text. Just call the tool and describe what changed.
 
 == DISCOVERY TOOLS ==
 
@@ -586,12 +703,63 @@ User: "Make them semi-transparent" → call update_display_property("Opacity", 0
 - analyze_data() - Get dataset info and recommendations
 - list_properties(proxy_name) - See adjustable properties
 
+== GENERAL FILTER CREATION ==
+
+For operations not covered by show_* workflow tools, or when a show_* tool FAILS,
+fall back to the base ParaView tools to accomplish the task directly:
+
+- list_compatible_filters(proxy_name) - See which filters can be applied to a source
+- create(proxy_name, input_proxy) - Create any ParaView filter by name (e.g., "Contour", "Slice", "Clip", "Glyph", "PlotOverLine", "StreamTracerWithCustomSource")
+- find_or_create(proxy_name, input_proxy) - Reuse existing filter or create new one
+- proxy_info(proxy_name) - Get detailed info about a filter or source
+
+After creating a filter, use list_properties() and update_*_property() to configure it.
+
+IMPORTANT: If a show_* workflow tool returns an error, DO NOT ask the user for diagnostic
+information or present long lists of options.  Instead:
+- For visualization tools (isosurfaces, slices, clips, streamlines): fall back to the
+  general tools above to accomplish the same goal with create() + update_*_property().
+- For analysis tools (boundary layer, forces, topology): these perform domain-specific
+  computations that cannot be replicated with raw filters.  Report the failure briefly
+  and suggest what might be wrong (e.g., "boundary layer analysis requires a Velocity field").
+  Do NOT present long numbered option lists.
+
 == EXPLANATION GUIDANCE ==
 
 When explaining visualizations, use the ontology to provide:
 - What the visualization method means (e.g., Q > 0 indicates vortex cores)
 - What the specific results show (threshold value, location, etc.)
 - Design relevance (what this means for aerodynamic performance)
+
+Some workflow returns include an `ontology_hints` field — a short list of
+dotted keys into the ontology. Hints are only provided for two cases where
+reasoning from memory is unreliable:
+
+1. Expert-level thresholds that use our conventions rather than textbook
+   canon (e.g. shape-factor regime bands for BL flow state).
+2. Causal relationships that point at other tools via the `evidence` field
+   (e.g. "what to run next to confirm why drag increased").
+
+When hints are present, call get_ontology() and look up the hinted keys
+rather than answering from memory. When hints are absent, explain from
+your own CFD knowledge — the workflow didn't flag anything as requiring
+grounded interpretation.
+
+ALWAYS relay the `tip` field verbatim to the user when it is present in
+a tool result. Never say "see the provided tips" or "use the tips above"
+— quote or paraphrase the actual tip text so the user can act on it
+without having to ask what the tips are.
+
+When the user asks to refine a visualization (e.g. "show more structures",
+"make it wireframe", "color by pressure"), CALL THE TOOL — do not output
+the tool call syntax as plain text. The tip field shows what tool calls
+are available; when the user requests one of those refinements, execute
+the corresponding tool immediately rather than printing the command.
+
+When explaining a tool result, focus on the fields most relevant to the
+user: `type`, `method`, `result` (threshold, field, range), and `tip`.
+The `provenance` and `filter_chain` fields are internal bookkeeping —
+do not summarize or repeat them in your response unless the user asks.
 """,
             "tools": [
                 # Discovery
@@ -603,21 +771,35 @@ When explaining visualizations, use the ontology to provide:
                 self._workflows.show_vortices,
                 self._workflows.show_streamlines,
                 self._workflows.show_slice,
+                self._workflows.show_schlieren,
+                self._workflows.show_shadowgraph,
                 self._workflows.show_histogram,
                 self._workflows.show_forces,
                 self._workflows.show_boundary_layer,
                 self._workflows.show_boundary_layer_context,
                 self._workflows.show_flow_topology,
+
+                # Topology (TTK) domain workflows
+                self._topology_workflows.show_persistence_diagram,
+                self._topology_workflows.show_critical_points,
+                self._topology_workflows.show_morse_smale,
+                self._topology_workflows.show_simplified,
                 
                 # Refinement tools (from base MCP)
                 self._base_mcp.reset_camera,
                 self._base_mcp.focus_on,
-                self._base_mcp.update_representation,
-                self._base_mcp.update_color,
-                self._base_mcp.update_list_property,
+                self.update_representation,
+                self.update_color,
+                self.update_list_property,
                 self._base_mcp.show_or_hide,
                 self._base_mcp.list_properties,
                 self.update_display_property,
+                
+                # General filter creation (fallback for non-CFD workflows)
+                self._base_mcp.create,
+                self._base_mcp.find_or_create,
+                self._base_mcp.list_compatible_filters,
+                self._base_mcp.proxy_info,
                 
                 # Knowledge and utilities
                 self.get_ontology,

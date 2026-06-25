@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="510" viewBox="0 0 900 510">
+<defs>
+  <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+    <path d="M2 1.5L8 5L2 8.5" fill="none" stroke="#0D9488" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+  <marker id="arr-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+    <path d="M2 1.5L8 5L2 8.5" fill="none" stroke="#F59E0B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+  <marker id="arr-dim" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+    <path d="M2 1.5L8 5L2 8.5" fill="none" stroke="#475569" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<!-- Background -->
+<rect width="900" height="510" fill="#0F1B2D"/>
+
+<!-- ── BROWSER ────────────────────────────────────────── -->
+<rect x="330" y="16" width="240" height="52" rx="8" fill="#1E3A5F" stroke="#0D9488" stroke-width="1.5"/>
+<text x="450" y="37" text-anchor="middle" font-size="15" font-weight="700" fill="#FFFFFF" font-family="Helvetica Neue,Arial,sans-serif">Browser</text>
+<text x="450" y="55" text-anchor="middle" font-size="10" fill="#94A3B8" font-family="Helvetica Neue,Arial,sans-serif">thin client · receives rendered frames only</text>
+
+<line x1="408" y1="68" x2="408" y2="106" stroke="#0D9488" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="402" y="92" text-anchor="end" font-size="10" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">input</text>
+<line x1="492" y1="106" x2="492" y2="68" stroke="#0D9488" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="498" y="92" text-anchor="start" font-size="10" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">frames</text>
+
+<!-- ── ORCHESTRATION CONTAINER ────────────────────────── -->
+<rect x="28" y="106" width="844" height="196" rx="12" fill="none" stroke="#1E3A5F" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="450" y="124" text-anchor="middle" font-size="10" font-style="italic" fill="#475569" font-family="Helvetica Neue,Arial,sans-serif">Orchestration layer</text>
+
+<!-- trame -->
+<rect x="44" y="134" width="120" height="50" rx="6" fill="#142740" stroke="#1E3A5F" stroke-width="1"/>
+<text x="104" y="155" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF" font-family="Helvetica Neue,Arial,sans-serif">trame</text>
+<text x="104" y="173" text-anchor="middle" font-size="10" fill="#94A3B8" font-family="Helvetica Neue,Arial,sans-serif">web server</text>
+
+<!-- LLM -->
+<rect x="196" y="134" width="140" height="50" rx="6" fill="#142740" stroke="#0D9488" stroke-width="1.5"/>
+<text x="266" y="155" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF" font-family="Helvetica Neue,Arial,sans-serif">LLM</text>
+<text x="266" y="173" text-anchor="middle" font-size="10" fill="#94A3B8" font-family="Helvetica Neue,Arial,sans-serif">intent · explain</text>
+
+<!-- Ontology -->
+<rect x="368" y="134" width="160" height="50" rx="6" fill="#142740" stroke="#0D9488" stroke-width="1.5"/>
+<text x="448" y="155" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF" font-family="Helvetica Neue,Arial,sans-serif">Ontology</text>
+<text x="448" y="173" text-anchor="middle" font-size="10" fill="#94A3B8" font-family="Helvetica Neue,Arial,sans-serif">domain knowledge</text>
+
+<!-- MCP -->
+<rect x="560" y="134" width="120" height="50" rx="6" fill="#142740" stroke="#F59E0B" stroke-width="1.5"/>
+<text x="620" y="155" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF" font-family="Helvetica Neue,Arial,sans-serif">MCP</text>
+<text x="620" y="173" text-anchor="middle" font-size="10" fill="#94A3B8" font-family="Helvetica Neue,Arial,sans-serif">dispatch</text>
+
+<!-- LLM providers note -->
+<rect x="700" y="142" width="154" height="34" rx="5" fill="#0A1422" stroke="#1E3A5F" stroke-width="1"/>
+<text x="777" y="156" text-anchor="middle" font-size="9" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">OpenAI / Ollama / LM Studio</text>
+<text x="777" y="170" text-anchor="middle" font-size="9" fill="#475569" font-family="Helvetica Neue,Arial,sans-serif">configurable via .env</text>
+<line x1="680" y1="159" x2="698" y2="159" stroke="#1E3A5F" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr-dim)"/>
+
+<!-- Orch arrows -->
+<line x1="164" y1="159" x2="194" y2="159" stroke="#0D9488" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="336" y1="153" x2="366" y2="153" stroke="#0D9488" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="366" y1="165" x2="336" y2="165" stroke="#0D9488" stroke-width="1.5" marker-end="url(#arr)"/>
+<line x1="528" y1="159" x2="558" y2="159" stroke="#F59E0B" stroke-width="1.5" marker-end="url(#arr-amber)"/>
+
+<!-- ── PLAN → EXECUTE → INTERPRET BAR ─────────────────── -->
+<rect x="44" y="206" width="636" height="42" rx="8" fill="#1A2F48" stroke="#1E3A5F" stroke-width="1"/>
+<rect x="44" y="206" width="4" height="42" rx="2" fill="#0D9488"/>
+<rect x="676" y="206" width="4" height="42" rx="2" fill="#F59E0B"/>
+
+<text x="160" y="223" text-anchor="middle" font-size="13" font-weight="700" fill="#0D9488" font-family="Helvetica Neue,Arial,sans-serif">PLAN</text>
+<text x="160" y="239" text-anchor="middle" font-size="10" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">LLM Call #1</text>
+
+<text x="260" y="231" text-anchor="middle" font-size="18" fill="#334155" font-family="Helvetica Neue,Arial,sans-serif">→</text>
+
+<text x="362" y="223" text-anchor="middle" font-size="13" font-weight="700" fill="#F59E0B" font-family="Helvetica Neue,Arial,sans-serif">EXECUTE</text>
+<text x="362" y="239" text-anchor="middle" font-size="10" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">deterministic · no LLM</text>
+
+<text x="462" y="231" text-anchor="middle" font-size="18" fill="#334155" font-family="Helvetica Neue,Arial,sans-serif">→</text>
+
+<text x="564" y="223" text-anchor="middle" font-size="13" font-weight="700" fill="#0D9488" font-family="Helvetica Neue,Arial,sans-serif">INTERPRET</text>
+<text x="564" y="239" text-anchor="middle" font-size="10" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">LLM Call #2</text>
+
+<!-- loop-back -->
+<path d="M680 248 L680 272 L44 272 L44 248" fill="none" stroke="#334155" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arr-dim)"/>
+<text x="362" y="288" text-anchor="middle" font-size="10" fill="#475569" font-style="italic" font-family="Helvetica Neue,Arial,sans-serif">follow-up analysis · closes the loop</text>
+
+<!-- ── tool calls / structured results ────────────────── -->
+<line x1="220" y1="302" x2="220" y2="336" stroke="#0D9488" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="214" y="323" text-anchor="end" font-size="10" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">tool calls</text>
+<line x1="540" y1="336" x2="540" y2="302" stroke="#F59E0B" stroke-width="1.5" marker-end="url(#arr-amber)"/>
+<text x="546" y="323" text-anchor="start" font-size="10" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">structured results</text>
+
+<!-- ── PVSERVER CONTAINER ───────────────────────────── -->
+<rect x="28" y="336" width="844" height="154" rx="12" fill="none" stroke="#1E3A5F" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="450" y="354" text-anchor="middle" font-size="10" font-style="italic" fill="#475569" font-family="Helvetica Neue,Arial,sans-serif">pvserver (MPI-parallel) · all data and rendering stay here · browser sees only JPEG frames</text>
+
+<!-- CFD tools -->
+<rect x="44" y="362" width="310" height="110" rx="8" fill="#142740" stroke="#0D9488" stroke-width="1.5"/>
+<rect x="44" y="362" width="310" height="5" rx="3" fill="#0D9488"/>
+<text x="199" y="388" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF" font-family="Helvetica Neue,Arial,sans-serif">CFD tools</text>
+<text x="199" y="406" text-anchor="middle" font-size="10" fill="#94A3B8" font-family="Helvetica Neue,Arial,sans-serif">ParaView filters + CFD ontology</text>
+<text x="199" y="424" text-anchor="middle" font-size="9" fill="#475569" font-family="Helvetica Neue,Arial,sans-serif">vortices · streamlines · BL · forces · slice · topology</text>
+<text x="199" y="440" text-anchor="middle" font-size="9" fill="#475569" font-family="Helvetica Neue,Arial,sans-serif">26 workflow tools · server-side ProgrammableFilter</text>
+<text x="199" y="458" text-anchor="middle" font-size="9" fill="#334155" font-family="Helvetica Neue,Arial,sans-serif">FUN3D · OpenFOAM · dynamic field resolution</text>
+
+<!-- + compose label -->
+<text x="450" y="424" text-anchor="middle" font-size="22" font-weight="300" fill="#334155" font-family="Helvetica Neue,Arial,sans-serif">+</text>
+<text x="450" y="444" text-anchor="middle" font-size="9" fill="#334155" font-family="Helvetica Neue,Arial,sans-serif">compose</text>
+
+<!-- Catalyst Live tag on CFD box -->
+<rect x="290" y="370" width="100" height="28" rx="4" fill="#0A1422" stroke="#F59E0B" stroke-width="1"/>
+<text x="340" y="381" text-anchor="middle" font-size="8" font-weight="700" fill="#F59E0B" font-family="Helvetica Neue,Arial,sans-serif">Catalyst Live</text>
+<text x="340" y="393" text-anchor="middle" font-size="8" fill="#64748B" font-family="Helvetica Neue,Arial,sans-serif">in-situ · residual monitoring</text>
+
+<!-- TTK tools -->
+<rect x="546" y="362" width="310" height="110" rx="8" fill="#142740" stroke="#0D9488" stroke-width="1.5"/>
+<rect x="546" y="362" width="310" height="5" rx="3" fill="#0D9488"/>
+<text x="701" y="388" text-anchor="middle" font-size="14" font-weight="700" fill="#FFFFFF" font-family="Helvetica Neue,Arial,sans-serif">TTK tools</text>
+<text x="701" y="406" text-anchor="middle" font-size="10" fill="#94A3B8" font-family="Helvetica Neue,Arial,sans-serif">TTK plugin + topological ontology</text>
+<text x="701" y="424" text-anchor="middle" font-size="9" fill="#475569" font-family="Helvetica Neue,Arial,sans-serif">persistence · simplification · Morse-Smale · contour trees</text>
+<text x="701" y="440" text-anchor="middle" font-size="9" fill="#475569" font-family="Helvetica Neue,Arial,sans-serif">8 workflow tools · same pvserver instance</text>
+<text x="701" y="458" text-anchor="middle" font-size="9" fill="#334155" font-family="Helvetica Neue,Arial,sans-serif">marginal cost to add domain: ontology + wrappers only</text>
+
+<!-- bottom tagline -->
+<text x="450" y="498" text-anchor="middle" font-size="10" fill="#334155" font-style="italic" font-family="Helvetica Neue,Arial,sans-serif">The LLM is the interface, not the engine.  Domain workflows are the engine.  MCP is the protocol.  The ontology is the knowledge.</text>
+</svg>

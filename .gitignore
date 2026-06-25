@@ -46,3 +46,10 @@ examples/cfd_assistant/output/
 
 # Ruff
 .ruff_cache/
+
+# Added for external sharing
+**/.venv
+# Sample data files (large)
+examples/cfd_assistant/test.vtm
+# Keep .env.example tracked
+!.env.example
