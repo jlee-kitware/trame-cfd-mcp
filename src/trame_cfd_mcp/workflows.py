@@ -917,7 +917,11 @@ class CFDWorkflows:
             normal_vec = normal_map.get(slice_normal.lower(), [0, 0, 1])
             
             slice_name = "ShearLayer_Slice"
-            slice_filter = simple.Slice(Input=shear_proxy, registrationName=slice_name)
+            existing_slice = simple.FindSource(slice_name)
+            if existing_slice is not None:
+                slice_filter = existing_slice
+            else:
+                slice_filter = simple.Slice(Input=shear_proxy, registrationName=slice_name)
             slice_filter.SliceType = 'Plane'
             slice_filter.SliceType.Origin = center
             slice_filter.SliceType.Normal = normal_vec
@@ -1023,16 +1027,17 @@ class CFDWorkflows:
         
         if as_isosurface:
             iso_name = f"Recirculation_Isosurface"
+            existing_iso = simple.FindSource(iso_name)
             
-            if method == "reverse_flow":
-                # For reverse flow, use contour at 0 (boundary between forward/reverse)
+            if existing_iso is not None:
+                iso = existing_iso
+            else:
                 iso = simple.Contour(Input=recirc_proxy, registrationName=iso_name)
-                iso.ContourBy = ['POINTS', field_name]
+            
+            iso.ContourBy = ['POINTS', field_name]
+            if method == "reverse_flow":
                 iso.Isosurfaces = [0.0]
             else:
-                # For other methods, use suggested threshold
-                iso = simple.Contour(Input=recirc_proxy, registrationName=iso_name)
-                iso.ContourBy = ['POINTS', field_name]
                 iso.Isosurfaces = [threshold]
             
             simple.UpdatePipeline(proxy=iso)
@@ -1041,16 +1046,18 @@ class CFDWorkflows:
             
             display = simple.Show(display_proxy, view)
             display.Representation = "Surface"
-            display.DiffuseColor = [0.8, 0.2, 0.2]  # Red for recirculation
+            display.DiffuseColor = [0.8, 0.2, 0.2]
             display.Opacity = 0.7
         else:
-            # Show on slice colored by the field
             bounds = recirc_proxy.GetDataInformation().GetBounds()
             center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
             
-            # Slice perpendicular to span (y) to see recirculation
             slice_name = "Recirculation_Slice"
-            slice_filter = simple.Slice(Input=recirc_proxy, registrationName=slice_name)
+            existing_slice = simple.FindSource(slice_name)
+            if existing_slice is not None:
+                slice_filter = existing_slice
+            else:
+                slice_filter = simple.Slice(Input=recirc_proxy, registrationName=slice_name)
             slice_filter.SliceType = 'Plane'
             slice_filter.SliceType.Origin = center
             slice_filter.SliceType.Normal = [0, 1, 0]
