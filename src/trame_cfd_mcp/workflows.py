@@ -866,6 +866,243 @@ class CFDWorkflows:
             "tip": "Shows shock edges more sharply than Schlieren."
         }
 
+    def show_shear_layer(
+        self,
+        velocity_field: str = "Velocity",
+        log_scale: bool = True,
+        on_slice: bool = True,
+        slice_normal: str = "z",
+    ) -> dict:
+        """
+        Show shear layer visualization (velocity gradient magnitude).
+        
+        Shear layers reveal mixing regions, jet boundaries, and wake edges
+        by visualizing |∇V|.
+        
+        Args:
+            velocity_field: Velocity field name (default: "Velocity")
+            log_scale: Use log scale for better visibility (default: True)
+            on_slice: If True, show on a slice (default: True)
+            slice_normal: Normal direction for slice: "x", "y", or "z" (default: "z")
+            
+        Returns:
+            Dict with visualization info
+        """
+        view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        
+        if proxy is None:
+            return {"error": "No data source found. Load data first."}
+        
+        proxy_name = self._get_proxy_name(proxy)
+        self._mcp.clear_analysis_log()
+        
+        result = self._mcp.compute_shear_layer(
+            proxy_name=proxy_name,
+            velocity_field=velocity_field,
+            log_scale=log_scale,
+        )
+        
+        if "error" in result:
+            return result
+        
+        shear_proxy = simple.FindSource(result["proxy_name"])
+        field_name = result["field_name"]
+        
+        if on_slice:
+            bounds = shear_proxy.GetDataInformation().GetBounds()
+            center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
+            
+            normal_map = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}
+            normal_vec = normal_map.get(slice_normal.lower(), [0, 0, 1])
+            
+            slice_name = "ShearLayer_Slice"
+            slice_filter = simple.Slice(Input=shear_proxy, registrationName=slice_name)
+            slice_filter.SliceType = 'Plane'
+            slice_filter.SliceType.Origin = center
+            slice_filter.SliceType.Normal = normal_vec
+            simple.UpdatePipeline(proxy=slice_filter)
+            
+            display_proxy = slice_filter
+            output_name = slice_name
+        else:
+            display_proxy = shear_proxy
+            output_name = result["proxy_name"]
+        
+        display = simple.Show(display_proxy, view)
+        display.Representation = "Surface"
+        simple.ColorBy(display, ('POINTS', field_name))
+        
+        lut = simple.GetColorTransferFunction(field_name)
+        lut.ApplyPreset('Cool to Warm', True)
+        
+        field_range = result["field_range"]
+        lut.RescaleTransferFunction(field_range[0], field_range[1])
+        
+        display.SetScalarBarVisibility(view, True)
+        
+        if on_slice:
+            self._mcp.set_view(direction=f"-{slice_normal}")
+        
+        simple.ResetCamera(view)
+        simple.Render(view)
+        
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(display_proxy),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {
+                "color_by": field_name,
+                "colormap": "Cool to Warm",
+                "log_scale": log_scale,
+            }
+        }
+        
+        self._register_provenance(output_name, provenance)
+        self._notify_pipeline_changed()
+        
+        return {
+            "status": "created",
+            "type": "shear_layer",
+            "proxy_name": output_name,
+            "field_name": field_name,
+            "field_range": field_range,
+            "log_scale": log_scale,
+            "provenance": provenance,
+            "description": "Shear layer visualization showing velocity gradient magnitude",
+            "tip": "Bright regions indicate strong velocity gradients (mixing layers, jet boundaries)."
+        }
+
+    def show_recirculation(
+        self,
+        velocity_field: str = "Velocity",
+        flow_direction: str = "x",
+        method: str = "reverse_flow",
+        as_isosurface: bool = True,
+    ) -> dict:
+        """
+        Show recirculation/separation zones.
+        
+        Identifies regions of flow separation and recirculation using several
+        detection methods. Can display as isosurface (3D) or on a slice (2D).
+        
+        Args:
+            velocity_field: Velocity field name (default: "Velocity")
+            flow_direction: Primary flow direction "x", "y", or "z" (default: "x")
+            method: Detection method:
+                - "reverse_flow": Negative velocity component (default)
+                - "helicity": Velocity-vorticity alignment
+                - "low_velocity": Regions of very low velocity
+            as_isosurface: If True, show as 3D isosurface; if False, show on slice
+            
+        Returns:
+            Dict with visualization info
+        """
+        view = simple.GetActiveView()
+        proxy = self._get_data_reader()
+        
+        if proxy is None:
+            return {"error": "No data source found. Load data first."}
+        
+        proxy_name = self._get_proxy_name(proxy)
+        self._mcp.clear_analysis_log()
+        
+        result = self._mcp.compute_recirculation(
+            proxy_name=proxy_name,
+            velocity_field=velocity_field,
+            flow_direction=flow_direction,
+            method=method,
+        )
+        
+        if "error" in result:
+            return result
+        
+        recirc_proxy = simple.FindSource(result["proxy_name"])
+        field_name = result["field_name"]
+        threshold = result["threshold_suggestion"]
+        
+        if as_isosurface:
+            iso_name = f"Recirculation_Isosurface"
+            
+            if method == "reverse_flow":
+                # For reverse flow, use contour at 0 (boundary between forward/reverse)
+                iso = simple.Contour(Input=recirc_proxy, registrationName=iso_name)
+                iso.ContourBy = ['POINTS', field_name]
+                iso.Isosurfaces = [0.0]
+            else:
+                # For other methods, use suggested threshold
+                iso = simple.Contour(Input=recirc_proxy, registrationName=iso_name)
+                iso.ContourBy = ['POINTS', field_name]
+                iso.Isosurfaces = [threshold]
+            
+            simple.UpdatePipeline(proxy=iso)
+            display_proxy = iso
+            output_name = iso_name
+            
+            display = simple.Show(display_proxy, view)
+            display.Representation = "Surface"
+            display.DiffuseColor = [0.8, 0.2, 0.2]  # Red for recirculation
+            display.Opacity = 0.7
+        else:
+            # Show on slice colored by the field
+            bounds = recirc_proxy.GetDataInformation().GetBounds()
+            center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
+            
+            # Slice perpendicular to span (y) to see recirculation
+            slice_name = "Recirculation_Slice"
+            slice_filter = simple.Slice(Input=recirc_proxy, registrationName=slice_name)
+            slice_filter.SliceType = 'Plane'
+            slice_filter.SliceType.Origin = center
+            slice_filter.SliceType.Normal = [0, 1, 0]
+            simple.UpdatePipeline(proxy=slice_filter)
+            
+            display_proxy = slice_filter
+            output_name = slice_name
+            
+            display = simple.Show(display_proxy, view)
+            display.Representation = "Surface"
+            simple.ColorBy(display, ('POINTS', field_name))
+            
+            lut = simple.GetColorTransferFunction(field_name)
+            lut.ApplyPreset('Cool to Warm (Diverging)', True)
+            
+            field_range = result["field_range"]
+            max_abs = max(abs(field_range[0]), abs(field_range[1]))
+            lut.RescaleTransferFunction(-max_abs, max_abs)
+            
+            display.SetScalarBarVisibility(view, True)
+        
+        simple.ResetCamera(view)
+        simple.Render(view)
+        
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(display_proxy),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {
+                "method": method,
+                "as_isosurface": as_isosurface,
+                "threshold": threshold if as_isosurface else None,
+            }
+        }
+        
+        self._register_provenance(output_name, provenance)
+        self._notify_pipeline_changed()
+        
+        return {
+            "status": "created",
+            "type": "recirculation",
+            "proxy_name": output_name,
+            "field_name": field_name,
+            "field_range": result["field_range"],
+            "method": method,
+            "threshold": threshold,
+            "as_isosurface": as_isosurface,
+            "provenance": provenance,
+            "description": f"Recirculation zones using {method} detection",
+            "tip": "Red surfaces show boundaries of separated/recirculating flow regions." if as_isosurface else "Blue regions indicate reverse flow (recirculation)."
+        }
+
     def show_histogram(
         self,
         field: str = "p",

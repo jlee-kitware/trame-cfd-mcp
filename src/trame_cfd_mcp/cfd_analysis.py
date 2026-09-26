@@ -1471,6 +1471,215 @@ class CFDAnalysis:
         except Exception as e:
             simple.SetActiveSource(original_active)
             return {"error": str(e)}
+
+    def compute_shear_layer(
+        self,
+        proxy_name: str = None,
+        velocity_field: str = "Velocity",
+        log_scale: bool = True,
+    ) -> dict:
+        """
+        Compute shear layer visualization field (velocity gradient magnitude).
+        
+        Shear layers occur where there are large velocity gradients, typically
+        at mixing layers, jet boundaries, and wake edges. This computes |∇V|
+        (gradient magnitude of velocity).
+        
+        Args:
+            proxy_name: Source proxy name (default: active source)
+            velocity_field: Velocity field name (default: "Velocity")
+            log_scale: If True, compute log10(|∇V| + epsilon) for better
+                       dynamic range (default: True)
+        
+        Returns:
+            Dict with:
+            - proxy_name: Name of the output proxy with shear layer field
+            - field_name: "ShearLayer" or "ShearLayer_log"
+            - field_range: [min, max] of the computed field
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        original_active = simple.GetActiveSource()
+        
+        try:
+            resolved_field = self._resolve_field_type(velocity_field, proxy)
+            if resolved_field is None:
+                return {"error": f"Field '{velocity_field}' not found"}
+            
+            flat_proxy, _, _ = ensure_flat_input(proxy)
+            
+            # Compute gradient of velocity magnitude
+            # First get velocity magnitude
+            calc_mag = simple.Calculator(Input=flat_proxy)
+            calc_mag.Function = f"mag({resolved_field})"
+            calc_mag.ResultArrayName = "VelocityMag"
+            
+            # Compute gradient of velocity magnitude
+            gradient = simple.Gradient(Input=calc_mag)
+            gradient.ScalarArray = ['POINTS', 'VelocityMag']
+            gradient.ComputeGradient = 1
+            gradient.ResultArrayName = "VelocityGradient"
+            
+            # Compute magnitude (and optionally log scale)
+            if log_scale:
+                field_name = "ShearLayer_log"
+                calc = simple.Calculator(Input=gradient)
+                calc.Function = "log10(mag(VelocityGradient) + 1e-10)"
+                calc.ResultArrayName = field_name
+                output_proxy = calc
+            else:
+                field_name = "ShearLayer"
+                calc = simple.Calculator(Input=gradient)
+                calc.Function = "mag(VelocityGradient)"
+                calc.ResultArrayName = field_name
+                output_proxy = calc
+            
+            shear_name = f"ShearLayer_{resolved_field}"
+            simple.RenameSource(shear_name, output_proxy)
+            simple.UpdatePipeline(proxy=output_proxy)
+            
+            data_info = output_proxy.GetDataInformation()
+            array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+            if array_info:
+                field_range = list(array_info.GetComponentRange(0))
+            else:
+                field_range = [0.0, 1.0]
+            
+            simple.SetActiveSource(original_active)
+            
+            return {
+                "proxy_name": shear_name,
+                "field_name": field_name,
+                "field_range": field_range,
+                "log_scale": log_scale,
+                "source_field": resolved_field,
+                "suggested_colormap": "Cool to Warm",
+                "description": f"Shear layer field computed from {resolved_field} gradient"
+            }
+            
+        except Exception as e:
+            simple.SetActiveSource(original_active)
+            return {"error": str(e)}
+
+    def compute_recirculation(
+        self,
+        proxy_name: str = None,
+        velocity_field: str = "Velocity",
+        flow_direction: str = "x",
+        method: str = "reverse_flow",
+    ) -> dict:
+        """
+        Compute recirculation/separation zone indicator field.
+        
+        Identifies regions of flow separation and recirculation using one of
+        several methods:
+        - reverse_flow: Negative velocity component in flow direction
+        - helicity: Velocity-vorticity alignment (u · ω)
+        - low_velocity: Regions of very low velocity magnitude
+        
+        Args:
+            proxy_name: Source proxy name (default: active source)
+            velocity_field: Velocity field name (default: "Velocity")
+            flow_direction: Primary flow direction "x", "y", or "z" (default: "x")
+            method: Detection method - "reverse_flow", "helicity", or "low_velocity"
+        
+        Returns:
+            Dict with:
+            - proxy_name: Name of the output proxy
+            - field_name: Name of the computed indicator field
+            - field_range: [min, max] of the computed field
+            - threshold_suggestion: Suggested threshold for isosurface
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+        
+        original_active = simple.GetActiveSource()
+        
+        try:
+            resolved_field = self._resolve_field_type(velocity_field, proxy)
+            if resolved_field is None:
+                return {"error": f"Field '{velocity_field}' not found"}
+            
+            flat_proxy, _, _ = ensure_flat_input(proxy)
+            
+            if method == "reverse_flow":
+                # Extract velocity component in flow direction
+                component_map = {"x": 0, "y": 1, "z": 2}
+                comp_idx = component_map.get(flow_direction.lower(), 0)
+                comp_name = ["X", "Y", "Z"][comp_idx]
+                
+                calc = simple.Calculator(Input=flat_proxy)
+                calc.Function = f"{resolved_field}_{comp_name}"
+                calc.ResultArrayName = "ReverseFlow"
+                output_proxy = calc
+                field_name = "ReverseFlow"
+                threshold_suggestion = 0.0  # Negative values indicate reverse flow
+                
+            elif method == "helicity":
+                # Compute vorticity first
+                vort = simple.Gradient(Input=flat_proxy)
+                vort.ScalarArray = ['POINTS', resolved_field]
+                vort.ComputeVorticity = 1
+                vort.VorticityArrayName = "Vorticity"
+                
+                # Helicity = V · ω
+                calc = simple.Calculator(Input=vort)
+                calc.Function = f"dot({resolved_field}, Vorticity)"
+                calc.ResultArrayName = "Helicity"
+                output_proxy = calc
+                field_name = "Helicity"
+                threshold_suggestion = None  # Depends on flow
+                
+            elif method == "low_velocity":
+                # Compute velocity magnitude, inverted so low = high value
+                calc = simple.Calculator(Input=flat_proxy)
+                calc.Function = f"1.0 / (mag({resolved_field}) + 0.001)"
+                calc.ResultArrayName = "LowVelocity"
+                output_proxy = calc
+                field_name = "LowVelocity"
+                threshold_suggestion = None  # Depends on flow
+                
+            else:
+                return {"error": f"Unknown method '{method}'. Use 'reverse_flow', 'helicity', or 'low_velocity'"}
+            
+            recirc_name = f"Recirculation_{method}"
+            simple.RenameSource(recirc_name, output_proxy)
+            simple.UpdatePipeline(proxy=output_proxy)
+            
+            data_info = output_proxy.GetDataInformation()
+            array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+            if array_info:
+                field_range = list(array_info.GetComponentRange(0))
+            else:
+                field_range = [0.0, 1.0]
+            
+            # For reverse_flow, suggest threshold at 0 (negative = recirculation)
+            if method == "reverse_flow":
+                threshold_suggestion = 0.0
+            elif threshold_suggestion is None:
+                # Use 10th percentile as threshold suggestion
+                threshold_suggestion = field_range[0] + 0.1 * (field_range[1] - field_range[0])
+            
+            simple.SetActiveSource(original_active)
+            
+            return {
+                "proxy_name": recirc_name,
+                "field_name": field_name,
+                "field_range": field_range,
+                "method": method,
+                "flow_direction": flow_direction if method == "reverse_flow" else None,
+                "threshold_suggestion": threshold_suggestion,
+                "source_field": resolved_field,
+                "suggested_colormap": "Cool to Warm (Diverging)",
+                "description": f"Recirculation indicator using {method} method"
+            }
+            
+        except Exception as e:
+            simple.SetActiveSource(original_active)
+            return {"error": str(e)}
     
     def field_statistics(self, field: str, proxy_name: str = None) -> dict:
         """

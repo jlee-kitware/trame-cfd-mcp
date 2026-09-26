@@ -13,6 +13,7 @@ from .cfd_analysis import CFDAnalysis
 from .workflows import CFDWorkflows
 from .topology_analysis import TopologyAnalysis
 from .topology_workflows import TopologyWorkflows
+from .view_critic import ViewCritic
 
 
 # Load ontology at module level
@@ -62,6 +63,7 @@ class WorkflowMCP:
         self._topology_workflows = TopologyWorkflows(
             self._workflows, self._topology, app=app,
         )
+        self._critic = ViewCritic(self._analysis, app=app)
         print(f"[WorkflowMCP] Initialized with app={app is not None}, has_render={hasattr(app, 'render_analysis_chart') if app else False}")
     
     @property
@@ -85,6 +87,29 @@ class WorkflowMCP:
         result["tip"] = "Use proxy names from this list with refinement tools like update_representation()"
         return result
     
+    def inspect_view(
+        self,
+        question: str = "",
+        proxy_name: str = "",
+    ) -> dict:
+        """
+        Look at the current view and report whether it actually shows what was asked for.
+
+        Call this after a show_* tool when the user asked to see a feature. It runs
+        computable checks first (empty output, hidden proxy, camera inside the geometry,
+        camera not pointed at the target, constant colour range) and only inspects the
+        rendered image when those pass.
+
+        Args:
+            question: What the view is meant to show, in the user's words
+            proxy_name: Proxy to inspect; defaults to the active source
+
+        Returns:
+            Dict with issues, suggested_actions (tool calls you can make), and a verdict
+            of ok, issues, blocked, unknown, or stop
+        """
+        return self._critic.critique(question=question, proxy_name=proxy_name)
+
     def save_screenshot(
         self,
         filename: str,
@@ -326,7 +351,7 @@ class WorkflowMCP:
         with state:
             pass  # flush any remaining pending state
 
-    def get_ontology(self) -> dict:
+    def get_ontology(self, key: str = None) -> dict:
         """
         Get CFD domain knowledge for interpreting results.
         
@@ -336,8 +361,21 @@ class WorkflowMCP:
         - analysis_recommendations: Which tools to use for different questions
         
         Use this to explain visualizations and answer "why" questions.
+        Pass `key` as a dotted path (e.g. "flow_features.boundary_layer.metrics")
+        to return only that entry. The dotted keys match the ontology_hints the
+        analysis tools return, and looking up the specific hinted key gives
+        markedly better grounded interpretation than returning the whole
+        ontology. With no key, returns the full ontology.
         """
-        return self._ontology
+        if not key:
+            return self._ontology
+        cur = self._ontology
+        for part in key.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return {"error": f"ontology key not found: {key}"}
+        return {key: cur}
     
     def set_filter_property(self, proxy_name: str, properties: dict = None) -> dict:
         """
@@ -632,6 +670,21 @@ ALWAYS call list_data() first to see what data is loaded.
 4. Use get_ontology() to get domain knowledge for explanations
 5. Save with save_screenshot()
 
+== LOOK AND CORRECT ==
+
+After a show_* tool runs for a request to SEE something, call
+inspect_view(question="<what the user asked for>"). It checks the view and
+returns issues plus suggested_actions.
+
+- verdict "ok" → describe the result, do not adjust anything
+- verdict "blocked" or "issues" → apply AT MOST ONE suggested action, then call
+  inspect_view again to confirm
+- verdict "stop" → stop adjusting, describe what is on screen, hand back to the user
+
+Tell the user what you corrected and why, in one sentence. Never claim to have
+looked at the image when the result contains vision_error; report the computable
+checks instead. Skip inspect_view for chart tools and for pure analysis requests.
+
 KEEP RESPONSES CONCISE.  Never present numbered option lists when a tool fails.
 Try the fallback tools first, and only ask the user if you truly cannot proceed.
 
@@ -641,6 +694,10 @@ Try the fallback tools first, and only ask the user if you truly cannot proceed.
   to adjust an existing vortex visualization use update_list_property, not show_vortices again)
 - show_streamlines() - Show flow streamlines in wake region  
 - show_slice(location="wake") - Show slice through data
+- show_schlieren(field="Density") - Show density gradient magnitude (shock visualization)
+- show_shadowgraph(field="Density") - Show Laplacian of density (sharp shock edges)
+- show_shear_layer(velocity_field="Velocity") - Show velocity gradient magnitude (mixing layers, jet boundaries)
+- show_recirculation(method="reverse_flow") - Show separation/recirculation zones as isosurface
 - show_histogram(field="p") - Show field distribution chart
 - show_forces() - Show force distribution chart
 - show_boundary_layer(x_location=0.5) - Show boundary layer profile
@@ -773,6 +830,8 @@ do not summarize or repeat them in your response unless the user asks.
                 self._workflows.show_slice,
                 self._workflows.show_schlieren,
                 self._workflows.show_shadowgraph,
+                self._workflows.show_shear_layer,
+                self._workflows.show_recirculation,
                 self._workflows.show_histogram,
                 self._workflows.show_forces,
                 self._workflows.show_boundary_layer,
@@ -803,6 +862,7 @@ do not summarize or repeat them in your response unless the user asks.
                 
                 # Knowledge and utilities
                 self.get_ontology,
+                self.inspect_view,
                 self.save_screenshot,
                 self.save_state,
                 self.set_view,
