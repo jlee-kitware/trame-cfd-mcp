@@ -1064,7 +1064,7 @@ class CFDWorkflows:
             simple.ColorBy(display, ('POINTS', field_name))
             
             lut = simple.GetColorTransferFunction(field_name)
-            lut.ApplyPreset('Cool to Warm (Diverging)', True)
+            lut.ApplyPreset('Cool to Warm', True)
             
             field_range = result["field_range"]
             max_abs = max(abs(field_range[0]), abs(field_range[1]))

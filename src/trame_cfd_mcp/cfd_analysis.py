@@ -1673,7 +1673,7 @@ class CFDAnalysis:
                 "flow_direction": flow_direction if method == "reverse_flow" else None,
                 "threshold_suggestion": threshold_suggestion,
                 "source_field": resolved_field,
-                "suggested_colormap": "Cool to Warm (Diverging)",
+                "suggested_colormap": "Cool to Warm",
                 "description": f"Recirculation indicator using {method} method"
             }
             
