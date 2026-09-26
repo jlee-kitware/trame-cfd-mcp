@@ -1338,6 +1338,29 @@ class CFDAnalysis:
             if resolved_field is None:
                 return {"error": f"Field '{field}' not found"}
             
+            # Check if already computed
+            schlieren_name = f"Schlieren_{resolved_field}"
+            existing = simple.FindSource(schlieren_name)
+            if existing is not None:
+                field_name = "Schlieren_log" if log_scale else "Schlieren"
+                simple.UpdatePipeline(proxy=existing)
+                data_info = existing.GetDataInformation()
+                array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+                if array_info:
+                    field_range = list(array_info.GetComponentRange(0))
+                else:
+                    field_range = [0.0, 1.0]
+                simple.SetActiveSource(original_active)
+                return {
+                    "proxy_name": schlieren_name,
+                    "field_name": field_name,
+                    "field_range": field_range,
+                    "source_field": resolved_field,
+                    "suggested_colormap": "Grayscale",
+                    "description": f"Schlieren field (reused existing)",
+                    "reused": True,
+                }
+            
             # Flatten if composite
             flat_proxy, _, _ = ensure_flat_input(proxy)
             
@@ -1424,6 +1447,29 @@ class CFDAnalysis:
             if resolved_field is None:
                 return {"error": f"Field '{field}' not found"}
             
+            # Check if already computed
+            shadowgraph_name = f"Shadowgraph_{resolved_field}"
+            existing = simple.FindSource(shadowgraph_name)
+            if existing is not None:
+                field_name = "Shadowgraph"
+                simple.UpdatePipeline(proxy=existing)
+                data_info = existing.GetDataInformation()
+                array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+                if array_info:
+                    field_range = list(array_info.GetComponentRange(0))
+                else:
+                    field_range = [0.0, 1.0]
+                simple.SetActiveSource(original_active)
+                return {
+                    "proxy_name": shadowgraph_name,
+                    "field_name": field_name,
+                    "field_range": field_range,
+                    "source_field": resolved_field,
+                    "suggested_colormap": "Grayscale",
+                    "description": f"Shadowgraph field (reused existing)",
+                    "reused": True,
+                }
+            
             # Flatten if composite
             flat_proxy, _, _ = ensure_flat_input(proxy)
             
@@ -1507,6 +1553,30 @@ class CFDAnalysis:
             resolved_field = self._resolve_field_type(velocity_field, proxy)
             if resolved_field is None:
                 return {"error": f"Field '{velocity_field}' not found"}
+            
+            # Check if already computed
+            shear_name = f"ShearLayer_{resolved_field}"
+            existing = simple.FindSource(shear_name)
+            if existing is not None:
+                field_name = "ShearLayer_log" if log_scale else "ShearLayer"
+                simple.UpdatePipeline(proxy=existing)
+                data_info = existing.GetDataInformation()
+                array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+                if array_info:
+                    field_range = list(array_info.GetComponentRange(0))
+                else:
+                    field_range = [0.0, 1.0]
+                simple.SetActiveSource(original_active)
+                return {
+                    "proxy_name": shear_name,
+                    "field_name": field_name,
+                    "field_range": field_range,
+                    "log_scale": log_scale,
+                    "source_field": resolved_field,
+                    "suggested_colormap": "Cool to Warm",
+                    "description": f"Shear layer field (reused existing)",
+                    "reused": True,
+                }
             
             flat_proxy, _, _ = ensure_flat_input(proxy)
             
@@ -1602,6 +1672,38 @@ class CFDAnalysis:
             resolved_field = self._resolve_field_type(velocity_field, proxy)
             if resolved_field is None:
                 return {"error": f"Field '{velocity_field}' not found"}
+            
+            # Check if already computed
+            recirc_name = f"Recirculation_{method}"
+            existing = simple.FindSource(recirc_name)
+            if existing is not None:
+                field_map = {
+                    "reverse_flow": "ReverseFlow",
+                    "helicity": "Helicity",
+                    "low_velocity": "LowVelocity",
+                }
+                field_name = field_map.get(method, "ReverseFlow")
+                simple.UpdatePipeline(proxy=existing)
+                data_info = existing.GetDataInformation()
+                array_info = data_info.GetPointDataInformation().GetArrayInformation(field_name)
+                if array_info:
+                    field_range = list(array_info.GetComponentRange(0))
+                else:
+                    field_range = [0.0, 1.0]
+                threshold_suggestion = 0.0 if method == "reverse_flow" else field_range[0] + 0.1 * (field_range[1] - field_range[0])
+                simple.SetActiveSource(original_active)
+                return {
+                    "proxy_name": recirc_name,
+                    "field_name": field_name,
+                    "field_range": field_range,
+                    "method": method,
+                    "flow_direction": flow_direction if method == "reverse_flow" else None,
+                    "threshold_suggestion": threshold_suggestion,
+                    "source_field": resolved_field,
+                    "suggested_colormap": "Cool to Warm",
+                    "description": f"Recirculation indicator (reused existing)",
+                    "reused": True,
+                }
             
             flat_proxy, _, _ = ensure_flat_input(proxy)
             
