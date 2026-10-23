@@ -736,8 +736,56 @@ class CFDChatMCP:
             traceback.print_exc()
             return {"error": str(e)}
     
+    def _convergence_summary(self, recent_fraction: float = 0.25) -> dict:
+        """Orders of residual drop from each field's peak and the recent rate of drop."""
+        import math
+        iterations = self._monitor_history.get('iteration', [])
+        if len(iterations) < 4:
+            return {}
+        fields = {}
+        for name, values in self._monitor_history.items():
+            if name == 'iteration' or len(values) != len(iterations):
+                continue
+            positive = [v for v in values if v and v > 0]
+            if len(positive) < 4:
+                continue
+            peak, latest = max(positive), positive[-1]
+            window = max(3, int(len(positive) * recent_fraction))
+            recent_start = positive[-window]
+            span = iterations[-1] - iterations[-window] or 1
+            fields[name] = {
+                "orders_dropped_from_peak": round(math.log10(peak / latest), 2),
+                "recent_orders_per_100_iterations": round(100 * math.log10(recent_start / latest) / span, 2),
+            }
+        if not fields:
+            return {}
+        drops = [f["orders_dropped_from_peak"] for f in fields.values()]
+        rates = [f["recent_orders_per_100_iterations"] for f in fields.values()]
+        min_drop, decreasing = min(drops), all(r > 0.05 for r in rates)
+        features_ok = min_drop >= 3.0 and decreasing
+        return {
+            "iterations": [iterations[0], iterations[-1]],
+            "fields": fields,
+            "min_orders_dropped": min_drop,
+            "still_decreasing": decreasing,
+            "flow_features_trustworthy": features_ok,
+            "loads_trustworthy": "unknown: force and moment histories are not monitored in this session, "
+                                 "so residuals alone cannot confirm the loads",
+            "verdict": (f"Every residual has dropped at least {min_drop:.1f} orders from its peak"
+                        + (" and is still decreasing" if decreasing else " but some have stopped decreasing")
+                        + (": flow features can be trusted." if features_ok
+                           else ": flow features should not be trusted yet.")
+                        + " Integrated loads also need flat force histories, which are not monitored here."),
+            "guidance": "Report the verdict. Details: ontology analysis_recommendations.convergence_assessment.",
+        }
+
     def get_current_monitors(self) -> dict:
-        """Get the latest monitor values."""
+        """Get the latest monitor values and a convergence assessment of the residual history.
+
+        The 'convergence' entry reports, per residual, how many orders of magnitude it has
+        dropped from its peak and how fast it is still dropping, so convergence can be judged
+        against ontology analysis_recommendations.convergence_assessment.
+        """
         if not self._monitor_source:
             return {"error": "No monitor data. Call extract_monitors() first."}
         
@@ -766,6 +814,9 @@ class CFDChatMCP:
                     ranges = arr_info.GetComponentRange(0)
                     result["values"][name] = {"min": ranges[0], "max": ranges[1]}
             
+            convergence = self._convergence_summary()
+            if convergence:
+                result["convergence"] = convergence
             return result
         except Exception as e:
             import traceback
