@@ -8,7 +8,7 @@ Ontology provides domain knowledge for explanations.
 
 import json
 import os
-from paraview import simple
+from paraview import servermanager, simple
 from .cfd_analysis import CFDAnalysis
 from .workflows import CFDWorkflows
 from .topology_analysis import TopologyAnalysis
@@ -264,12 +264,12 @@ class WorkflowMCP:
                         name = n[0]
                         break
             
-            return {
+            return self._with_visibility_note({
                 "name": name,
                 "property": actual_prop,
                 "value": value,
                 "tip": "Display property set. Opacity=0 is invisible, Opacity=1 is fully opaque."
-            }
+            }, proxy_name)
         except Exception as e:
             return {"error": str(e)}
     
@@ -310,7 +310,7 @@ class WorkflowMCP:
                                                       proxy_name=proxy_name)
         if "error" not in result:
             self._notify_pipeline_and_panel()
-        return result
+        return self._with_visibility_note(result, proxy_name)
 
     def update_representation(self, representation_type: str, proxy_name: str = None) -> dict:
         """Update representation and refresh pipeline browser."""
@@ -318,6 +318,72 @@ class WorkflowMCP:
                                                        proxy_name=proxy_name)
         if "error" not in result:
             self._notify_pipeline_and_panel()
+        return self._with_visibility_note(result, proxy_name)
+
+    def show_only(self, proxy_names: list[str]) -> dict:
+        """Show the named results and hide everything else in the view, with their scalar bars.
+
+        Use this for requests like "hide everything except the vortices".
+
+        Args:
+            proxy_names: Names of the pipeline objects to keep visible
+        """
+        view = simple.GetActiveView()
+        keep = {}
+        for requested in proxy_names:
+            match = self._base_mcp.match_name(requested, self._base_mcp.list_existing_proxies())
+            if match is None:
+                return {"error": f"Could not find {requested}. Available: {self._base_mcp.list_existing_proxies()}"}
+            keep[match] = simple.FindSource(match)
+
+        hidden = []
+        for (name, _), proxy in simple.GetSources().items():
+            if name in keep:
+                continue
+            rep = servermanager.GetRepresentation(proxy, view)
+            if rep is not None and rep.Visibility:
+                simple.Hide(proxy, view)
+                if self._colored_by_field(rep):
+                    rep.SetScalarBarVisibility(view, False)
+                hidden.append(name)
+
+        shown, errors = [], {}
+        for name, proxy in keep.items():
+            try:
+                rep = simple.Show(proxy, view)
+            except RuntimeError as e:
+                errors[name] = str(e)
+                continue
+            if self._colored_by_field(rep):
+                rep.SetScalarBarVisibility(view, True)
+            shown.append(name)
+
+        self._notify_pipeline_and_panel()
+        simple.Render(view)
+        result = {"visible": shown, "hidden": hidden}
+        if errors:
+            result["errors"] = errors
+        return result
+
+    @staticmethod
+    def _colored_by_field(rep) -> bool:
+        array = getattr(rep, "ColorArrayName", None)
+        return bool(getattr(rep, "LookupTable", None) and array and array[1])
+
+    def _with_visibility_note(self, result: dict, proxy_name: str = None) -> dict:
+        """Tell the model when a changed proxy is hidden, so the change cannot be seen."""
+        if "error" in result:
+            return result
+        name = result.get("name") or proxy_name
+        proxy = simple.FindSource(name) if name else simple.GetActiveSource()
+        view = simple.GetActiveView()
+        if proxy is None or view is None:
+            return result
+        rep = servermanager.GetRepresentation(proxy, view)
+        if rep is None or not rep.Visibility:
+            result["visible"] = False
+            result["note"] = (f"{name} is hidden, so this change is not visible. "
+                              f"Call show_or_hide('show', '{name}') if the user wants to see it.")
         return result
 
     _COLOR_NAMES = {
@@ -342,7 +408,7 @@ class WorkflowMCP:
         result = self._base_mcp.update_color(proxy_name=proxy_name, field_name=field_name, rgb=rgb)
         if "error" not in result:
             self._notify_pipeline_and_panel()
-        return result
+        return self._with_visibility_note(result, proxy_name)
 
     def _notify_pipeline_and_panel(self):
         """Flush proxy state and force property panel refresh."""
@@ -700,9 +766,14 @@ ALWAYS call list_data() first to see what data is loaded.
 
 == LOOK AND CORRECT ==
 
-After a show_* tool runs for a request to SEE something, call
+After a show_* tool creates a new result for a request to SEE something, call
 inspect_view(question="<what the user asked for>"). It checks the view and
 returns issues plus suggested_actions.
+
+Do NOT call inspect_view after changing an existing result (color, opacity,
+representation, contour values, filter properties). Those tools report
+"visible": false with a note when the result is hidden; if so, show it with
+show_or_hide unless the user asked for it to stay hidden.
 
 - verdict "ok" → describe the result, do not adjust anything
 - verdict "blocked" or "issues" → apply AT MOST ONE suggested action, then call
@@ -762,6 +833,9 @@ After a workflow runs, it returns proxy_name and parameters. Use these to refine
   → Set Opacity (0.0=transparent, 1.0=opaque), LineWidth, PointSize
   → These are DISPLAY properties, not filter properties
   
+- show_only(proxy_names)
+  → Show only these results and hide everything else, e.g. "hide everything except the vortices"
+
 - show_or_hide(action, proxy_name)
   → action="hide" or "show" to toggle visibility
   
@@ -881,6 +955,7 @@ do not summarize or repeat them in your response unless the user asks.
                 self.update_color,
                 self.update_list_property,
                 self._base_mcp.show_or_hide,
+                self.show_only,
                 self._base_mcp.list_properties,
                 self.update_display_property,
                 
