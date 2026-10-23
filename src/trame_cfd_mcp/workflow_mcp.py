@@ -6,6 +6,7 @@ LLM does intent matching, workflows execute deterministically.
 Ontology provides domain knowledge for explanations.
 """
 
+import functools
 import json
 import os
 from paraview import servermanager, simple
@@ -64,6 +65,9 @@ class WorkflowMCP:
             self._workflows, self._topology, app=app,
         )
         self._critic = ViewCritic(self._analysis, app=app)
+        self._results_version = 0
+        self._results_inspected = None
+        self._confirm_pending = False
         print(f"[WorkflowMCP] Initialized with app={app is not None}, has_render={hasattr(app, 'render_analysis_chart') if app else False}")
     
     @property
@@ -106,9 +110,30 @@ class WorkflowMCP:
 
         Returns:
             Dict with issues, suggested_actions (tool calls you can make), and a verdict
-            of ok, issues, blocked, unknown, or stop
+            of ok, issues, blocked, unknown, or stop. When nothing new has been shown
+            since the last check, the view is not inspected again and the result says so.
         """
-        return self._critic.critique(question=question, proxy_name=proxy_name)
+        confirming = self._confirm_pending
+        if self._results_inspected == self._results_version and not confirming:
+            return {
+                "verdict": "ok",
+                "skipped": True,
+                "note": "Nothing new has been shown since the last check, so the view was not "
+                        "inspected again. Describe the current result.",
+            }
+        result = self._critic.critique(question=question, proxy_name=proxy_name)
+        self._results_inspected = self._results_version
+        self._confirm_pending = not confirming and result.get("verdict") in ("issues", "blocked")
+        return result
+
+    def _counting_new_results(self, tool):
+        """Wrap a show_* tool so inspect_view knows a new result was shown."""
+        @functools.wraps(tool)
+        def wrapper(*args, **kwargs):
+            result = tool(*args, **kwargs)
+            self._results_version += 1
+            return result
+        return wrapper
 
     def save_screenshot(
         self,
@@ -749,7 +774,7 @@ class WorkflowMCP:
     
     def get_mcp(self) -> dict:
         """Return MCP declaration with workflow and refinement tools."""
-        return {
+        mcp = {
             "name": "cfd_visualization",
             "instructions": """
 You are a CFD visualization and analysis assistant. You create visualizations AND explain what they mean.
@@ -979,3 +1004,10 @@ do not summarize or repeat them in your response unless the user asks.
             ],
             "resources": {},
         }
+        mcp["tools"] = [
+            self._counting_new_results(tool)
+            if tool.__name__.startswith("show_") and tool.__name__ not in ("show_or_hide", "show_only")
+            else tool
+            for tool in mcp["tools"]
+        ]
+        return mcp

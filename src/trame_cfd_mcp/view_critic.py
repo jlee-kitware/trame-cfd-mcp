@@ -292,6 +292,17 @@ class ViewCritic:
 
     def critique(self, question="", proxy_name="", width=1024, height=768,
                  use_vision=True, max_attempts=2):
+        target = simple.FindSource(proxy_name) if proxy_name else simple.GetActiveSource()
+        if target is not None and target.GetDataInformation().GetDataClassName() == "vtkTable":
+            return {
+                "type": "view_critique",
+                "verdict": "ok",
+                "checks": {"target": proxy_name, "data": "vtkTable"},
+                "issues": [],
+                "suggested_actions": [],
+                "tip": "This is a chart result. It is shown in the chart panel, not the 3D view, "
+                       "so there is nothing to inspect. Describe the chart.",
+            }
         facts, issues, actions, blocking = self._checks(proxy_name)
         name = facts.get("target", "")
 
