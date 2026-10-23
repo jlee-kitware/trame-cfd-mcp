@@ -60,6 +60,8 @@ if _trame_llm:
 
 from dotenv import load_dotenv
 load_dotenv()
+logging.basicConfig(format="%(message)s")
+logging.getLogger("trame_llm").setLevel(logging.INFO)
 
 from paraview import simple
 
@@ -532,7 +534,16 @@ def main():
             print("Catalyst Live event processing started")
     
     print("Setting up LLM client...")
-    llm_client = LLMClient(max_iteractions=15)
+    llm_client = LLMClient(
+        max_iteractions=15,
+        system_prompt=(
+            "You are a CFD visualization assistant. "
+            "When the user asks you to do something, call the appropriate tool directly. "
+            "Do not explain what you are about to do; just call the tool. "
+            "After receiving tool results, provide a concise interpretation. "
+            "Do not suggest further tool calls in your text responses."
+        ),
+    )
     
     base_mcp = ParaViewMCP(app)
     workflow_mcp = WorkflowMCP(base_mcp, app=app)

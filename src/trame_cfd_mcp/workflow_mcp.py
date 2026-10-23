@@ -293,8 +293,14 @@ class WorkflowMCP:
             "tip": "Load with File > Load State in ParaView GUI, or simple.LoadState() in Python"
         }
     
-    def update_list_property(self, property_name: str, property_value=None, proxy_name: str = None) -> dict:
-        """Update array property and refresh pipeline browser."""
+    def update_list_property(self, property_name: str, property_value: list[float] | float | None = None,
+                             proxy_name: str = None) -> dict:
+        """Set an array property, such as contour values, to a complete list of values.
+
+        Each call replaces the whole list. To set several values, pass all of them
+        in one call (for example Isosurfaces = [5, 10, 20]); separate calls with one
+        value each leave only the last value.
+        """
         if property_value is None:
             return {"error": "property_value is required"}
         if not isinstance(property_value, list):
@@ -748,6 +754,8 @@ After a workflow runs, it returns proxy_name and parameters. Use these to refine
 - update_list_property(property_name, property_value, proxy_name)
   → Adjust thresholds: update_list_property("Isosurfaces", [new_value], proxy_name)
   → property_value MUST be a list, e.g. [14.03] not 14.03
+  → Several values go in ONE call: update_list_property("Isosurfaces", [5, 10, 20], proxy_name).
+    Each call replaces the whole list.
   → Lower threshold = more structures, higher = fewer
   
 - update_display_property(property_name, value, proxy_name)
