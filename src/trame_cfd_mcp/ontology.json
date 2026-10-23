@@ -1,38 +1,35 @@
 {
   "version": "0.1",
   "domain": "cfd_postprocessing",
-  
   "flow_features": {
     "vortex_isosurface": {
       "description": "Isosurface of vortex identification criterion",
       "methods": {
         "q_criterion": {
-          "definition": "Q = 0.5*(||Ω||² - ||S||²) where Ω is rotation-rate tensor and S is strain-rate tensor",
+          "definition": "Q = 0.5*(||\u03a9||\u00b2 - ||S||\u00b2) where \u03a9 is rotation-rate tensor and S is strain-rate tensor",
           "interpretation": "Q > 0 indicates regions where rotation dominates strain, identifying vortex cores",
           "typical_use": "Visualizing coherent vortical structures like wingtip vortices, C-pillar vortices, A-pillar vortices"
         },
         "vorticity": {
-          "definition": "ω = ∇ × V, vorticity magnitude ||ω||",
+          "definition": "\u03c9 = \u2207 \u00d7 V, vorticity magnitude ||\u03c9||",
           "interpretation": "High vorticity indicates strong rotation, but includes shear layers (not purely vortices)",
           "typical_use": "Quick identification of rotational regions, less selective than Q-criterion"
         },
         "lambda2": {
-          "definition": "Second eigenvalue of S² + Ω²",
-          "interpretation": "λ₂ < 0 identifies vortex cores more precisely than Q-criterion, excludes shear",
+          "definition": "Second eigenvalue of S\u00b2 + \u03a9\u00b2",
+          "interpretation": "\u03bb\u2082 < 0 identifies vortex cores more precisely than Q-criterion, excludes shear",
           "typical_use": "Accurate vortex core identification, more expensive to compute"
         }
       },
       "threshold_guidance": "Higher threshold shows stronger/tighter vortex cores, lower threshold shows weaker/larger structures",
       "coloring_guidance": "Color by velocity magnitude to see flow speed through vortex, or by pressure to see vortex-induced pressure drop"
     },
-    
     "streamlines": {
       "description": "Particle paths following velocity field",
       "interpretation": "Shows flow direction and path. In wake region, reveals recirculation, entrainment, and vortex structure",
       "seed_placement": "Seeding downstream of body captures wake development. Seed radius controls coverage.",
       "coloring_guidance": "Color by velocity magnitude to identify acceleration/deceleration, or by pressure for pressure recovery"
     },
-    
     "slice": {
       "description": "2D plane cutting through 3D field",
       "locations": {
@@ -44,7 +41,6 @@
         "pressure": "Low pressure indicates suction (upper surface, vortex cores), high pressure indicates stagnation"
       }
     },
-    
     "histogram": {
       "description": "Distribution of field values across the domain",
       "interpretation": {
@@ -52,25 +48,22 @@
         "velocity": "Peak near freestream indicates attached flow. Lower peak indicates wake/separated region contribution."
       }
     },
-    
     "force_distribution": {
       "description": "Sectional and accumulated force along body axis",
       "interpretation": "Shows where forces are generated. Sectional force peaks indicate high-load regions. Accumulated force shows running total.",
       "design_relevance": "Identifies which body sections contribute most to drag/lift. Useful for targeting geometry changes."
     },
-    
     "boundary_layer": {
       "description": "Velocity profile normal to body surface",
       "interpretation": "Shows velocity development from zero at wall to freestream. Profile shape indicates laminar vs turbulent flow.",
       "metrics": {
-        "delta": "Boundary layer thickness - distance where u/U∞ = 0.99",
-        "delta_star": "Displacement thickness δ* = ∫(1 - u/U∞)dy - represents mass flow deficit due to BL",
-        "theta": "Momentum thickness θ = ∫(u/U∞)(1 - u/U∞)dy - represents momentum deficit, directly related to drag",
-        "shape_factor": "H = δ*/θ, indicates flow state: H ≈ 2.6 (laminar), H ≈ 1.3-1.4 (turbulent), H > 3 suggests separation"
+        "delta": "Boundary layer thickness - distance where u/U\u221e = 0.99",
+        "delta_star": "Displacement thickness \u03b4* = \u222b(1 - u/U\u221e)dy - represents mass flow deficit due to BL",
+        "theta": "Momentum thickness \u03b8 = \u222b(u/U\u221e)(1 - u/U\u221e)dy - represents momentum deficit, directly related to drag",
+        "shape_factor": "H = \u03b4*/\u03b8, indicates flow state: H \u2248 2.6 (laminar), H \u2248 1.3-1.4 (turbulent), H > 3 suggests separation"
       },
-      "design_relevance": "Thin BL = less drag, thick BL = more momentum loss. High H suggests separation risk. θ growth rate indicates skin friction drag."
+      "design_relevance": "Thin BL = less drag, thick BL = more momentum loss. High H suggests separation risk. \u03b8 growth rate indicates skin friction drag."
     },
-    
     "flow_topology": {
       "description": "Critical points and separatrices extracted from velocity field",
       "critical_point_types": {
@@ -83,45 +76,112 @@
       "design_relevance": "Moving separation points downstream reduces wake size and drag. Saddle-sink pairs on the surface indicate separation zones."
     }
   },
-  
   "causal_relationships": {
     "drag_increase": [
-      {"cause": "larger_wake", "effect": "lower_base_pressure", "evidence": ["wake_slice", "streamlines"]},
-      {"cause": "lower_base_pressure", "effect": "higher_pressure_drag", "evidence": ["force_distribution"]},
-      {"cause": "flow_separation", "effect": "larger_wake", "evidence": ["streamlines", "velocity_slice"]},
-      {"cause": "stronger_vortex", "effect": "induced_drag", "evidence": ["vortex_isosurface"]}
+      {
+        "cause": "larger_wake",
+        "effect": "lower_base_pressure",
+        "evidence": [
+          "wake_slice",
+          "streamlines"
+        ]
+      },
+      {
+        "cause": "lower_base_pressure",
+        "effect": "higher_pressure_drag",
+        "evidence": [
+          "force_distribution"
+        ]
+      },
+      {
+        "cause": "flow_separation",
+        "effect": "larger_wake",
+        "evidence": [
+          "streamlines",
+          "velocity_slice"
+        ]
+      },
+      {
+        "cause": "stronger_vortex",
+        "effect": "induced_drag",
+        "evidence": [
+          "vortex_isosurface"
+        ]
+      }
     ],
     "lift_change": [
-      {"cause": "pressure_distribution_change", "effect": "lift_change", "evidence": ["pressure_slice", "force_distribution"]},
-      {"cause": "separation_location_change", "effect": "pressure_distribution_change", "evidence": ["streamlines", "velocity_slice"]}
+      {
+        "cause": "pressure_distribution_change",
+        "effect": "lift_change",
+        "evidence": [
+          "pressure_slice",
+          "force_distribution"
+        ]
+      },
+      {
+        "cause": "separation_location_change",
+        "effect": "pressure_distribution_change",
+        "evidence": [
+          "streamlines",
+          "velocity_slice"
+        ]
+      }
     ]
   },
-  
   "analysis_recommendations": {
     "vortex_analysis": {
       "primary": "show_vortices",
-      "supporting": ["show_streamlines", "show_slice"],
-      "metrics": ["analyze_data"]
+      "supporting": [
+        "show_streamlines",
+        "show_slice"
+      ],
+      "metrics": [
+        "analyze_data"
+      ]
     },
     "wake_analysis": {
-      "primary": "show_streamlines", 
-      "supporting": ["show_slice"],
-      "metrics": ["show_forces"]
+      "primary": "show_streamlines",
+      "supporting": [
+        "show_slice"
+      ],
+      "metrics": [
+        "show_forces"
+      ]
     },
     "force_analysis": {
       "primary": "show_forces",
-      "supporting": ["show_histogram"],
-      "metrics": ["analyze_data"]
+      "supporting": [
+        "show_histogram"
+      ],
+      "metrics": [
+        "analyze_data"
+      ]
     },
     "boundary_layer_analysis": {
       "primary": "show_boundary_layer",
-      "supporting": ["show_slice"],
-      "metrics": ["analyze_data"]
+      "supporting": [
+        "show_slice"
+      ],
+      "metrics": [
+        "analyze_data"
+      ]
     },
     "separation_analysis": {
       "primary": "show_flow_topology",
-      "supporting": ["show_streamlines", "show_boundary_layer"],
-      "metrics": ["analyze_data"]
+      "supporting": [
+        "show_streamlines",
+        "show_boundary_layer"
+      ],
+      "metrics": [
+        "analyze_data"
+      ]
+    },
+    "convergence_assessment": {
+      "description": "Judging whether a steady RANS solution is converged enough for a given question, from the residual history reported by get_current_monitors().",
+      "flow_features": "Qualitative features (pressure field, vortex locations, attached or separated flow) are generally trustworthy once every residual has dropped about 3 orders of magnitude from its peak and is still decreasing steadily.",
+      "integrated_loads": "Lift, drag, and moments need more: typically 4 to 5 or more orders of residual drop, and the force histories should be flat over the last few hundred iterations.",
+      "stalled": "Residuals that stop decreasing or oscillate without dropping suggest unsteady flow, a mesh problem, or a CFL that is too aggressive; features should not be trusted yet.",
+      "how_to_answer": "State the smallest orders-of-magnitude drop across residuals, whether they are still decreasing, and which kinds of conclusions that supports (features versus loads)."
     }
   }
 }

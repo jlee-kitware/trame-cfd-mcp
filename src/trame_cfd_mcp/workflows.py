@@ -342,7 +342,7 @@ class CFDWorkflows:
             display.RescaleTransferFunctionToDataRange(True, False)
             display.SetScalarBarVisibility(view, True)
         
-        simple.ResetCamera(view)
+        self._frame_body(view, pad=0.1, direction="iso", target=contour)
         simple.Render(view)
         
         # Build provenance: filter chain from ParaView, analysis from our log
@@ -371,7 +371,11 @@ class CFDWorkflows:
                 "threshold": vortex["threshold"],
                 "field_range": vortex.get("field_range")
             },
-            "tip": f"Threshold {vortex['threshold']:.2f} is auto-computed. Say 'show more structures' or 'show fewer structures' to adjust, or 'make it wireframe' to change style."
+            "tip": (
+                f"Threshold {vortex['threshold']:.2f} is auto-computed. A LOWER threshold shows MORE structures. "
+                f"More: set Isosurfaces on '{contour_name}' to [{vortex['threshold'] / 2:.2f}]. "
+                f"Fewer: set it to [{vortex['threshold'] * 2:.2f}]."
+            ),
         }
 
     def show_streamlines(
@@ -446,7 +450,7 @@ class CFDWorkflows:
             display.RescaleTransferFunctionToDataRange(True, False)
             display.SetScalarBarVisibility(view, True)
 
-        simple.ResetCamera(view)
+        self._frame_body(view, pad=1.0, direction="iso")
         simple.Render(view)
 
         provenance = {
@@ -595,6 +599,7 @@ class CFDWorkflows:
             if color_array:
                 simple.ColorBy(display, ('POINTS', color_array))
                 display.RescaleTransferFunctionToDataRange(True, False)
+                self._rescale_to_focus(slice_filter, color_array)
                 display.SetScalarBarVisibility(view, True)
         
         # Set view perpendicular to slice
@@ -608,6 +613,7 @@ class CFDWorkflows:
         else:
             bounds = slice_filter.GetDataInformation().GetBounds()
             view.ResetCamera(*bounds, False, 0.9)
+        self._mcp.hide_unshown(view)
         simple.Render(view)
         
         # Build provenance
@@ -638,15 +644,137 @@ class CFDWorkflows:
             "tip": f"To refine: say 'color by pressure' to recolor, or 'show mesh edges' to show mesh on '{slice_name}'."
         }
 
+    _VOLUME_STYLES = {
+        "density": {"preset": "Grayscale", "background": [0.0, 0.0, 0.0], "result": "logGradRho",
+                    "decades": 2.6, "opacity": [(0.0, 0.0), (0.31, 0.03), (0.69, 0.3), (1.0, 0.85)]},
+        "shear": {"preset": "Inferno", "background": [0.02, 0.02, 0.05], "result": "logGradU",
+                  "decades": 3.5, "opacity": [(0.0, 0.0), (0.43, 0.03), (0.86, 0.35), (1.0, 0.6)]},
+    }
+
+    def _volume_side_view(self, view, proxy, proxy_name, kind, source_field):
+        """Volume-render a log gradient magnitude around the body, viewed along the span.
+
+        Resamples the solution to a uniform grid around the body, masks points inside it,
+        and integrates along the line of sight like a wind-tunnel schlieren or shadowgraph
+        camera. The body is drawn as a dark silhouette.
+        """
+        style = self._VOLUME_STYLES[kind]
+        span = self._mcp.detect_span_direction(proxy_name=proxy_name)
+        if "error" in span or not span.get("body_bounds"):
+            return {"error": "Could not find the body to frame the volume rendering"}
+        axes = "xyz"
+        si, fi = axes.index(span["span_axis"]), axes.index(span["streamwise_axis"])
+        ni = 3 - si - fi
+        b = list(span["body_bounds"])
+        chord = b[2 * fi + 1] - b[2 * fi]
+        box = [0.0] * 6
+        box[2 * fi], box[2 * fi + 1] = b[2 * fi] - 0.3 * chord, b[2 * fi + 1] + 0.5 * chord
+        box[2 * si], box[2 * si + 1] = b[2 * si], b[2 * si + 1] + 0.05 * chord
+        mid = 0.5 * (b[2 * ni] + b[2 * ni + 1])
+        box[2 * ni], box[2 * ni + 1] = mid - 0.35 * chord, mid + 0.35 * chord
+        dims = [0, 0, 0]
+        dims[fi], dims[si], dims[ni] = 480, 240, 160
+
+        self._mcp.hide_all()
+        prefix = f"Volume_{kind}"
+        image = simple.ResampleToImage(Input=proxy, registrationName=f"{prefix}_Resample")
+        image.UseInputBounds = 0
+        image.SamplingBounds = box
+        image.SamplingDimensions = dims
+        result = style["result"]
+        if kind == "density":
+            gradient = simple.Gradient(Input=image, registrationName=f"{prefix}_Gradient",
+                                       ScalarArray=["POINTS", source_field], ResultArrayName="gradRho")
+            expression = "mag(gradRho)"
+        else:
+            magnitude = simple.Calculator(Input=image, registrationName=f"{prefix}_Umag",
+                                          Function=f"mag({source_field})", ResultArrayName="Umag")
+            gradient = simple.Gradient(Input=magnitude, registrationName=f"{prefix}_Gradient",
+                                       ScalarArray=["POINTS", "Umag"], ResultArrayName="gradU")
+            expression = "mag(gradU)"
+        field = simple.Calculator(
+            Input=gradient, registrationName=prefix, ResultArrayName=result,
+            Function=f"vtkValidPointMask*log10({expression}+1e-6) + (1-vtkValidPointMask)*(-8)")
+        body = simple.Contour(Input=image, registrationName=f"{prefix}_Body",
+                              ContourBy=["POINTS", "vtkValidPointMask"], Isosurfaces=[0.5])
+        simple.UpdatePipeline(proxy=field)
+        simple.UpdatePipeline(proxy=body)
+        high = field.GetDataInformation().GetPointDataInformation().GetArrayInformation(result).GetComponentRange(0)[1]
+        low = high - style["decades"]
+        self._mcp._log_analysis("volume_transfer_function", method="decades_below_max", input_field=result,
+                                range=[low, high])
+
+        display = simple.Show(field, view)
+        display.SetRepresentationType("Volume")
+        simple.ColorBy(display, ("POINTS", result))
+        lut = simple.GetColorTransferFunction(result)
+        lut.ApplyPreset(style["preset"], True)
+        lut.AutomaticRescaleRangeMode = "Never"
+        lut.RescaleTransferFunction(low, high)
+        pwf = simple.GetOpacityTransferFunction(result)
+        points = []
+        for fraction, opacity in style["opacity"]:
+            points += [low + fraction * (high - low), opacity, 0.5, 0.0]
+        pwf.Points = points
+        pwf.RescaleTransferFunction(low, high)
+        display.SetScalarBarVisibility(view, False)
+        for prop, value in (("Shade", 0), ("SamplingDimensions", dims)):
+            try:
+                setattr(display, prop, value)
+            except AttributeError:
+                pass
+        silhouette = simple.Show(body, view)
+        simple.ColorBy(silhouette, None)
+        silhouette.DiffuseColor = [0.05, 0.05, 0.06]
+        silhouette.AmbientColor = [0.05, 0.05, 0.06]
+
+        view.UseColorPaletteForBackground = 0
+        view.Background = style["background"]
+        center = [0.5 * (box[2 * i] + box[2 * i + 1]) for i in range(3)]
+        position = list(center)
+        position[si] -= 10.0 * chord
+        up = [0.0, 0.0, 0.0]
+        up[ni] = 1.0
+        view.CameraFocalPoint = center
+        view.CameraPosition = position
+        view.CameraViewUp = up
+        view.CameraParallelProjection = 1
+        width = box[2 * fi + 1] - box[2 * fi]
+        view.CameraParallelScale = 0.5 * width * 9.0 / 16.0 * 1.02
+        self._mcp.hide_unshown(view)
+        simple.Render(view)
+
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(field),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {"representation": "Volume", "colormap": style["preset"], "view": f"along {axes[si]} (span)",
+                        "projection": "parallel"},
+        }
+        self._register_provenance(prefix, provenance)
+        self._notify_pipeline_changed()
+        return {
+            "status": "created",
+            "type": f"{kind}_volume",
+            "proxy_name": prefix,
+            "field_name": result,
+            "transfer_function_range": [low, high],
+            "provenance": provenance,
+            "tip": ("Volume rendering integrates the gradient through the depth of the flow, viewed along the "
+                    "span like a wind-tunnel camera. Bright regions mark the strongest gradients: the boundary "
+                    "layer around the body and the wake behind it."),
+        }
+
     def show_schlieren(
         self,
         field: str = "Density",
         log_scale: bool = True,
         on_slice: bool = True,
-        slice_normal: str = "z",
+        slice_normal: str = "auto",
+        volume: bool = False,
     ) -> dict:
         """
-        Show Schlieren visualization (density gradient magnitude).
+        Show Schlieren visualization (density gradient magnitude), also called a density-gradient image.
         
         Schlieren imaging reveals shocks, shear layers, and expansion fans
         in compressible flows by visualizing |∇ρ|.
@@ -654,8 +782,11 @@ class CFDWorkflows:
         Args:
             field: Field to compute gradient of (default: "Density")
             log_scale: Use log scale for better shock visibility (default: True)
-            on_slice: If True, show on a slice; if False, volume render (default: True)
-            slice_normal: Normal direction for slice: "x", "y", or "z" (default: "z")
+            on_slice: Keep True for the image on an airfoil section; False shows the field on the whole volume, where only the outer boundary is visible (default: True)
+            slice_normal: Slice normal: "auto" (airfoil section at mid-span), "x", "y", or "z" (default: "auto")
+            volume: If True, volume-render the density gradient viewed along the span, integrated through the
+                flow like a real schlieren photograph. Use for "volume", "volume-rendered", "realistic", or
+                "like a wind-tunnel photo" requests.
             
         Returns:
             Dict with visualization info
@@ -670,6 +801,10 @@ class CFDWorkflows:
         
         # Clear analysis log for fresh provenance
         self._mcp.clear_analysis_log()
+
+        if volume:
+            return self._volume_side_view(view, proxy, proxy_name, "density",
+                                          self._mcp._resolve_field_type("density", proxy) or field)
         
         # Compute Schlieren field
         result = self._mcp.compute_schlieren(
@@ -687,10 +822,9 @@ class CFDWorkflows:
         if on_slice:
             # Create a slice through the center
             bounds = schlieren_proxy.GetDataInformation().GetBounds()
-            center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
-            
+            center, slice_normal = self._section_plane(proxy_name, slice_normal, bounds)
             normal_map = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}
-            normal_vec = normal_map.get(slice_normal.lower(), [0, 0, 1])
+            normal_vec = normal_map.get(slice_normal, [0, 0, 1])
             
             slice_name = f"Schlieren_Slice"
             slice_filter = simple.Slice(Input=schlieren_proxy, registrationName=slice_name)
@@ -706,6 +840,7 @@ class CFDWorkflows:
             output_name = result["proxy_name"]
         
         # Show with grayscale colormap (traditional Schlieren look)
+        self._mcp.hide_all()
         display = simple.Show(display_proxy, view)
         display.Representation = "Surface"
         simple.ColorBy(display, ('POINTS', field_name))
@@ -717,14 +852,15 @@ class CFDWorkflows:
         # Set range
         field_range = result["field_range"]
         lut.RescaleTransferFunction(field_range[0], field_range[1])
+        if on_slice:
+            self._rescale_to_focus(display_proxy, field_name)
         
         display.SetScalarBarVisibility(view, True)
         
         # Set view perpendicular to slice
         if on_slice:
             self._mcp.set_view(direction=f"-{slice_normal}")
-        
-        simple.ResetCamera(view)
+        self._frame_body(view)
         simple.Render(view)
         
         # Build provenance
@@ -758,7 +894,7 @@ class CFDWorkflows:
         self,
         field: str = "Density",
         on_slice: bool = True,
-        slice_normal: str = "z",
+        slice_normal: str = "auto",
     ) -> dict:
         """
         Show Shadowgraph visualization (Laplacian of density).
@@ -768,8 +904,8 @@ class CFDWorkflows:
         
         Args:
             field: Field to compute Laplacian of (default: "Density")
-            on_slice: If True, show on a slice; if False, volume render (default: True)
-            slice_normal: Normal direction for slice: "x", "y", or "z" (default: "z")
+            on_slice: Keep True for the image on an airfoil section; False shows the field on the whole volume, where only the outer boundary is visible (default: True)
+            slice_normal: Slice normal: "auto" (airfoil section at mid-span), "x", "y", or "z" (default: "auto")
             
         Returns:
             Dict with visualization info
@@ -800,10 +936,9 @@ class CFDWorkflows:
         if on_slice:
             # Create a slice through the center
             bounds = shadowgraph_proxy.GetDataInformation().GetBounds()
-            center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
-            
+            center, slice_normal = self._section_plane(proxy_name, slice_normal, bounds)
             normal_map = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}
-            normal_vec = normal_map.get(slice_normal.lower(), [0, 0, 1])
+            normal_vec = normal_map.get(slice_normal, [0, 0, 1])
             
             slice_name = f"Shadowgraph_Slice"
             slice_filter = simple.Slice(Input=shadowgraph_proxy, registrationName=slice_name)
@@ -819,6 +954,7 @@ class CFDWorkflows:
             output_name = result["proxy_name"]
         
         # Show with grayscale colormap
+        self._mcp.hide_all()
         display = simple.Show(display_proxy, view)
         display.Representation = "Surface"
         simple.ColorBy(display, ('POINTS', field_name))
@@ -831,14 +967,15 @@ class CFDWorkflows:
         field_range = result["field_range"]
         max_abs = max(abs(field_range[0]), abs(field_range[1]))
         lut.RescaleTransferFunction(-max_abs, max_abs)
+        if on_slice:
+            self._rescale_to_focus(display_proxy, field_name, symmetric=True)
         
         display.SetScalarBarVisibility(view, True)
         
         # Set view perpendicular to slice
         if on_slice:
             self._mcp.set_view(direction=f"-{slice_normal}")
-        
-        simple.ResetCamera(view)
+        self._frame_body(view)
         simple.Render(view)
         
         # Build provenance
@@ -871,19 +1008,33 @@ class CFDWorkflows:
         velocity_field: str = "Velocity",
         log_scale: bool = True,
         on_slice: bool = True,
-        slice_normal: str = "z",
+        slice_normal: str = "auto",
+        as_isosurface: bool = False,
+        iso_level: float = None,
+        volume: bool = False,
     ) -> dict:
         """
         Show shear layer visualization (velocity gradient magnitude).
         
         Shear layers reveal mixing regions, jet boundaries, and wake edges
-        by visualizing |∇V|.
+        by visualizing |∇V|. The slice passes through the strongest-gradient
+        region and the camera frames the visible shear structures.
         
         Args:
             velocity_field: Velocity field name (default: "Velocity")
             log_scale: Use log scale for better visibility (default: True)
             on_slice: If True, show on a slice (default: True)
-            slice_normal: Normal direction for slice: "x", "y", or "z" (default: "z")
+            slice_normal: "x", "y", "z", or "auto" (default). "auto" slices
+                normal to the body's span axis, giving a section view that
+                shows the boundary layer and wake.
+            as_isosurface: If True, draw a 3D isosurface of the velocity gradient
+                magnitude that wraps the boundary layer and wake, colored by
+                pressure. Use for "contour the shear layer" or a 3D view of it.
+            iso_level: Isosurface level in the plotted field's units (log10 when
+                log_scale). Default: computed from the data and reported back.
+            volume: If True, volume-render the shear layer viewed along the span, so the
+                boundary layer and wake glow and fade out softly. Use for "volume" or
+                "volume-rendered" requests.
             
         Returns:
             Dict with visualization info
@@ -896,6 +1047,10 @@ class CFDWorkflows:
         
         proxy_name = self._get_proxy_name(proxy)
         self._mcp.clear_analysis_log()
+
+        if volume:
+            return self._volume_side_view(view, proxy, proxy_name, "shear",
+                                          self._mcp._resolve_field_type("velocity", proxy) or velocity_field)
         
         result = self._mcp.compute_shear_layer(
             proxy_name=proxy_name,
@@ -908,10 +1063,27 @@ class CFDWorkflows:
         
         shear_proxy = simple.FindSource(result["proxy_name"])
         field_name = result["field_name"]
+        field_range = result["field_range"]
+        
+        if log_scale:
+            color_range = [max(field_range[0], field_range[1] - 5.0), field_range[1]]
+            focus_min = field_range[1] - 1.0
+        else:
+            color_range = [field_range[0], field_range[1]]
+            focus_min = 0.1 * field_range[1]
+        focus_bounds = self._field_region_bounds(shear_proxy, field_name, focus_min)
+
+        if as_isosurface:
+            return self._shear_isosurface(view, proxy, proxy_name, shear_proxy, field_name, field_range,
+                                          log_scale, iso_level)
         
         if on_slice:
-            bounds = shear_proxy.GetDataInformation().GetBounds()
+            bounds = focus_bounds or shear_proxy.GetDataInformation().GetBounds()
             center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
+            
+            if slice_normal.lower() == "auto":
+                span = self._mcp.detect_span_direction(proxy_name=proxy_name)
+                slice_normal = span.get("span_axis", "z")
             
             normal_map = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}
             normal_vec = normal_map.get(slice_normal.lower(), [0, 0, 1])
@@ -927,6 +1099,9 @@ class CFDWorkflows:
             slice_filter.SliceType.Normal = normal_vec
             simple.UpdatePipeline(proxy=slice_filter)
             
+            visible_min = color_range[0] + 0.2 * (color_range[1] - color_range[0])
+            focus_bounds = self._field_region_bounds(slice_filter, field_name, visible_min) or focus_bounds
+            
             display_proxy = slice_filter
             output_name = slice_name
         else:
@@ -939,16 +1114,19 @@ class CFDWorkflows:
         
         lut = simple.GetColorTransferFunction(field_name)
         lut.ApplyPreset('Cool to Warm', True)
-        
-        field_range = result["field_range"]
-        lut.RescaleTransferFunction(field_range[0], field_range[1])
+        lut.AutomaticRescaleRangeMode = 'Never'
+        lut.RescaleTransferFunction(color_range[0], color_range[1])
         
         display.SetScalarBarVisibility(view, True)
         
         if on_slice:
             self._mcp.set_view(direction=f"-{slice_normal}")
         
-        simple.ResetCamera(view)
+        if focus_bounds:
+            view.ResetCamera(self._pad_bounds(focus_bounds, 0.1))
+        else:
+            simple.ResetCamera(view)
+        self._mcp.hide_unshown(view)
         simple.Render(view)
         
         provenance = {
@@ -972,10 +1150,169 @@ class CFDWorkflows:
             "field_name": field_name,
             "field_range": field_range,
             "log_scale": log_scale,
+            "color_range": color_range,
+            "focus_bounds": focus_bounds,
             "provenance": provenance,
             "description": "Shear layer visualization showing velocity gradient magnitude",
-            "tip": "Bright regions indicate strong velocity gradients (mixing layers, jet boundaries)."
+            "tip": "Bright regions indicate strong velocity gradients: boundary layers, wakes, and mixing layers. "
+                   "For a 3D view, call show_shear_layer(as_isosurface=True)."
         }
+
+    def _shear_isosurface(self, view, proxy, proxy_name, shear_proxy, field_name, field_range, log_scale, iso_level):
+        if iso_level is None:
+            iso_level = field_range[1] - 2.5 if log_scale else 0.03 * field_range[1]
+            self._mcp._log_analysis("auto_threshold", method="decades_below_max" if log_scale else "fraction_of_max",
+                                    input_field=field_name, field_range=list(field_range), result=iso_level)
+        self._mcp.hide_all()
+        iso = simple.FindSource("ShearLayer_Isosurface") or simple.Contour(
+            Input=shear_proxy, registrationName="ShearLayer_Isosurface")
+        iso.ContourBy = ["POINTS", field_name]
+        iso.Isosurfaces = [iso_level]
+        iso.ComputeScalars = 1
+        simple.UpdatePipeline(proxy=iso)
+        display = simple.Show(iso, view)
+        display.Representation = "Surface"
+        pressure = self._mcp._resolve_field_type("pressure", iso) or "p"
+        try:
+            simple.ColorBy(display, ("POINTS", pressure))
+            display.RescaleTransferFunctionToDataRange(True, False)
+            self._rescale_to_focus(iso, pressure)
+            display.SetScalarBarVisibility(view, True)
+        except Exception:
+            pass
+        self._frame_body(view, pad=0.3, direction="iso", target=iso)
+        simple.Render(view)
+        provenance = {
+            "dataset": self._get_dataset_filename(proxy),
+            "filter_chain": self._mcp.extract_filter_chain(iso),
+            "analysis": self._mcp.get_analysis_log(),
+            "display": {"color_by": pressure, "representation": "Surface", "iso_level": iso_level},
+        }
+        self._register_provenance("ShearLayer_Isosurface", provenance)
+        self._notify_pipeline_changed()
+        points = iso.GetDataInformation().GetNumberOfPoints()
+        return {
+            "status": "created",
+            "type": "shear_layer_isosurface",
+            "proxy_name": "ShearLayer_Isosurface",
+            "field_name": field_name,
+            "field_range": field_range,
+            "iso_level": iso_level,
+            "log_scale": log_scale,
+            "points": points,
+            "provenance": provenance,
+            "description": "Isosurface of velocity gradient magnitude wrapping the boundary layer and wake, "
+                           "colored by pressure",
+            "tip": ("The isosurface wraps the region of strong velocity gradient: the boundary layer on the body "
+                    "and the wake behind it. Its distance from the surface shows how thick that layer is. The level "
+                    "was computed from the data; a LOWER iso_level gives a thicker surface." if points else
+                    "The isosurface is empty: lower iso_level."),
+        }
+
+    @staticmethod
+    def _field_region_bounds(proxy, field_name: str, lower: float):
+        """Bounds of the points where field_name >= lower, or None if empty."""
+        region = simple.Threshold(Input=proxy)
+        try:
+            region.Scalars = ['POINTS', field_name]
+            region.LowerThreshold = lower
+            region.UpperThreshold = 1e30
+            region.ThresholdMethod = 'Between'
+            region.UpdatePipeline()
+            info = region.GetDataInformation()
+            if info.GetNumberOfPoints() == 0:
+                return None
+            return list(info.GetBounds())
+        finally:
+            simple.Delete(region)
+
+    @staticmethod
+    def _pad_bounds(bounds, fraction: float):
+        pad = fraction * max(bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4])
+        return [b - pad if i % 2 == 0 else b + pad for i, b in enumerate(bounds)]
+
+    def _body_view_bounds(self, pad: float = 0.75):
+        """Body bounds padded by a fraction of the body size, or None if no body is found."""
+        proxy = self._get_data_reader()
+        if proxy is None:
+            return None
+        info = self._mcp.detect_span_direction(proxy_name=self._get_proxy_name(proxy))
+        body = info.get("body_bounds")
+        return self._pad_bounds(list(body), pad) if body else None
+
+    _VIEW_DIRECTIONS = {"iso": ([0.7, 0.5, 0.7], [0, 1, 0])}
+
+    def _frame_body(self, view, pad: float = 0.75, direction: str = None, target=None):
+        """Frame the camera on a result (target) or the region around the body; fall back to the whole scene.
+
+        With a direction, the camera also looks from that direction, so the result does
+        not inherit whatever direction the previous workflow left behind.
+        """
+        bounds = None
+        if target is not None:
+            info = target.GetDataInformation()
+            if info.GetNumberOfPoints() > 0:
+                bounds = self._pad_bounds(list(info.GetBounds()), pad)
+        bounds = bounds or self._body_view_bounds(pad)
+        if bounds and direction in self._VIEW_DIRECTIONS:
+            offset, up = self._VIEW_DIRECTIONS[direction]
+            center = [(bounds[i * 2] + bounds[i * 2 + 1]) / 2 for i in range(3)]
+            view.CameraFocalPoint = center
+            view.CameraPosition = [c + o for c, o in zip(center, offset)]
+            view.CameraViewUp = up
+        self._mcp.hide_unshown(view)
+        if bounds:
+            view.ResetCamera(*bounds, False, 0.9)
+        else:
+            simple.ResetCamera(view)
+        return bounds
+
+    def _focus_range(self, proxy, field: str, bounds, low: float = 2.0, high: float = 98.0):
+        """Percentile range of a point field inside bounds, or None if there is too little data."""
+        import numpy as np
+        from paraview import servermanager
+        from paraview.vtk.numpy_interface import dataset_adapter as dsa
+
+        merged = simple.MergeBlocks(Input=proxy)
+        try:
+            data = dsa.WrapDataObject(servermanager.Fetch(merged))
+            values = data.PointData[field]
+            if values is None or isinstance(values, dsa.VTKNoneArray):
+                return None
+            values, points = np.asarray(values), np.asarray(data.Points)
+            if values.ndim > 1:
+                values = np.linalg.norm(values, axis=1)
+            inside = np.all((points >= np.array(bounds[0::2])) & (points <= np.array(bounds[1::2])), axis=1)
+            selected = values[inside]
+            if selected.size < 10:
+                return None
+            lo, hi = np.percentile(selected, [low, high])
+            return (float(lo), float(hi)) if hi > lo else None
+        finally:
+            simple.Delete(merged)
+
+    def _rescale_to_focus(self, proxy, field: str, pad: float = 0.75, symmetric: bool = False):
+        """Fit the color map to the values near the body, so far-field extremes do not wash it out."""
+        bounds = self._body_view_bounds(pad)
+        value_range = self._focus_range(proxy, field, bounds) if bounds else None
+        if value_range and symmetric:
+            extent = max(abs(value_range[0]), abs(value_range[1]))
+            value_range = (-extent, extent)
+        if value_range:
+            lut = simple.GetColorTransferFunction(field)
+            lut.AutomaticRescaleRangeMode = "Never"
+            lut.RescaleTransferFunction(*value_range)
+        return value_range
+
+    def _section_plane(self, proxy_name, slice_normal, fallback_bounds):
+        """Slice origin and normal axis. 'auto' cuts an airfoil section at mid-span."""
+        if slice_normal == "auto":
+            params = self._mcp.compute_spanwise_slice_params(offset=0.0, proxy_name=proxy_name)
+            if "error" not in params:
+                return list(params["origin"]), params["normal_axis"]
+            slice_normal = "z"
+        center = [(fallback_bounds[i * 2] + fallback_bounds[i * 2 + 1]) / 2 for i in range(3)]
+        return center, slice_normal.lower()
 
     def show_recirculation(
         self,
@@ -985,8 +1322,9 @@ class CFDWorkflows:
         as_isosurface: bool = True,
     ) -> dict:
         """
-        Show recirculation/separation zones.
+        Answer whether the flow is attached or separating: find recirculation/separation zones.
         
+        Use this for questions like "is the flow attached?" or "is anything separating?".
         Identifies regions of flow separation and recirculation using several
         detection methods. Can display as isosurface (3D) or on a slice (2D).
         
@@ -1010,7 +1348,9 @@ class CFDWorkflows:
         
         proxy_name = self._get_proxy_name(proxy)
         self._mcp.clear_analysis_log()
-        
+        self._mcp.hide_all()
+
+        found, axis = None, None
         result = self._mcp.compute_recirculation(
             proxy_name=proxy_name,
             velocity_field=velocity_field,
@@ -1024,6 +1364,8 @@ class CFDWorkflows:
         recirc_proxy = simple.FindSource(result["proxy_name"])
         field_name = result["field_name"]
         threshold = result["threshold_suggestion"]
+        if method == "reverse_flow":
+            found = result["field_range"][0] < 0
         
         if as_isosurface:
             iso_name = f"Recirculation_Isosurface"
@@ -1041,6 +1383,7 @@ class CFDWorkflows:
                 iso.Isosurfaces = [threshold]
             
             simple.UpdatePipeline(proxy=iso)
+            found = iso.GetDataInformation().GetNumberOfPoints() > 0
             display_proxy = iso
             output_name = iso_name
             
@@ -1050,7 +1393,7 @@ class CFDWorkflows:
             display.Opacity = 0.7
         else:
             bounds = recirc_proxy.GetDataInformation().GetBounds()
-            center = [(bounds[i*2] + bounds[i*2+1]) / 2 for i in range(3)]
+            center, axis = self._section_plane(proxy_name, "auto", bounds)
             
             slice_name = "Recirculation_Slice"
             existing_slice = simple.FindSource(slice_name)
@@ -1060,7 +1403,7 @@ class CFDWorkflows:
                 slice_filter = simple.Slice(Input=recirc_proxy, registrationName=slice_name)
             slice_filter.SliceType = 'Plane'
             slice_filter.SliceType.Origin = center
-            slice_filter.SliceType.Normal = [0, 1, 0]
+            slice_filter.SliceType.Normal = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}[axis]
             simple.UpdatePipeline(proxy=slice_filter)
             
             display_proxy = slice_filter
@@ -1079,7 +1422,15 @@ class CFDWorkflows:
             
             display.SetScalarBarVisibility(view, True)
         
-        simple.ResetCamera(view)
+        if found is False:
+            simple.Hide(display_proxy, view)
+            self._mcp.show_data_context(proxy_name=proxy_name, opacity=1.0)
+            self._frame_body(view, direction="iso")
+        elif axis:
+            self._mcp.set_view(direction=f"-{axis}")
+            self._frame_body(view)
+        else:
+            self._frame_body(view, direction="iso")
         simple.Render(view)
         
         provenance = {
@@ -1107,7 +1458,9 @@ class CFDWorkflows:
             "as_isosurface": as_isosurface,
             "provenance": provenance,
             "description": f"Recirculation zones using {method} detection",
-            "tip": "Red surfaces show boundaries of separated/recirculating flow regions." if as_isosurface else "Blue regions indicate reverse flow (recirculation)."
+            "recirculation_found": found,
+            "tip": ("No reverse flow found: the flow stays attached, so there are no recirculation zones."
+                    if found is False else ("Red surfaces show boundaries of separated/recirculating flow regions." if as_isosurface else "Blue regions indicate reverse flow (recirculation)."))
         }
 
     def show_histogram(
@@ -1755,7 +2108,7 @@ class CFDWorkflows:
             display.DiffuseColor = [1.0, 0.2, 0.2]
             simple.RenameSource('VortexCores', vortex_filter)
         
-        simple.ResetCamera(view)
+        self._frame_body(view, pad=1.0, direction="iso")
         simple.Render(view)
         
         result = {
@@ -1876,197 +2229,176 @@ output.GetCellData().AddArray(arr)
                    "Adjust margin_frac if cells are wrong.",
         }
 
-    def show_forces(self) -> dict:
+    def show_forces(self, num_stations: int = 30) -> dict:
         """
-        Show force distribution along the body.
+        Lift and drag on the wing: spanwise loading charts plus integrated CL and CD.
 
-        Builds the body surface pipeline once and shares it across:
-        - Force distribution chart (drag + lift vs. chordwise position)
-        - Force integration (total Cd, Cl, drag, lift)
-        - Projected area computation (stencil + render cross-check)
-        - ForceIntegrationSurface proxy (tagged green/red, left hidden in pipeline)
+        Use this for questions about lift, drag, loads, or how the load is spread
+        across the span. Slices the body at span stations and integrates surface
+        pressure around each section, with freestream conditions taken from the
+        inflow boundary (angle of attack included). Charts the sectional lift
+        coefficient c_l and the span loading c_l*c/c_mean, and the sectional
+        pressure-drag coefficient c_d, against span fraction. The view shows the
+        wing's upper surface colored by pressure coefficient Cp.
+
+        Drag is pressure drag only (skin friction is not included). Before trusting
+        the values, confirm the force histories have converged.
+
+        Args:
+            num_stations: Number of span stations (default 30)
 
         Returns:
-            Dict with force distribution info, integrated Cl/Cd/lift/drag,
-            area comparison, and area_image path.
+            Dict with CL, CD, alpha_deg, planform_area, loading peak location,
+            chart proxies, and the Cp surface proxy_name.
         """
-        from trame_llm.paraview import ensure_flat_input, safe_delete
-
         proxy = self._get_data_reader()
         if proxy is None:
             return {"error": "No data reader found"}
-
-        proxy_name = None
-        for name, p in simple.GetSources().items():
-            if p == proxy:
-                proxy_name = name[0]
-                break
-
+        proxy_name = self._get_proxy_name(proxy)
         view = simple.GetActiveView()
 
-        # Remove previous ForceIntegrationSurface and its pipeline if present,
-        # so we don't accumulate stale proxies across repeated show_forces calls.
-        prev = simple.FindSource("ForceIntegrationSurface")
-        if prev is not None:
-            # Walk up the input chain and collect all temporary ancestors
-            # (they were all created by the previous show_forces call)
-            to_delete = []
-            cur = prev
-            while cur is not None:
-                to_delete.append(cur)
-                inp = getattr(cur, 'Input', None)
-                cur = inp if inp is not None else None
-                # Stop at the data reader — don't delete the original source
-                if cur is not None and cur == proxy:
-                    break
-            for p in to_delete:
-                try:
-                    simple.Delete(p)
-                except Exception:
-                    pass
-        # ExtractSurface → Clip (body bounds) → ExtractSurface (polydata) → SurfaceNormals
-        # All analysis functions reuse shared_normals; projected area reuses body_surf.
-        body_bounds, _ = self._mcp._get_body_bounds(proxy)
-        flat_proxy, _, cleanup = ensure_flat_input(proxy)
-        full_surf = simple.ExtractSurface(Input=flat_proxy)
-        simple.UpdatePipeline(proxy=full_surf)
-        body_clip = simple.Clip(Input=full_surf)
-        body_clip.ClipType = 'Box'
-        body_clip.ClipType.Bounds = [
-            body_bounds[0] - 0.01, body_bounds[1] + 0.01,
-            body_bounds[2] - 0.01, body_bounds[3] + 0.01,
-            body_bounds[4] - 0.01, body_bounds[5] + 0.01,
-        ]
-        body_clip.Invert = 1
-        simple.UpdatePipeline(proxy=body_clip)
-        body_surf = simple.ExtractSurface(Input=body_clip)  # vtkPolyData
-        simple.UpdatePipeline(proxy=body_surf)
-        shared_normals = simple.SurfaceNormals(Input=body_surf)
-        shared_normals.ComputeCellNormals = 1
-        simple.UpdatePipeline(proxy=shared_normals)
+        load = self._mcp.compute_span_loading(num_stations=num_stations, proxy_name=proxy_name)
+        if "error" in load:
+            return load
 
-        # ── ForceIntegrationSurface: tag cells with body_mask, leave hidden ──
-        margin_frac = 0.02
-        tag_script = f"""
-import numpy as np
-from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
-inp = inputs[0].VTKObject
-output.ShallowCopy(inp)
-n_cells = inp.GetNumberOfCells()
-centers = np.zeros((n_cells, 3))
-for i in range(n_cells):
-    cell = inp.GetCell(i)
-    pts = vtk_to_numpy(cell.GetPoints().GetData())
-    centers[i] = pts.mean(axis=0)
-bounds = inp.GetBounds()
-mf = {margin_frac}
-mask = np.ones(n_cells, dtype=np.float32)
-for ax in range(3):
-    lo = bounds[ax*2]   + mf*(bounds[ax*2+1]-bounds[ax*2])
-    hi = bounds[ax*2+1] - mf*(bounds[ax*2+1]-bounds[ax*2])
-    mask *= ((centers[:,ax]>lo)&(centers[:,ax]<hi)).astype(np.float32)
-arr = numpy_to_vtk(mask, deep=True)
-arr.SetName("body_mask")
-output.GetCellData().AddArray(arr)
-"""
-        try:
-            tagged = simple.ProgrammableFilter(
-                Input=shared_normals,
-                registrationName="ForceIntegrationSurface",
-            )
-            tagged.Script = tag_script
-            tagged.OutputDataSetType = "vtkPolyData"
-            simple.UpdatePipeline(proxy=tagged)
-            display = simple.Show(tagged, view)
-            simple.ColorBy(display, ('CELLS', 'body_mask'))
-            lut = simple.GetColorTransferFunction('body_mask')
-            lut.RGBPoints = [0.0, 0.8, 0.2, 0.2, 1.0, 0.2, 0.8, 0.2]
-            lut.ColorSpace = 'RGB'
-            simple.Hide(tagged, view)
-        except Exception as e:
-            import logging
-            logging.warning(f"[show_forces] Could not build ForceIntegrationSurface: {e}")
-
-        # ── Force distribution chart (reuses shared_normals) ─────────────────
-        result = self._mcp.create_force_distribution_chart(
-            proxy_name=proxy_name,
-            _shared_normals=shared_normals,
-        )
-
-        # ── Force integration for Cl/Cd (reuses shared_normals + body_surf) ──
-        forces = self._mcp.compute_forces(
-            proxy_name=proxy_name,
-            _shared_normals=shared_normals,
-            _shared_body_surf=body_surf,
-        )
-
-        # ── Clean up shared pipeline (keep ForceIntegrationSurface) ──────────
-        safe_delete(shared_normals)
-        safe_delete(body_surf)
-        safe_delete(body_clip)
-        safe_delete(full_surf)
-        if cleanup:
-            safe_delete(cleanup)
-
-        if "error" in result:
-            return result
-
-        # ── Chart ─────────────────────────────────────────────────────────────
-        chart_proxy_name = self._create_chart_table(
+        eta = list(load["eta"])
+        lift_chart = self._create_chart_table(
             chart_type="force_distribution",
-            title=result.get("title", "Force Distribution"),
+            title="Spanwise lift: sectional c_l and span loading",
             data={
-                "x": result["data"]["x"],
-                "series": result["data"]["series"],
-                "x_label": result.get("x_label", "Position"),
-                "y_label": result.get("y_label", "Force"),
+                "x": eta,
+                "series": {
+                    "c_l": list(load["cl"]),
+                    "c_l c / c_mean": list(load["cl_c_over_cref"]),
+                },
+                "x_label": "Span fraction (root to tip)",
+                "y_label": "Coefficient",
             },
-            metadata={
-                "force_axis":        result.get("force_axis"),
-                "lift_axis":         result.get("lift_axis"),
-                "distribution_axis": result.get("distribution_axis"),
-                "total_drag":        result.get("total_drag"),
-                "total_lift":        result.get("total_lift"),
-            }
         )
-        self._render_chart(chart_proxy_name)
+        drag_chart = self._create_chart_table(
+            chart_type="force_distribution",
+            title="Spanwise pressure drag: sectional c_d",
+            data={
+                "x": eta,
+                "series": {"c_d": list(load["cd"])},
+                "x_label": "Span fraction (root to tip)",
+                "y_label": "Coefficient",
+            },
+        )
+        self._render_chart(lift_chart)
+        self._render_chart(drag_chart)
+
+        cp_name = self._show_cp_surface(proxy, view, load)
+
+        loading = list(load["cl_c_over_cref"])
+        cl = list(load["cl"])
+        peak_load = int(max(range(len(loading)), key=lambda i: loading[i]))
+        peak_cl = int(max(range(len(cl)), key=lambda i: cl[i]))
         self._notify_pipeline_changed()
 
-        area_image = forces.get("area_image") if "error" not in forces else None
-
-        # Render the silhouette image in the chart drawer
-        if area_image:
-            self._render_chart_direct({
-                "chart_type": "projected_area_image",
-                "title":      "Frontal Area Silhouette",
-                "data":       {"image_path": area_image},
-            })
-
         return {
-            "status":            "created",
-            "chart_proxy":       chart_proxy_name,
-            "title":             result.get("title"),
-            "force_axis":        result.get("force_axis"),
-            "lift_axis":         result.get("lift_axis"),
-            "distribution_axis": result.get("distribution_axis"),
-            "total_drag":        round(result.get("total_drag", 0), 6),
-            "total_lift":        round(result.get("total_lift", 0), 6),
-            "num_bins":          result.get("num_bins"),
-            "num_body_cells":    result.get("num_body_cells"),
-            "drag":   round(forces.get("drag_force", 0), 6) if "error" not in forces else None,
-            "lift":   round(forces.get("lift_force", 0), 6) if "error" not in forces else None,
-            "Cd":     round(forces.get("Cd", 0), 6)         if "error" not in forces else None,
-            "Cl":     round(forces.get("Cl", 0), 6)         if "error" not in forces else None,
-            "reference_area": forces.get("reference_area")  if "error" not in forces else None,
-            "area_image":     area_image,
-            "pipeline":       "ForceIntegrationSurface added (hidden) — show/hide via pipeline browser",
+            "status": "created",
+            "proxy_name": cp_name,
+            "charts": [lift_chart, drag_chart],
+            "CL": round(load["CL"], 4),
+            "CD_pressure": round(load["CD"], 5),
+            "alpha_deg": round(load["alpha_deg"], 2),
+            "planform_area": round(load["planform_area"], 4),
+            "span": round(load["semispan"], 4),
+            "mean_chord": round(load["mean_chord"], 4),
+            "span_loading_peak_at": round(eta[peak_load], 2),
+            "sectional_cl_peak_at": round(eta[peak_cl], 2),
+            "axes": {"streamwise": load["streamwise_axis"], "span": load["span_axis"],
+                     "lift_normal": load["lift_normal_axis"]},
+            "notes": "Span fraction 0 is the root, 1 the tip; stations stop at 0.97 to avoid the tip cap. Coefficients use the planform "
+                     "area (whole wing) or the local chord (sections) and freestream dynamic "
+                     "pressure from the inflow boundary. Drag is pressure drag only.",
+            "tip": "Span loading c_l*c/c_mean is the lift each station carries; its shape sets "
+                   "the induced drag. Loading drops toward the tip, where the tip vortex sheds.",
             "ontology_hints": self._ontology_hints([
                 "causal_relationships.drag_increase",
                 "causal_relationships.lift_change",
             ]),
         }
 
+    def _show_cp_surface(self, proxy, view, load) -> str:
+        """Show the body surface colored by pressure coefficient, viewed from the lift side."""
+        from trame_llm.paraview import ensure_flat_input
 
+        name = "WingSurface_Cp"
+        for stale in (name, name + "_clip", name + "_surface"):
+            old = simple.FindSource(stale)
+            if old is not None:
+                simple.Delete(old)
+
+        self._mcp.hide_all()
+        flat_proxy, _, _ = ensure_flat_input(proxy)
+        domain = flat_proxy.GetDataInformation().GetBounds()
+        body_bounds, _ = self._mcp._get_body_bounds(proxy)
+        box = []
+        for ax in range(3):
+            lo, hi = body_bounds[2 * ax], body_bounds[2 * ax + 1]
+            eps = 1e-4 * (domain[2 * ax + 1] - domain[2 * ax])
+            box += [lo + eps if abs(lo - domain[2 * ax]) < eps else lo - 0.01,
+                    hi - eps if abs(hi - domain[2 * ax + 1]) < eps else hi + 0.01]
+        surf = simple.ExtractSurface(Input=flat_proxy, registrationName=name + "_surface")
+        clip = simple.Clip(Input=surf, registrationName=name + "_clip")
+        clip.ClipType = "Box"
+        if hasattr(clip.ClipType, "UseReferenceBounds"):
+            clip.ClipType.UseReferenceBounds = 0
+        clip.ClipType.Position = box[0::2]
+        clip.ClipType.Length = [box[2 * i + 1] - box[2 * i] for i in range(3)]
+        clip.Invert = 1
+        cp = simple.Calculator(Input=clip, registrationName=name)
+        cp.ResultArrayName = "Cp"
+        p_name = load["fields"]["pressure"]
+        cp.Function = f"({p_name} - {load['p_inf']!r}) / {load['q_inf']!r}"
+        simple.UpdatePipeline(proxy=cp)
+        if cp.GetDataInformation().GetNumberOfPoints() == 0:
+            return None
+
+        display = simple.Show(cp, view)
+        display.Representation = "Surface"
+        simple.ColorBy(display, ("POINTS", "Cp"))
+        lut = simple.GetColorTransferFunction("Cp")
+        if not lut.ApplyPreset("Turbo", True):
+            lut.ApplyPreset("Jet", True)
+        lut.AutomaticRescaleRangeMode = "Never"
+        cp_min = cp.PointData["Cp"].GetRange()[0]
+        lut.RescaleTransferFunction(cp_min, -0.5 * cp_min)
+        display.SetScalarBarVisibility(view, True)
+        bar = simple.GetScalarBar(lut, view)
+        bar.WindowLocation = "Any Location"
+        bar.Orientation = "Vertical"
+        bar.Position = [0.04, 0.45]
+        bar.ScalarBarLength = 0.4
+
+        axes = "xyz"
+        s = axes.index(load["streamwise_axis"])
+        n = axes.index(load["lift_normal_axis"])
+        b = cp.GetDataInformation().GetBounds()
+        center = [(b[2 * i] + b[2 * i + 1]) / 2 for i in range(3)]
+        position = list(center)
+        position[n] += 10.0
+        up = [0.0, 0.0, 0.0]
+        up[s] = -1.0
+        view.CameraFocalPoint = center
+        view.CameraPosition = position
+        view.CameraViewUp = up
+        self._mcp.hide_unshown(view)
+        view.ResetCamera(*b, False, 0.9)
+        # Leave room on the right for the chart drawer.
+        span_ax = axes.index(load["span_axis"])
+        shift = 0.22 * (b[2 * span_ax + 1] - b[2 * span_ax])
+        cam = view.GetActiveCamera()
+        focal = list(cam.GetFocalPoint())
+        pos = list(cam.GetPosition())
+        focal[span_ax] += shift
+        pos[span_ax] += shift
+        cam.SetFocalPoint(*focal)
+        cam.SetPosition(*pos)
+        simple.Render(view)
+        return name
 
     def analyze_data(self) -> dict:
         """

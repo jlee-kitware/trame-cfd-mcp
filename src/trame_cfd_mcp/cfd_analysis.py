@@ -2368,6 +2368,79 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
     
+    def compute_span_loading(self, num_stations: int = 30, proxy_name: str = None) -> dict:
+        """
+        Spanwise lift and drag distribution plus integrated CL and CD from surface pressure.
+
+        Slices the body at span stations and integrates gauge pressure around each
+        section. Freestream pressure, density and velocity come from the inflow
+        boundary, so lift is normal to the freestream and drag is along it (angle
+        of attack included). Coefficients use the planform area and local chord.
+        Pressure forces only: skin friction is not included in the drag.
+
+        Returns:
+            {eta, chord, cl, cd, cl_c_over_cref, lift_per_span, drag_per_span,
+             CL, CD, alpha_deg, planform_area, semispan, mean_chord, ...}
+        """
+        proxy = self._get_proxy(proxy_name)
+        if proxy is None:
+            return {"error": "No proxy found"}
+
+        def _pick(names, available):
+            return next((n for n in names if n in available), None)
+
+        flat_proxy = surface = point_data = cleanup = pf = None
+        try:
+            flat_proxy, _, cleanup = ensure_flat_input(proxy)
+            source = flat_proxy
+            info = get_field_names(source)
+            if not info["point"] and info["cell"]:
+                point_data = simple.CellDatatoPointData(Input=source)
+                source = point_data
+                info = get_field_names(source)
+            available = info["point"]
+            pres = _pick(FIELD_TYPE_PATTERNS["pressure"] + ["StaticPressure"], available)
+            vel = next((n for n in ["Velocity", "velocity", "U", "vel", "Velocity_Vector"]
+                        if available.get(n) == 3), None)
+            rho = _pick(FIELD_TYPE_PATTERNS["density"], available)
+            if pres is None or vel is None:
+                return {"error": f"Need point pressure and velocity vector fields; found {list(available)}"}
+
+            surface = simple.ExtractSurface(Input=source)
+            simple.UpdatePipeline(proxy=surface)
+            pf = run_server_script(
+                surface, _script("span_loading.py"),
+                params={"NUM_STATIONS": int(num_stations), "PRESSURE_FIELD": pres,
+                        "VELOCITY_FIELD": vel, "DENSITY_FIELD": rho or ""},
+                name="_span_loading",
+            )
+            kpi = fetch_table(pf)
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            for p in (pf, surface, point_data):
+                if p is not None:
+                    safe_delete(p, force=True)
+            if cleanup:
+                safe_delete(cleanup, force=True)
+
+        if "error" in kpi:
+            return {"error": "Span loading failed on server (no body surface or missing fields)"}
+
+        axes = "xyz"
+        out = {k: kpi[k] for k in ("eta", "span_position", "chord", "cl", "cd", "cl_c_over_cref",
+                                   "lift_per_span", "drag_per_span")}
+        out.update({k: float(kpi[k]) for k in ("CL", "CD", "lift", "drag", "alpha_deg", "planform_area",
+                                               "semispan", "mean_chord", "q_inf", "p_inf", "freestream_speed")})
+        out.update({
+            "streamwise_axis": axes[int(kpi["stream_idx"])],
+            "span_axis": axes[int(kpi["span_idx"])],
+            "lift_normal_axis": axes[int(kpi["thickness_idx"])],
+            "num_body_cells": int(kpi["num_body_cells"]),
+            "fields": {"pressure": pres, "velocity": vel, "density": rho},
+        })
+        return out
+
     def compute_projected_area(
         self,
         flow_direction: list = None,
@@ -2745,8 +2818,8 @@ out.GetPointData().AddArray(arr)
                 view = simple.CreateRenderView()
             simple.SetActiveView(view)
         
-        # Get proxy for bounds
-        proxy = self._get_proxy(proxy_name)
+        # Frame a named proxy; otherwise keep the current framing and change only the direction
+        proxy = self._get_proxy(proxy_name) if proxy_name else None
         if proxy:
             simple.UpdatePipeline(proxy=proxy)
             di = proxy.GetDataInformation()
@@ -2759,8 +2832,8 @@ out.GetPointData().AddArray(arr)
             dz = bounds[5] - bounds[4]
             distance = max(dx, dy, dz) * 2.0
         else:
-            cx, cy, cz = 0, 0, 0
-            distance = 5.0
+            cx, cy, cz = view.CameraFocalPoint
+            distance = sum((p - f) ** 2 for p, f in zip(view.CameraPosition, view.CameraFocalPoint)) ** 0.5 or 5.0
         
         # Set camera based on direction
         dir_lower = direction.lower()
@@ -3498,6 +3571,31 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
     
+    def hide_unshown(self, view=None) -> int:
+        """Give every source that has no representation in the view a hidden one.
+
+        The app's pipeline browser asks for each source's display properties, and
+        ParaView creates a visible representation when none exists. Helper filters the
+        workflows never meant to show (domain surfaces, gradients, clips) would then
+        appear in front of the result. A hidden representation created here is what
+        the browser finds instead.
+        """
+        from paraview import servermanager
+        view = view or simple.GetActiveView()
+        if view is None:
+            return 0
+        hidden = 0
+        for src in simple.GetSources().values():
+            try:
+                if servermanager.GetRepresentation(src, view) is not None:
+                    continue
+                rep = simple.GetDisplayProperties(src, view=view)
+                rep.Visibility = 0
+                hidden += 1
+            except Exception:
+                pass
+        return hidden
+
     def hide_all(self, delete_derived: bool = False) -> dict:
         """
         Hide all proxies in the pipeline.
@@ -3521,13 +3619,21 @@ out.GetPointData().AddArray(arr)
         
         count = 0
         deleted = 0
+        for prop, value in (("UseColorPaletteForBackground", 1), ("CameraParallelProjection", 0)):
+            try:
+                setattr(view, prop, value)
+            except AttributeError:
+                pass
         
         # Collect proxies first (can't modify during iteration)
         all_proxies = list(simple.GetSources().items())
         
+        from paraview import servermanager
         for name, proxy in all_proxies:
             try:
-                simple.Hide(proxy, view)
+                # Multi-output filters (e.g. Morse-Smale separatrices) have a display per port
+                for port in range(max(1, proxy.GetNumberOfOutputPorts())):
+                    simple.Hide(servermanager.OutputPort(proxy, port), view)
                 count += 1
             except:
                 pass
@@ -3819,8 +3925,12 @@ out.GetPointData().AddArray(arr)
             display.AmbientColor = color
         except AttributeError:
             pass
-        simple.ColorBy(display, None)  # Solid color, no scalar bar
+        try:
+            simple.ColorBy(display, None)  # Solid color, no scalar bar
+        except RuntimeError:
+            pass  # ParaView 6.1 raises when the display has no color array; it is already solid
         
+        self.hide_unshown(view)
         simple.Render(view)
         
         # Get filter names for reference

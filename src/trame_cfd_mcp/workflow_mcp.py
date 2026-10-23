@@ -195,6 +195,7 @@ class WorkflowMCP:
                 - "PointSize": point size for Points representation (default 2.0)
                 - "Metallic": 0.0-1.0 for PBR materials
                 - "Roughness": 0.0-1.0 for PBR materials
+                - "Color": solid color as [r, g, b] in [0, 1] (routed to update_color)
             value: The value to set (number or string depending on property)
             proxy_name: Proxy to modify, or active source if None
             
@@ -216,6 +217,10 @@ class WorkflowMCP:
         
         # Normalize property name
         prop_key = property_name.lower().replace(" ", "")
+        if prop_key in ("color", "solidcolor", "diffusecolor", "ambientcolor"):
+            if isinstance(value, str):
+                value = self._COLOR_NAMES.get(value.lower(), value)
+            return self.update_color(proxy_name=proxy_name, rgb=value)
         actual_prop = property_map.get(prop_key, property_name)
         
         # Handle "pbr" shortcut - set value to "PBR" if using the shortcut
@@ -309,9 +314,26 @@ class WorkflowMCP:
             self._notify_pipeline_and_panel()
         return result
 
-    def update_color(self, proxy_name: str = None, field_name: str = None) -> dict:
-        """Update coloring and refresh pipeline browser."""
-        result = self._base_mcp.update_color(proxy_name=proxy_name, field_name=field_name)
+    _COLOR_NAMES = {
+        "white": [1.0, 1.0, 1.0], "black": [0.0, 0.0, 0.0], "red": [1.0, 0.0, 0.0],
+        "green": [0.0, 0.8, 0.0], "blue": [0.0, 0.3, 1.0], "yellow": [1.0, 0.9, 0.0],
+        "orange": [1.0, 0.55, 0.0], "gray": [0.6, 0.6, 0.6], "grey": [0.6, 0.6, 0.6],
+    }
+
+    def update_color(self, proxy_name: str = None, field_name: str = None, rgb: list = None) -> dict:
+        """Color a proxy by a data field, or give it a solid color.
+
+        Args:
+            proxy_name: Proxy to color, or the active source if None
+            field_name: Data array to color by (e.g. "p", "Velocity")
+            rgb: Solid color as three floats in [0, 1], e.g. white is [1, 1, 1].
+                Convert color names to rgb; pass either field_name or rgb, not both.
+        """
+        if rgb is None and field_name and field_name.lower() in self._COLOR_NAMES:
+            result = self._base_mcp.update_color(proxy_name=proxy_name, field_name=field_name)
+            if "error" in result:
+                rgb, field_name = self._COLOR_NAMES[field_name.lower()], None
+        result = self._base_mcp.update_color(proxy_name=proxy_name, field_name=field_name, rgb=rgb)
         if "error" not in result:
             self._notify_pipeline_and_panel()
         return result
