@@ -241,6 +241,32 @@ infrastructure, dual-mode data access, provenance tracking, and Catalyst Live da
 | `delete_filter(proxy)` | Remove filter from pipeline |
 | `clear_all_filters()` | Reset to original data |
 
+### Topology analysis (TTK)
+
+These tools wrap [Topology ToolKit](https://topology-tool-kit.github.io/) filters and operate on a scalar point field (for example pressure `p`, or velocity magnitude), not a vector field. They require the `TopologyToolKit` plugin to be loadable by ParaView (see **Enabling TTK** below).
+
+| Tool | Description | TTK filter |
+|---|---|---|
+| `show_persistence_diagram(field)` | Persistence diagram: birth and death of critical-point pairs | `TTKPersistenceDiagram` |
+| `show_critical_points(field)` | Critical points classified as minima, saddles, and maxima | `TTKScalarFieldCriticalPoints` |
+| `show_morse_smale(field)` | Morse-Smale complex: separatrices and ascending/descending basins | `TTKMorseSmaleComplex` |
+| `show_simplified(field, persistence_threshold=0.05)` | Topological denoising: remove critical-point pairs below the persistence threshold | `TTKTopologicalSimplificationByPersistence` |
+
+**Enabling TTK.** The topology tools call TTK filters through ParaView's Python layer, so the `TopologyToolKit` plugin must be loadable by ParaView before they run. They load it lazily on first use via `ensure_ttk_loaded()`, which first calls `LoadDistributedPlugin("TopologyToolKit", ...)` on both the server (when a pvserver is connected) and the client. A packaged ParaView that bundles TTK is found this way automatically. If the by-name load fails, the client loads the plugin file directly from the first location that has one:
+
+1. `TTK_PLUGIN_PATH` (a folder containing `TopologyToolKit.so`, or the file itself)
+2. `PV_PLUGIN_PATH`
+3. the ParaView build's `lib/paraview-<version>/plugins` directories, newest version first
+4. `/usr/local/bin/plugins`
+
+A build tree with TTK linked or installed into its plugins directory therefore needs no setup. To point at a separate TTK install:
+
+```bash
+export TTK_PLUGIN_PATH=/path/to/plugins/TopologyToolKit
+```
+
+For client-server runs, the pvserver still has to find TTK by name, so set `PV_PLUGIN_PATH` for the `pvserver` process. If TTK cannot be found, the topology tools print the locations they tried and return without producing output; the CFD tools are unaffected.
+
 ---
 
 ## Catalyst Live

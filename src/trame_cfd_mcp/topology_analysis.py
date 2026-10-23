@@ -14,13 +14,43 @@ TTKTopologicalSimplificationByPersistence). All TTK scalar inputs are set via
 the array-selection property `ScalarField = ['POINTS', name]`.
 """
 
+import glob
+import os
+from pathlib import Path
+
+import paraview
 from paraview import simple
 
 _TTK_LOADED = False
+_TTK_FILES = ("TopologyToolKit.so", "TopologyToolKit.dylib", "TopologyToolKit.dll")
+
+
+def _ttk_plugin_files():
+    """Candidate TopologyToolKit plugin files, most specific location first."""
+    dirs = []
+    for var in ("TTK_PLUGIN_PATH", "PV_PLUGIN_PATH"):
+        dirs += [d for d in os.environ.get(var, "").split(os.pathsep) if d]
+    lib = Path(paraview.__file__).resolve().parents[3]
+    dirs += sorted(glob.glob(str(lib / "paraview-*" / "plugins")), reverse=True)
+    dirs.append("/usr/local/bin/plugins")
+    for d in dirs:
+        base = Path(d)
+        if base.is_file():
+            yield base
+            continue
+        for folder in (base, base / "TopologyToolKit"):
+            for name in _TTK_FILES:
+                if (folder / name).exists():
+                    yield folder / name
 
 
 def ensure_ttk_loaded():
-    """Load the TopologyToolKit plugin once, on both client and server if connected."""
+    """Load the TopologyToolKit plugin once.
+
+    Tries the plugin by name on the server and the client, then falls back to
+    loading the plugin file from TTK_PLUGIN_PATH, PV_PLUGIN_PATH, the ParaView
+    build's plugin directories, or /usr/local/bin/plugins (client only).
+    """
     global _TTK_LOADED
     if _TTK_LOADED:
         return True
@@ -32,7 +62,19 @@ def ensure_ttk_loaded():
             return True
         except Exception as e:  # builtin (no server) rejects remote=True
             last_err = e
-    print("[topology_analysis] TTK plugin load failed:", repr(last_err))
+    tried = []
+    for path in _ttk_plugin_files():
+        tried.append(str(path))
+        try:
+            simple.LoadPlugin(str(path), remote=False)
+            _TTK_LOADED = True
+            print(f"[topology_analysis] loaded TTK from {path}")
+            return True
+        except Exception as e:
+            last_err = e
+    print("[topology_analysis] TTK plugin load failed:", repr(last_err),
+          "| tried:", tried or "no plugin files found",
+          "| set TTK_PLUGIN_PATH to the folder containing TopologyToolKit.so")
     return False
 
 
@@ -42,13 +84,32 @@ def _is_image_data(proxy):
     return di.GetDataSetType() in (6, 3)  # 6 image, 3 also accepted
 
 
+def _looks_like_id_field(name):
+    n = (name or "").lower()
+    return n.endswith("id") or "nodeid" in n or "processid" in n or "pedigree" in n
+
+
 def _first_point_scalar(proxy):
     pdi = proxy.GetDataInformation().GetPointDataInformation()
+    names = []
     for i in range(pdi.GetNumberOfArrays()):
         ai = pdi.GetArrayInformation(i)
         if ai.GetNumberOfComponents() == 1:
-            return ai.GetName()
-    return None
+            names.append(ai.GetName())
+    # prefer a physical scalar over an index/ID array (degenerate for topology)
+    for n in names:
+        if not _looks_like_id_field(n):
+            return n
+    return names[0] if names else None
+
+
+def _has_point_scalar(proxy, name):
+    pdi = proxy.GetDataInformation().GetPointDataInformation()
+    for i in range(pdi.GetNumberOfArrays()):
+        ai = pdi.GetArrayInformation(i)
+        if ai.GetName() == name and ai.GetNumberOfComponents() == 1:
+            return True
+    return False
 
 
 class TopologyAnalysis:
@@ -78,7 +139,28 @@ class TopologyAnalysis:
             simple.UpdatePipeline(proxy=c2p)
             src = c2p
             scalar = field or _first_point_scalar(src)
+        # guard: an invalid field name (e.g. "velocity magnitude", not a real
+        # array) makes the TTK filters segfault. Fall back to a valid scalar.
+        if scalar is not None and not _has_point_scalar(src, scalar):
+            scalar = _first_point_scalar(src)
         return src, scalar
+
+    def _simplicial_input(self, src):
+        """Morse-Smale and simplification need a single tetrahedral mesh; a raw
+        multiblock (per-block TTK execution) can segfault. Merge composite input
+        and tetrahedralize when needed."""
+        di = src.GetDataInformation()
+        try:
+            composite = di.GetCompositeDataInformation().GetDataIsComposite()
+        except Exception:
+            composite = di.GetDataSetType() == 13
+        if composite:
+            src = simple.MergeBlocks(Input=src)
+            simple.UpdatePipeline(proxy=src)
+        if not _is_image_data(src):
+            src = simple.Tetrahedralize(Input=src)
+            simple.UpdatePipeline(proxy=src)
+        return src
 
     # -- compute_* (one TTK filter each) -----------------------------------
 
@@ -134,6 +216,7 @@ class TopologyAnalysis:
             src, scalar = self.prepare(proxy, field, resample)
             if scalar is None:
                 return {"error": "no scalar point field found"}
+            src = self._simplicial_input(src)
             ms = simple.TTKMorseSmaleComplex(Input=src)
             ms.ScalarField = ['POINTS', scalar]
             simple.UpdatePipeline(proxy=ms)
@@ -157,6 +240,7 @@ class TopologyAnalysis:
             src, scalar = self.prepare(proxy, field, resample)
             if scalar is None:
                 return {"error": "no scalar point field found"}
+            src = self._simplicial_input(src)
             thr = persistence_threshold
             if relative:
                 ai = src.GetDataInformation().GetPointDataInformation().GetArrayInformation(scalar)

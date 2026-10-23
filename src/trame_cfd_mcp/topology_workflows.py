@@ -98,7 +98,7 @@ class TopologyWorkflows:
         except Exception:
             pass
         simple.RenameSource("CriticalPoints", r["filter"])
-        simple.ResetCamera(view)
+        self._wf._frame_body(view, direction="iso")
         simple.Render(view)
         return {
             "status": "created",
@@ -144,7 +144,7 @@ class TopologyWorkflows:
         except Exception:
             pass
         simple.RenameSource("MorseSmaleComplex", f)
-        simple.ResetCamera(view)
+        self._wf._frame_body(view, direction="iso")
         simple.Render(view)
         return {
             "status": "created",
@@ -178,18 +178,28 @@ class TopologyWorkflows:
                                               persistence_threshold=persistence_threshold)
         if "error" in r:
             return r
-        d = simple.Show(r["filter"], view)
+        simple.RenameSource("SimplifiedField", r["filter"])
+        bounds = r["filter"].GetDataInformation().GetBounds()
+        origin, axis = self._wf._section_plane(self._wf._get_proxy_name(proxy), "auto", bounds)
+        section = simple.Slice(Input=r["filter"], registrationName="SimplifiedField_Section")
+        section.SliceType = "Plane"
+        section.SliceType.Origin = origin
+        section.SliceType.Normal = {"x": [1, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]}[axis]
+        d = simple.Show(section, view)
         try:
             simple.ColorBy(d, ("POINTS", r["scalar"]))
+            self._wf._rescale_to_focus(section, r["scalar"])
+            d.SetScalarBarVisibility(view, True)
         except Exception:
             pass
-        simple.RenameSource("SimplifiedField", r["filter"])
-        simple.ResetCamera(view)
+        self._wf._mcp.set_view(direction=f"-{axis}")
+        self._wf._frame_body(view)
         simple.Render(view)
         return {
             "status": "created",
             "type": "topological_simplification",
-            "proxy_name": "SimplifiedField",
+            "proxy_name": "SimplifiedField_Section",
+            "field_proxy": "SimplifiedField",
             "provenance": self._provenance(
                 proxy, ["TTKTopologicalSimplificationByPersistence"], r["scalar"],
                 {"persistence_threshold": r["persistence_threshold"]}),

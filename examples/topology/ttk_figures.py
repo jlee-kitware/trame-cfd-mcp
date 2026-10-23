@@ -25,10 +25,6 @@ _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 TopologyAnalysis = _mod.TopologyAnalysis
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
 from paraview import simple
 from paraview import servermanager
 
@@ -75,7 +71,10 @@ def load_wing(data_dir, idx=None):
     simple.UpdatePipeline(proxy=merged)
     deghost = simple.RemoveGhostInformation(Input=merged)
     simple.UpdatePipeline(proxy=deghost)
-    wing = simple.Threshold(Input=deghost, Scalars=["CELLS", "boundary_tag"],
+    # weld coincident points at rank boundaries (the per-proc seam), as for the volume
+    clean = simple.CleantoGrid(Input=deghost)
+    simple.UpdatePipeline(proxy=clean)
+    wing = simple.Threshold(Input=clean, Scalars=["CELLS", "boundary_tag"],
                             LowerThreshold=2, UpperThreshold=2)
     simple.UpdatePipeline(proxy=wing)
     return wing
@@ -114,6 +113,9 @@ def frame_on(view, proxy, az=35, el=20, zoom=2.2):
 
 def fig_persistence(ta, src):
     """Birth/death persistence diagram via matplotlib."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     r = ta.compute_persistence(src, field=FIELD)
     if "error" in r:
         print("  persistence error:", r["error"]); return
@@ -176,20 +178,22 @@ def fig_critical_points(ta, src, wing, thr):
         simple.UpdatePipeline(proxy=th)
         if th.GetDataInformation().GetNumberOfPoints() == 0:
             continue
-        gg = simple.Glyph(Input=th, GlyphType="Sphere"); gg.ScaleFactor = 0.14
+        gg = simple.Glyph(Input=th, GlyphType="Sphere"); gg.ScaleFactor = 0.04
         gg.GlyphMode = "All Points"; simple.UpdatePipeline(proxy=gg)
         dgg = simple.Show(gg, view)
         try: simple.ColorBy(dgg, None)
         except Exception: pass
         dgg.DiffuseColor = color; dgg.AmbientColor = color
-    # face-on (down the wing's thin z axis), framed on the near field
+    simple.Render(view)  # consume any pending auto-reset from the first Show
+    # face-on (down the wing's thin z axis), framed tightly on the wing
     b = wing.GetDataInformation().GetBounds()
     c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2]
+    dx, dy, dz = b[1] - b[0], b[3] - b[2], b[5] - b[4]
     view.CameraParallelProjection = 1
     view.CameraFocalPoint = c
-    view.CameraPosition = [c[0], c[1], c[2] + 10]
+    view.CameraPosition = [c[0], c[1], c[2] + max(dz, 1.0) * 5 + 10]
     view.CameraViewUp = [0, 1, 0]
-    view.CameraParallelScale = 2.5
+    view.CameraParallelScale = 0.5 * max(dx, dy) * 1.25
     simple.Render(view)
     fn = os.path.join(OUT, "fig_critical_points.png")
     simple.SaveScreenshot(fn, view, ImageResolution=[1200, 900])
@@ -212,19 +216,20 @@ def fig_morse_smale(ta, src, wing, thr):
     if "error" in r:
         print("  morse-smale error:", r["error"]); return
     f = r["filter"]
-    tube = simple.Tube(Input=simple.OutputPort(f, 1)); tube.Radius = 0.03
+    tube = simple.Tube(Input=simple.OutputPort(f, 1)); tube.Radius = 0.006
     simple.UpdatePipeline(proxy=tube)
     dt = simple.Show(tube, view)
     for arr in ("SeparatrixType", "CellDimension"):
         try: simple.ColorBy(dt, ("CELLS", arr)); break
         except Exception: continue
     g = simple.Glyph(Input=simple.OutputPort(f, 0), GlyphType="Sphere")
-    g.ScaleFactor = 0.12; g.GlyphMode = "All Points"
+    g.ScaleFactor = 0.03; g.GlyphMode = "All Points"
     simple.UpdatePipeline(proxy=g)
     dg = simple.Show(g, view)
     try: simple.ColorBy(dg, ("POINTS", "CriticalType"))
     except Exception: pass
-    frame_on(view, wing, zoom=3.5)
+    simple.Render(view)  # consume any pending auto-reset before framing
+    frame_on(view, wing, zoom=1.6)
     fn = os.path.join(OUT, "fig_morse_smale.png")
     simple.SaveScreenshot(fn, view, ImageResolution=[1200, 900])
     print("  wrote fig_morse_smale.png")
@@ -232,20 +237,29 @@ def fig_morse_smale(ta, src, wing, thr):
 
 def fig_denoise_compare(ta, src, thr):
     """Critical-point counts before vs after persistence simplification."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     raw = ta.compute_critical_points(src, field=FIELD).get("counts", {})
     simp = ta.compute_simplification(src, field=FIELD, persistence_threshold=thr, relative=False)
     after = {}
     if "filter" in simp:
         after = ta.compute_critical_points(simp["filter"], field=FIELD).get("counts", {})
-    cats = ["minima", "1_saddles", "2_saddles", "maxima"]
-    b = [raw.get(c, 0) for c in cats]
-    a = [after.get(c, 0) for c in cats]
+    keys = ["minima", "1_saddles", "2_saddles", "maxima", "type_4"]
+    labels = ["minima", "1-saddles", "2-saddles", "maxima", "multi-saddles"]
+    b = [raw.get(c, 0) for c in keys]
+    a = [after.get(c, 0) for c in keys]
     import numpy as np
-    x = np.arange(len(cats)); w = 0.38
+    x = np.arange(len(keys)); w = 0.38
     fig, ax = plt.subplots(figsize=(5.5, 4))
-    ax.bar(x - w / 2, b, w, label="raw field", color="#bbbbbb")
-    ax.bar(x + w / 2, a, w, label="after simplification", color="#2a6fb0")
-    ax.set_xticks(x); ax.set_xticklabels(cats, rotation=15)
+    rb = ax.bar(x - w / 2, b, w, label="raw field (%d)" % sum(b), color="#bbbbbb")
+    ra = ax.bar(x + w / 2, a, w, label="after simplification (%d)" % sum(a), color="#2a6fb0")
+    try:
+        ax.bar_label(rb, padding=2, fontsize=8)
+        ax.bar_label(ra, padding=2, fontsize=8)
+    except Exception:
+        pass
+    ax.set_xticks(x); ax.set_xticklabels(labels, rotation=15)
     ax.set_ylabel("count"); ax.set_title("Critical points before/after persistence simplification")
     ax.legend(); fig.tight_layout()
     fig.savefig(os.path.join(OUT, "fig_denoise_compare.pdf"), dpi=200)
