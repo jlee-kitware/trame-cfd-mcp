@@ -53,3 +53,6 @@ examples/cfd_assistant/output/
 examples/cfd_assistant/test.vtm
 # Keep .env.example tracked
 !.env.example
+
+# Local environment with API keys
+.env_local
