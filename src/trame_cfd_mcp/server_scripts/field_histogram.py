@@ -62,8 +62,10 @@ else:
 
     _add_col(tbl, "bin_center", centers.tolist())
     _add_col(tbl, "count", counts.tolist(), vtk.vtkIntArray)
-    _add_scalar(tbl, "min",  float(arr.min()))
-    _add_scalar(tbl, "max",  float(arr.max()))
-    _add_scalar(tbl, "mean", float(arr.mean()))
-    _add_scalar(tbl, "std",  float(arr.std()))
-    _add_scalar(tbl, "num_points", float(len(arr)))
+    # vtkTable columns must share one length, so each statistic is repeated per bin.
+    n = len(centers)
+    _add_col(tbl, "min", [float(arr.min())] * n)
+    _add_col(tbl, "max", [float(arr.max())] * n)
+    _add_col(tbl, "mean", [float(arr.mean())] * n)
+    _add_col(tbl, "std", [float(arr.std())] * n)
+    _add_col(tbl, "num_points", [float(len(arr))] * n)

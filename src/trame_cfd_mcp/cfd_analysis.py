@@ -1874,15 +1874,19 @@ class CFDAnalysis:
         bin_centers = kpi["bin_center"] if isinstance(kpi["bin_center"], list) else [kpi["bin_center"]]
         counts = kpi["count"] if isinstance(kpi["count"], list) else [kpi["count"]]
 
+        def stat(name, default=0.0):
+            value = kpi.get(name, default)
+            return value[0] if isinstance(value, list) else value
+
         return {
             "field": field_name,
-            "num_points": int(kpi.get("num_points", 0)),
+            "num_points": int(stat("num_points")),
             "bin_edges": [b - (bin_centers[1] - bin_centers[0]) / 2 for b in bin_centers] + [bin_centers[-1] + (bin_centers[-1] - bin_centers[-2]) / 2] if len(bin_centers) > 1 else bin_centers,
             "counts": [int(c) for c in counts],
-            "min":  kpi["min"],
-            "max":  kpi["max"],
-            "mean": kpi["mean"],
-            "std":  kpi["std"],
+            "min": stat("min"),
+            "max": stat("max"),
+            "mean": stat("mean"),
+            "std": stat("std"),
         }
     
     def compute_vortex_field(
