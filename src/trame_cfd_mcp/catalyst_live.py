@@ -123,6 +123,20 @@ class CFDChatMCP:
                 added += 1
         return added
 
+    def _wait_for_data(self, proxy, timeout=15.0):
+        """Pump Live events until a fresh extract has received its first data."""
+        import time
+        if proxy is None:
+            return False
+        end = time.time() + timeout
+        while time.time() < end:
+            self._process_events()
+            proxy.UpdatePipeline()
+            if proxy.GetDataInformation().GetDataClassName() not in (None, "vtkDataObject"):
+                return True
+            time.sleep(0.1)
+        return False
+
     def _process_events(self):
         """Pump the VTK network access manager event queue."""
         from paraview import servermanager
@@ -274,14 +288,27 @@ class CFDChatMCP:
         except:
             return False
     
+    def live_channels(self) -> list:
+        """Names of the data channels the connected simulation publishes."""
+        if not self._live_link:
+            return []
+        self._process_events()
+        ipm = self._live_link.GetInsituProxyManager()
+        if ipm is None:
+            return []
+        return [ipm.GetProxyName("sources", i) for i in range(ipm.GetNumberOfProxies("sources"))]
+
     def get_live_status(self) -> dict:
-        """Get current timestep and time from the live simulation."""
+        """Get the live simulation's time, pause state and the names of its data channels."""
         if not self._live_link:
             return {"status": "not_connected"}
-        
+
         try:
             time = simple.GetAnimationScene().TimeKeeper.Time
-            return {"status": "connected", "time": time}
+            paused = self._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
+            return {"status": "connected", "time": time, "paused": paused,
+                    "channels": self.live_channels(),
+                    "extracted": list(self._extracted_sources)}
         except Exception as e:
             return {"status": "error", "message": str(e)}
     
@@ -419,9 +446,7 @@ class CFDChatMCP:
             
             # Use ExtractCatalystData like extract_monitors does
             extracted = ExtractCatalystData(self._live_link, source_name)
-            
-            # Process notifications after extraction
-            self._process_events()
+            self._wait_for_data(extracted)
             
             if extracted:
                 # Force pipeline update
@@ -511,7 +536,10 @@ class CFDChatMCP:
         try:
             simple.SetActiveSource(source)
             rep = simple.Show(source)
-            
+            # A volume grid shows as an outline by default, which hides the coloring.
+            if rep.GetPropertyValue("Representation") == "Outline":
+                rep.SetRepresentationType("Surface")
+
             if color_by:
                 # Use proxy's PointData/CellData interface for field lookup
                 point_fields = list(source.PointData.keys())
@@ -591,7 +619,7 @@ class CFDChatMCP:
             
             self._process_events()
             extracted = ExtractCatalystData(self._live_link, channel_name)
-            self._process_events()
+            self._wait_for_data(extracted)
             
             if extracted:
                 extracted.UpdatePipeline()
@@ -823,6 +851,26 @@ class CFDChatMCP:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
+    def _with_live_channels(self, list_data):
+        """Wrap list_data so its result also names the connected simulation's channels."""
+        import functools
+
+        @functools.wraps(list_data)
+        def wrapper(*args, **kwargs):
+            result = list_data(*args, **kwargs)
+            if isinstance(result, dict) and self._live_link:
+                pending = [c for c in self.live_channels() if c not in self._extracted_sources]
+                result["live_simulation"] = {
+                    "connected": True,
+                    "channels": self.live_channels(),
+                    "not_yet_extracted": pending,
+                    "tip": "Channels from the running simulation are not listed above until extracted. "
+                           "Call show_live_source('<channel>', color_by='<field>') to extract and display one.",
+                }
+            return result
+
+        return wrapper
+
     @property
     def mcp(self) -> dict:
         """Return MCP declaration with all tools."""
@@ -834,6 +882,8 @@ class CFDChatMCP:
         ]
         
         if self._live_enabled:
+            tools = [self._with_live_channels(tool) if getattr(tool, "__name__", "") == "list_data" else tool
+                     for tool in tools]
             tools.extend([
                 self.connect_live,
                 self.disconnect_live,
@@ -855,11 +905,17 @@ class CFDChatMCP:
 
 == LIVE SIMULATION MONITORING ==
 
+A live simulation publishes named data channels. get_live_status() lists them
+in "channels" (for example "grid" for the flow field and "monitors" for residuals
+and forces). Use those names; never assume "surface" or "volume".
+
 Workflow for visualizing live data:
 1. connect_live() - Connect to simulation (optionally with pause=True)
-2. pause_simulation() - Pause for detailed analysis  
-3. extract_live_data("surface") or extract_live_data("volume") - Extract data
-4. show_live_source("surface", color_by="p") - Display with coloring
+2. get_live_status() - Find the channel names
+3. show_live_source("<channel>", color_by="<field>") - Extracts the channel and displays it.
+   Pausing first is optional; the simulation keeps running and the data refreshes.
+4. After a channel is extracted it behaves like any loaded dataset: the analysis
+   tools (slices, contours, vortex detection, statistics) take its name as input.
 
 Alternative: Call set_pause_on_connect() before starting simulation to auto-pause on connect.
 
