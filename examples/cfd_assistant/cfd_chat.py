@@ -184,36 +184,73 @@ def main():
     app.state.ptc_light_theme = True
 
     rtx_available = all("EnableRenderingwithANARI" in v.ListProperties() for v in app.views)
-    app.state.rtx_available = rtx_available
-    app.state.rtx_enabled = False
+    app.state.update({
+        "rtx_available": rtx_available,
+        "rtx_enabled": False,
+        "rtx_panel_open": False,
+        "rtx_mode": "fast",
+        "rtx_ambient": 0.8,
+        "rtx_ao_samples": 4,
+        "rtx_ao_distance": 0.1,
+        "rtx_denoise": True,
+        "rtx_still_passes": 16,
+        "rtx_ray_depth": 5,
+        "rtx_modes": [
+            {"value": "fast", "title": "Fast", "tip": "Ambient occlusion, built for interaction"},
+            {"value": "interactive", "title": "Lit", "tip": "Direct light with shadows"},
+            {"value": "quality", "title": "Quality", "tip": "Path traced: reflections and indirect light"},
+        ],
+    })
     if rtx_available:
         from paraview.modules.vtkRemotingViews import vtkPVView
 
         vtkPVView.SetEnableStreaming(True)
 
-    @app.state.change("rtx_enabled")
-    def set_rtx(rtx_enabled, **_):
-        if not rtx_available:
-            return
+    def data_diagonal():
+        source = simple.GetActiveSource()
+        if source is None:
+            return 1.0
+        x0, x1, y0, y1, z0, z1 = source.GetDataInformation().GetBounds()
+        return max(((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5, 1e-6)
+
+    def apply_rtx(passes=None):
+        s = app.state
         for view in app.views:
-            view.EnableRenderingwithANARI = 1 if rtx_enabled else 0
-            if rtx_enabled:
-                view.ANARILibrary = "visrtx"
-                view.ANARIRenderer = "default"
-                view.ANARIRendererParameters = ["ambientRadiance", "2", "0.8"]
-                view.ProgressivePasses = RTX_STILL_PASSES
+            view.EnableRenderingwithANARI = 1 if s.rtx_enabled else 0
+            if not s.rtx_enabled:
+                continue
+            view.ANARILibrary = "visrtx"
+            view.ANARIRenderer = s.rtx_mode
+            view.StillRender()
+            params = [("ambientRadiance", 2, s.rtx_ambient)]
+            if s.rtx_mode in ("fast", "interactive"):
+                params += [
+                    ("ambientSamples", 1, int(s.rtx_ao_samples)),
+                    ("ambientOcclusionDistance", 2, s.rtx_ao_distance * data_diagonal()),
+                ]
+            if s.rtx_mode == "quality":
+                params.append(("maxRayDepth", 1, int(s.rtx_ray_depth)))
+            if s.rtx_mode != "default":
+                params.append(("denoise", 0, "true" if s.rtx_denoise else "false"))
+            for key, kind, value in params:
+                view.ANARIRendererParameters = [key, str(kind), str(value)]
+            view.ProgressivePasses = passes or int(s.rtx_still_passes)
         app.update()
+
+    @app.state.change("rtx_enabled", "rtx_mode", "rtx_ambient", "rtx_ao_samples", "rtx_ao_distance",
+                      "rtx_denoise", "rtx_still_passes", "rtx_ray_depth")
+    def on_rtx_settings(**_):
+        if rtx_available:
+            apply_rtx()
 
     # One VisRTX pass is ~50 ms and 16 are ~400 ms on the GB10, so drags render
     # single passes and the view refines once the mouse is released.
-    RTX_STILL_PASSES = 16
-
     @app.server.controller.add("on_view_interaction")
     def rtx_interaction(started):
         if not (rtx_available and app.state.rtx_enabled):
             return
         for view in app.views:
-            view.ProgressivePasses = 1 if started else RTX_STILL_PASSES
+            view.ProgressivePasses = 1 if started else int(app.state.rtx_still_passes)
         if not started:
             app.update()
     ctrl = app.server.controller
@@ -764,13 +801,19 @@ def main():
                             )
 
                 with react.If("rtx_available"):
-                    mui.Button(
-                        "RTX",
-                        size="small",
-                        title="Ray trace the view with NVIDIA VisRTX through ANARI",
-                        variant=react.Bind("rtx_enabled ? 'contained' : 'outlined'"),
-                        on_click=react.Callback("rtx_enabled = !rtx_enabled"),
-                    )
+                    with mui.ButtonGroup(size="small"):
+                        mui.Button(
+                            "RTX",
+                            title="Ray trace the view with NVIDIA VisRTX through ANARI",
+                            variant=react.Bind("rtx_enabled ? 'contained' : 'outlined'"),
+                            on_click=react.Callback("rtx_enabled = !rtx_enabled"),
+                        )
+                        with mui.Button(
+                            title="Ray tracing settings",
+                            variant=react.Bind("rtx_panel_open ? 'contained' : 'outlined'"),
+                            on_click=react.Callback("rtx_panel_open = !rtx_panel_open"),
+                        ):
+                            ptc.Icon(icon="mdi-tune-variant", size=16)
                 mui.Button(
                     "Charts",
                     size="small",
@@ -788,7 +831,55 @@ def main():
                 }
             )
 
+    label_style = {"fontSize": "0.8rem", "color": MUTED, "marginTop": "10px"}
     with app.ui:
+        with ptc.FloatingPanel(
+            open=react.Bind("rtx_panel_open"),
+            style={"top": "68px", "right": "calc(33vw + 2rem)", "zIndex": 1300, "width": "300px"},
+        ):
+            with mui.Paper(variant="outlined", style={"borderRadius": "8px",
+                                                     "boxShadow": "0 4px 16px rgba(23, 32, 51, 0.12)"}):
+                with html.Div(classes="ptc-drag-handle", style={
+                    "display": "flex", "alignItems": "center", "justifyContent": "space-between",
+                    "padding": "6px 8px 6px 14px", "borderBottom": f"1px solid {LINE}"}):
+                    html.Span("Ray tracing", style={"fontWeight": 600})
+                    ptc.IconButton("mdi-close", on_click=react.Callback("rtx_panel_open = false"), title="Close")
+                with html.Div(style={"padding": "8px 14px 14px"}):
+                    with html.Div(style={"display": "flex", "alignItems": "center", "justifyContent": "space-between"}):
+                        html.Span("VisRTX", style={"fontSize": "0.85rem"})
+                        mui.Switch(checked=react.Bind("rtx_enabled"), size="small",
+                                   on_change=react.Callback("rtx_enabled = $event.target.checked"))
+                    html.Div("Mode", style=label_style)
+                    with mui.ButtonGroup(size="small", style={"width": "100%"}):
+                        with react.For(items="rtx_modes", name="m"):
+                            mui.Button([react.Bind("m.title")], key=react.Bind("m.value"), title=react.Bind("m.tip"),
+                                       style={"flex": "1", "textTransform": "none"},
+                                       variant=react.Bind("rtx_mode === m.value ? 'contained' : 'outlined'"),
+                                       on_click=react.Callback("rtx_mode = m.value"))
+                    html.Div([react.Bind("'Ambient light: ' + rtx_ambient")], style=label_style)
+                    mui.Slider(value=react.Bind("rtx_ambient"), min=0, max=3, step=0.05, size="small",
+                               on_change=react.Callback("rtx_ambient = $event.target.value"))
+                    with html.Div(style={"display": ptc.show_if("rtx_mode !== 'quality'")}):
+                        html.Div([react.Bind("'Ambient occlusion samples: ' + rtx_ao_samples")], style=label_style)
+                        mui.Slider(value=react.Bind("rtx_ao_samples"), min=0, max=16, step=1, size="small",
+                                   on_change=react.Callback("rtx_ao_samples = $event.target.value"))
+                        html.Div([react.Bind("'Occlusion distance: ' + rtx_ao_distance + ' of the data size'")],
+                                 style=label_style)
+                        mui.Slider(value=react.Bind("rtx_ao_distance"), min=0.01, max=1, step=0.01, size="small",
+                                   on_change=react.Callback("rtx_ao_distance = $event.target.value"))
+                    with html.Div(style={"display": ptc.show_if("rtx_mode === 'quality'")}):
+                        html.Div([react.Bind("'Ray depth: ' + rtx_ray_depth")], style=label_style)
+                        mui.Slider(value=react.Bind("rtx_ray_depth"), min=1, max=10, step=1, size="small",
+                                   on_change=react.Callback("rtx_ray_depth = $event.target.value"))
+                    html.Div([react.Bind("'Passes when still: ' + rtx_still_passes")], style=label_style)
+                    mui.Slider(value=react.Bind("rtx_still_passes"), min=1, max=64, step=1, size="small",
+                               on_change=react.Callback("rtx_still_passes = $event.target.value"))
+                    with html.Div(style={"display": "flex", "alignItems": "center",
+                                         "justifyContent": "space-between", "marginTop": "8px"}):
+                        html.Span("OptiX denoiser", style={"fontSize": "0.85rem"})
+                        mui.Switch(checked=react.Bind("rtx_denoise"), size="small",
+                                   on_change=react.Callback("rtx_denoise = $event.target.checked"))
+
         # Chart panel - floating card, draggable by its header and collapsible
         with ptc.FloatingPanel(
             open=react.Bind("chart_drawer_open"),
