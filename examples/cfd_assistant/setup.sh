@@ -27,7 +27,14 @@ fi
 source .venv/bin/activate
 
 echo "Installing dependencies..."
-pip install -q trame trame-vuetify trame-vtk trame-plotly python-dotenv fastmcp openai
+pip install -q "trame>=4" trame-mui trame-rca trame-plotly python-dotenv fastmcp openai
+
+# paraview-trame-components with React widgets: from pip or a local clone
+if [ -n "$PTC_SRC" ]; then
+    pip install -q -e "$PTC_SRC[react]"
+else
+    pip install -q "paraview-trame-components[react]"
+fi
 
 # trame-llm: install from pip (when published) or from local clone
 if [ -n "$TRAME_LLM_SRC" ]; then
