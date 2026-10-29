@@ -182,6 +182,27 @@ def main():
     
     app = Lite(theme=THEME)
     app.state.ptc_light_theme = True
+
+    rtx_available = all("EnableRenderingwithANARI" in v.ListProperties() for v in app.views)
+    app.state.rtx_available = rtx_available
+    app.state.rtx_enabled = False
+    if rtx_available:
+        from paraview.modules.vtkRemotingViews import vtkPVView
+
+        vtkPVView.SetEnableStreaming(True)
+
+    @app.state.change("rtx_enabled")
+    def set_rtx(rtx_enabled, **_):
+        if not rtx_available:
+            return
+        for view in app.views:
+            view.EnableRenderingwithANARI = 1 if rtx_enabled else 0
+            if rtx_enabled:
+                view.ANARILibrary = "visrtx"
+                view.ANARIRenderer = "default"
+                view.ANARIRendererParameters = ["ambientRadiance", "2", "0.8"]
+                view.ProgressivePasses = 16
+        app.update()
     ctrl = app.server.controller
     app.state.trame__title = "CFD assistant"
     app.state.chart_drawer_open = False
@@ -729,6 +750,14 @@ def main():
                                 on_click=react.Callback(step_forward),
                             )
 
+                with react.If("rtx_available"):
+                    mui.Button(
+                        "RTX",
+                        size="small",
+                        title="Ray trace the view with NVIDIA VisRTX through ANARI",
+                        variant=react.Bind("rtx_enabled ? 'contained' : 'outlined'"),
+                        on_click=react.Callback("rtx_enabled = !rtx_enabled"),
+                    )
                 mui.Button(
                     "Charts",
                     size="small",
