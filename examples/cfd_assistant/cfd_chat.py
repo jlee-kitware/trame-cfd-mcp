@@ -201,8 +201,21 @@ def main():
                 view.ANARILibrary = "visrtx"
                 view.ANARIRenderer = "default"
                 view.ANARIRendererParameters = ["ambientRadiance", "2", "0.8"]
-                view.ProgressivePasses = 16
+                view.ProgressivePasses = RTX_STILL_PASSES
         app.update()
+
+    # One VisRTX pass is ~50 ms and 16 are ~400 ms on the GB10, so drags render
+    # single passes and the view refines once the mouse is released.
+    RTX_STILL_PASSES = 16
+
+    @app.server.controller.add("on_view_interaction")
+    def rtx_interaction(started):
+        if not (rtx_available and app.state.rtx_enabled):
+            return
+        for view in app.views:
+            view.ProgressivePasses = 1 if started else RTX_STILL_PASSES
+        if not started:
+            app.update()
     ctrl = app.server.controller
     app.state.trame__title = "CFD assistant"
     app.state.chart_drawer_open = False
