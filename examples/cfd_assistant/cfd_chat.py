@@ -69,9 +69,60 @@ import ptc.react as ptc
 from ptc.react.apps.lite import Lite
 from trame.widgets import html, mui, react
 
+CANVAS, SURFACE, INK, MUTED, LINE = "#F3F5F8", "#FFFFFF", "#172033", "#5A6474", "#DCE1E8"
+ACCENT, ACCENT_TINT = "#0A7C8C", "#E3F2F4"
+SANS = "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif"
+FONTS = ("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500"
+         "&family=IBM+Plex+Sans:wght@400;500;600&display=swap")
+THEME = {
+    "palette": {"mode": "light", "primary": {"main": ACCENT}, "secondary": {"main": "#6E56CF"},
+                "success": {"main": "#1F883D"}, "error": {"main": "#C4314B"}, "warning": {"main": "#B35900"},
+                "background": {"default": CANVAS, "paper": SURFACE}, "text": {"primary": INK, "secondary": MUTED},
+                "divider": LINE},
+    "typography": {"fontFamily": SANS, "fontSize": 13, "button": {"textTransform": "none", "fontWeight": 500}},
+    "shape": {"borderRadius": 6},
+    "components": {
+        "MuiButton": {"defaultProps": {"disableElevation": True}},
+        "MuiPaper": {"styleOverrides": {"outlined": {"borderColor": LINE}}},
+        "MuiOutlinedInput": {"styleOverrides": {"root": {"backgroundColor": SURFACE},
+                                                "notchedOutline": {"borderColor": LINE}}},
+        "MuiTooltip": {"defaultProps": {"arrow": True, "enterDelay": 400}},
+    },
+}
+MESSAGE_COLORS = {
+    "blue-lighten-3": ACCENT, "blue-lighten-4": ACCENT, "blue-lighten-5": ACCENT,
+    "purple-lighten-3": "#6E56CF", "red-lighten-3": "#C4314B", "yellow-lighten-3": "#B35900",
+    "green-lighten-3": "#1F883D", "teal-lighten-3": "#0B5C75", "orange-lighten-3": "#B35900",
+}
+CSS_VARS = {
+    "--ptc-toolbar-bg": SURFACE, "--ptc-toolbar-fg": MUTED, "--ptc-line": LINE,
+    "--ptc-accent": ACCENT, "--ptc-accent-tint": ACCENT_TINT,
+    "--tlc-surface": SURFACE, "--tlc-ink": INK, "--tlc-line": LINE, "--tlc-input-line": LINE,
+    "--tlc-accent": ACCENT, "--tlc-accent-tint": ACCENT_TINT, "--tlc-font": SANS,
+    "--tlc-font-size": "0.85rem", "--tlc-radius": "8px", "--tlc-title-size": "0.95rem",
+    "--tlc-title-weight": "600", "--tlc-shadow": "0 4px 16px rgba(23, 32, 51, 0.12)",
+    "--tlc-message-fill": "12%",
+    **{f"--tlc-{name}": color for name, color in MESSAGE_COLORS.items()},
+}
+GLOBAL_STYLES = (
+    f"@import url('{FONTS}'); "
+    f"body {{ background: {CANVAS}; font-family: {SANS}; }} "
+    ":root { " + " ".join(f"{k}: {v};" for k, v in CSS_VARS.items()) + " }"
+)
+
 try:
     from trame.widgets import plotly as trame_plotly
     import plotly.graph_objects as go
+    import plotly.io as pio
+
+    pio.templates["cfd"] = go.layout.Template(layout=dict(
+        font=dict(family=SANS, color=INK, size=12),
+        colorway=[ACCENT, "#6E56CF", "#B35900", "#1F883D", "#C4314B", "#0B5C75"],
+        paper_bgcolor=SURFACE,
+        plot_bgcolor=SURFACE,
+        title=dict(font=dict(size=14)),
+    ))
+    pio.templates.default = "plotly_white+cfd"
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
@@ -129,9 +180,10 @@ def main():
                 if remote:
                     print("  (path must be accessible from the pvserver filesystem)")
     
-    app = Lite()
+    app = Lite(theme=THEME)
+    app.state.ptc_light_theme = True
     ctrl = app.server.controller
-    app.state.trame__title = "CFD Analysis Assistant"
+    app.state.trame__title = "CFD assistant"
     app.state.chart_drawer_open = False
     app.state.live_enabled = args.live
     app.state.live_connected = False
@@ -604,23 +656,115 @@ def main():
     
     app.state.setdefault("chart_collapsed", False)
     
+    with app.ui_header:
+        mui.GlobalStyles(styles=GLOBAL_STYLES)
+        with html.Header(
+            style={
+                "position": "relative",
+                "background": SURFACE,
+                "borderBottom": f"1px solid {LINE}",
+            }
+        ):
+            with html.Div(
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "height": "52px",
+                    "padding": "0 20px",
+                    "gap": "16px",
+                }
+            ):
+                with html.Div(style={"display": "flex", "alignItems": "baseline", "gap": "8px"}):
+                    html.Span(
+                        "CFD assistant",
+                        style={
+                            "fontWeight": 600,
+                            "fontSize": "1.05rem",
+                            "color": INK,
+                            "letterSpacing": "-0.01em",
+                        },
+                    )
+                    html.Span(
+                        "LLM-guided post-processing in ParaView",
+                        style={"color": MUTED, "fontSize": "0.8rem"},
+                    )
+                html.Div(style={"flex": "1"})
+
+                # Live connection and transport controls
+                with react.If("live_enabled"):
+                    with html.Div(style={"display": "flex", "gap": "8px", "alignItems": "center"}):
+                        mui.Button(
+                            [react.Bind("live_connected ? 'Connected' : 'Connect'")],
+                            size="small",
+                            variant=react.Bind("live_connected ? 'contained' : 'outlined'"),
+                            color=react.Bind("live_connected ? 'success' : 'primary'"),
+                            on_click=react.Callback(toggle_live_connection),
+                        )
+                        with html.Div(
+                            style={
+                                "display": ptc.show_if("live_connected", "flex"),
+                                "gap": "8px",
+                                "alignItems": "center",
+                            }
+                        ):
+                            mui.Button(
+                                [react.Bind("simulation_paused ? 'Resume' : 'Pause'")],
+                                size="small",
+                                variant="outlined",
+                                color=react.Bind("simulation_paused ? 'success' : 'warning'"),
+                                on_click=react.Callback(toggle_pause),
+                            )
+                            mui.TextField(
+                                label="Steps",
+                                value=react.Bind("step_count"),
+                                on_change=react.Callback("step_count = Number($event.target.value)"),
+                                type="number",
+                                size="small",
+                                style={"width": "90px"},
+                            )
+                            mui.Button(
+                                "Step",
+                                size="small",
+                                variant="outlined",
+                                on_click=react.Callback(step_forward),
+                            )
+
+                mui.Button(
+                    "Charts",
+                    size="small",
+                    variant=react.Bind("chart_drawer_open ? 'contained' : 'outlined'"),
+                    on_click=react.Callback(toggle_chart_drawer),
+                )
+            mui.LinearProgress(
+                style={
+                    "position": "absolute",
+                    "left": 0,
+                    "right": 0,
+                    "bottom": "-1px",
+                    "height": "2px",
+                    "visibility": react.Bind("trame__busy ? 'visible' : 'hidden'"),
+                }
+            )
+
     with app.ui:
         # Chart panel - floating card, draggable by its header and collapsible
         with ptc.FloatingPanel(
             open=react.Bind("chart_drawer_open"),
             style={
-                "top": "50px",
-                "right": "80px",
+                "top": "120px",
+                "right": "calc(33vw + 2rem)",
                 "zIndex": 1200,
                 "width": "520px",
             },
         ):
             with mui.Paper(
-                elevation=8,
+                variant="outlined",
                 style={
                     "display": "flex",
                     "flexDirection": "column",
-                    "maxHeight": "calc(100vh - 60px)",
+                    "maxHeight": "calc(100vh - 84px)",
+                    "borderRadius": "8px",
+                    "boxShadow": "0 4px 16px rgba(23, 32, 51, 0.12)",
                 },
             ):
                 with html.Div(
@@ -629,42 +773,35 @@ def main():
                         "display": "flex",
                         "alignItems": "center",
                         "justifyContent": "space-between",
-                        "padding": "2px 8px",
+                        "padding": "4px 8px 4px 4px",
+                        "borderBottom": f"1px solid {LINE}",
                     },
                 ):
                     with html.Div(style={"display": "flex", "alignItems": "center"}):
-                        with mui.IconButton(
-                            size="small",
-                            title="Collapse/Expand",
+                        ptc.IconButton(
+                            react.Bind("chart_collapsed ? 'mdi-chevron-right' : 'mdi-chevron-down'"),
                             on_click=react.Callback("chart_collapsed = !chart_collapsed"),
-                        ):
-                            ptc.Icon(
-                                icon=react.Bind(
-                                    "chart_collapsed ? 'mdi-chevron-right' : 'mdi-chevron-down'"
-                                )
-                            )
-                        html.Span("Charts", style={"marginLeft": "4px", "fontWeight": 500})
+                            title="Collapse or expand",
+                        )
+                        html.Span("Charts", style={"fontWeight": 600, "color": INK})
                     with html.Div(style={"display": "flex"}):
-                        with mui.IconButton(
-                            size="small",
-                            title="Clear Charts",
+                        ptc.IconButton(
+                            "mdi-delete-outline",
                             on_click=react.Callback(clear_analysis_charts),
-                        ):
-                            ptc.Icon(icon="mdi-delete-outline")
-                        with mui.IconButton(
-                            size="small",
-                            title="Close",
+                            title="Clear charts",
+                        )
+                        ptc.IconButton(
+                            "mdi-close",
                             on_click=react.Callback("chart_drawer_open = false"),
-                        ):
-                            ptc.Icon(icon="mdi-close")
-                mui.Divider()
+                            title="Close",
+                        )
 
                 # Scrollable content with multiple chart slots
                 with html.Div(
                     style={
                         "display": ptc.show_if("!chart_collapsed"),
                         "overflowY": "auto",
-                        "padding": "8px",
+                        "padding": "8px 12px",
                     }
                 ):
                     if PLOTLY_AVAILABLE:
@@ -708,79 +845,14 @@ def main():
                                 )
                                 app.chart_widgets.append(widget)
                     else:
-                        html.P("Install trame-plotly for charts", style={"color": "grey"})
+                        html.P("Install trame-plotly for charts", style={"color": MUTED})
 
-                    # Status info at bottom
-                    html.P(
+                    html.Div(
                         [react.Bind("live_chart_status")],
-                        style={"fontSize": "0.75rem", "color": "grey", "margin": "4px 0 0"},
+                        style={"fontSize": "0.78rem", "color": MUTED, "marginTop": "4px"},
                     )
 
-        # Buttons in top-right corner, above the chat and chart panel
-        with html.Div(
-            style={
-                "position": "fixed",
-                "top": "12px",
-                "right": "80px",
-                "zIndex": 1201,
-                "display": "flex",
-                "gap": "8px",
-                "alignItems": "center",
-            }
-        ):
-            with mui.Fab(
-                size="small",
-                title="Live Residual Chart",
-                color=react.Bind("chart_drawer_open ? 'primary' : 'default'"),
-                on_click=react.Callback(toggle_chart_drawer),
-            ):
-                ptc.Icon(icon="mdi-chart-line")
-
-            # Live connection and transport controls
-            with react.If("live_enabled"):
-                with html.Div(style={"display": "flex", "gap": "4px", "alignItems": "center"}):
-                    with mui.Fab(
-                        size="small",
-                        title=react.Bind("live_connected ? 'Connected' : 'Click to connect'"),
-                        color=react.Bind("live_connected ? 'success' : 'default'"),
-                        on_click=react.Callback(toggle_live_connection),
-                    ):
-                        ptc.Icon(
-                            icon=react.Bind(
-                                "live_connected ? 'mdi-broadcast' : 'mdi-broadcast-off'"
-                            )
-                        )
-                    # Transport controls - only visible when connected
-                    with html.Div(
-                        style={
-                            "display": ptc.show_if("live_connected", "flex"),
-                            "gap": "4px",
-                            "alignItems": "center",
-                        }
-                    ):
-                        with mui.Fab(
-                            size="small",
-                            title=react.Bind("simulation_paused ? 'Resume' : 'Pause'"),
-                            color=react.Bind("simulation_paused ? 'success' : 'warning'"),
-                            on_click=react.Callback(toggle_pause),
-                        ):
-                            ptc.Icon(
-                                icon=react.Bind("simulation_paused ? 'mdi-play' : 'mdi-pause'")
-                            )
-                        mui.TextField(
-                            value=react.Bind("step_count"),
-                            on_change=react.Callback("step_count = Number($event.target.value)"),
-                            type="number",
-                            size="small",
-                            style={"width": "70px", "background": "white", "borderRadius": "4px"},
-                        )
-                        with mui.Fab(
-                            size="small",
-                            title="Step N iterations",
-                            on_click=react.Callback(step_forward),
-                        ):
-                            ptc.Icon(icon="mdi-skip-forward")
-
+    with app.ui_main:
         llm.Chat(
             app_name="cfd",
             enabled_message_types=[
