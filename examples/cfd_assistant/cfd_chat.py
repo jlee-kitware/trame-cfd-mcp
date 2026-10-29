@@ -243,16 +243,29 @@ def main():
         if rtx_available:
             apply_rtx()
 
-    # One VisRTX pass is ~50 ms and 16 are ~400 ms on the GB10, so drags render
-    # single passes and the view refines once the mouse is released.
+    # Any mouse, wheel or key activity renders single VisRTX passes; the view refines
+    # to the still pass count once input has been quiet for RTX_IDLE seconds.
+    RTX_IDLE = 0.3
+    rtx_refine = {"task": None, "interactive": False}
+
+    async def rtx_refine_when_idle():
+        await asyncio.sleep(RTX_IDLE)
+        rtx_refine["interactive"] = False
+        for view in app.views:
+            view.ProgressivePasses = int(app.state.rtx_still_passes)
+        app.update()
+
     @app.server.controller.add("on_view_interaction")
-    def rtx_interaction(started):
+    def rtx_interaction(event_type):
         if not (rtx_available and app.state.rtx_enabled):
             return
-        for view in app.views:
-            view.ProgressivePasses = 1 if started else int(app.state.rtx_still_passes)
-        if not started:
-            app.update()
+        if not rtx_refine["interactive"]:
+            rtx_refine["interactive"] = True
+            for view in app.views:
+                view.ProgressivePasses = 1
+        if rtx_refine["task"] is not None:
+            rtx_refine["task"].cancel()
+        rtx_refine["task"] = asyncio.ensure_future(rtx_refine_when_idle())
     ctrl = app.server.controller
     app.state.trame__title = "CFD assistant"
     app.state.chart_drawer_open = False
