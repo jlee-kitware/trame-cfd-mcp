@@ -213,8 +213,25 @@ def main():
         x0, x1, y0, y1, z0, z1 = source.GetDataInformation().GetBounds()
         return max(((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5, 1e-6)
 
+    def composite_volume_visible():
+        """VTK's ANARI volume mapper renders composite data blank and crashes on teardown."""
+        for view in app.views:
+            for rep in view.Representations:
+                if (rep.GetProperty("Representation") is not None and rep.Visibility
+                        and rep.GetPropertyValue("Representation") == "Volume"):
+                    info = rep.Input.GetDataInformation() if hasattr(rep, "Input") and rep.Input else None
+                    if info is not None and info.IsCompositeDataSet():
+                        return True
+        return False
+
     def apply_rtx(passes=None):
         s = app.state
+        if s.rtx_enabled and composite_volume_visible():
+            with s:
+                s.rtx_enabled = False
+                s.rtx_notice = "VisRTX can't volume render multi-block data yet; staying on OpenGL."
+            return
+        s.rtx_notice = ""
         for view in app.views:
             view.EnableRenderingwithANARI = 1 if s.rtx_enabled else 0
             if not s.rtx_enabled:
@@ -236,6 +253,13 @@ def main():
                 view.ANARIRendererParameters = [key, str(kind), str(value)]
             view.ProgressivePasses = passes or int(s.rtx_still_passes)
         app.update()
+
+    app.state.rtx_notice = ""
+
+    @app.server.controller.add("on_representation_change")
+    def rtx_guard():
+        if rtx_available and app.state.rtx_enabled and composite_volume_visible():
+            apply_rtx()
 
     @app.state.change("rtx_enabled", "rtx_mode", "rtx_ambient", "rtx_ao_samples", "rtx_ao_distance",
                       "rtx_denoise", "rtx_still_passes", "rtx_ray_depth")
@@ -568,6 +592,9 @@ def main():
         def update_live_charts():
             """Update Plotly chart if monitoring is active."""
             try:
+                # The steering proxy shows up with the simulation's first Live update.
+                if app.state.live_connected and not app.state.steer_available:
+                    refresh_steering()
                 # Check if connection dropped
                 if app.state.live_connected and not chat_mcp.is_connection_alive():
                     # Connection was lost - update state
@@ -702,17 +729,52 @@ def main():
     def toggle_chart_drawer():
         app.state.chart_drawer_open = not app.state.chart_drawer_open
     
+    app.state.update({"steer_available": False, "steer_reynolds": 0, "steer_collision": -1,
+                      "steer_collisions": []})
+
+    def refresh_steering():
+        result = chat_mcp.get_simulation_parameters() if app.state.live_connected else {}
+        params = {p["name"]: p for p in result.get("parameters", [])}
+        with app.state:
+            app.state.steer_available = "Reynolds" in params
+            if "Reynolds" in params:
+                app.state.steer_reynolds = round(params["Reynolds"]["value"])
+            if "Collision" in params:
+                app.state.steer_collision = int(params["Collision"]["value"])
+                app.state.steer_collisions = [{"text": k, "value": v}
+                                              for k, v in params["Collision"]["choices"].items()]
+
+    def apply_reynolds():
+        chat_mcp.set_simulation_parameter("Reynolds", str(app.state.steer_reynolds))
+
+    def on_reynolds_key(key):
+        if key == "Enter":
+            apply_reynolds()
+
+    def apply_collision(value):
+        chat_mcp.set_simulation_parameter("Collision", str(value))
+
+    def on_steer(name, value):
+        key = {"Reynolds": "steer_reynolds", "Collision": "steer_collision"}.get(name)
+        if key:
+            with app.state:
+                app.state[key] = round(value) if key == "steer_reynolds" else int(value)
+
+    chat_mcp.on_steer = on_steer
+
     def toggle_live_connection():
         if app.state.live_connected:
             chat_mcp.disconnect_live()
             with app.state:
                 app.state.live_connected = False
                 app.state.simulation_paused = False
+                app.state.steer_available = False
         else:
             result = chat_mcp.connect_live()
             with app.state:
                 app.state.live_connected = result.get("status") == "connected"
                 app.state.simulation_paused = result.get("paused", False)
+            refresh_steering()
 
     def toggle_pause():
         if not app.state.live_connected:
@@ -812,6 +874,26 @@ def main():
                                 variant="outlined",
                                 on_click=react.Callback(step_forward),
                             )
+                            with react.If("steer_available"):
+                                mui.TextField(
+                                    label="Re",
+                                    title="Reynolds number; press Enter to send it to the simulation",
+                                    value=react.Bind("steer_reynolds"),
+                                    on_change=react.Callback("steer_reynolds = Number($event.target.value)"),
+                                    on_key_down=react.Callback(on_reynolds_key, args="[$event.key]"),
+                                    on_blur=react.Callback(apply_reynolds),
+                                    type="number",
+                                    size="small",
+                                    style={"width": "96px"},
+                                )
+                                with mui.ButtonGroup(size="small", title="Collision model (each is its own JIT-compiled kernel)"):
+                                    for text, value in (("BGK", 0), ("TRT", 1), ("LES", 2)):
+                                        mui.Button(
+                                            text,
+                                            variant=react.Bind(f"steer_collision === {value} ? 'contained' : 'outlined'"),
+                                            on_click=react.Callback(apply_collision, args=f"[{value}]"),
+                                            style={"textTransform": "none"},
+                                        )
 
                 with react.If("rtx_available"):
                     with mui.ButtonGroup(size="small"):
@@ -827,6 +909,11 @@ def main():
                             on_click=react.Callback("rtx_panel_open = !rtx_panel_open"),
                         ):
                             ptc.Icon(icon="mdi-tune-variant", size=16)
+                    html.Span(
+                        [react.Bind("rtx_notice")],
+                        style={"display": ptc.show_if("rtx_notice", "inline"), "color": MUTED,
+                               "fontSize": "0.75rem", "maxWidth": "220px"},
+                    )
                 mui.Button(
                     "Charts",
                     size="small",

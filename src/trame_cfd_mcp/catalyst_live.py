@@ -19,8 +19,15 @@ from paraview import simple
 class CFDChatMCP:
     """MCP wrapper that adds cost tracking and optional live monitoring tools."""
     
-    def __init__(self, workflow_mcp, llm_client, live_enabled=False, live_host="localhost", live_port=22222):
+    def __init__(self, workflow_mcp, llm_client, live_enabled=False, live_host="localhost", live_port=22222,
+                 live_proxies=None):
+        import os
         self._workflow_mcp = workflow_mcp
+        # Proxy definitions (XML) for the simulation's steerable parameters, colon separated.
+        self._live_proxies = live_proxies or os.environ.get("CATALYST_LIVE_PROXIES", "")
+        self._live_proxies_loaded = False
+        # Called as on_steer(name, value) after a steering change is sent, so a UI can follow.
+        self.on_steer = None
         self._llm_client = llm_client
         self._live_enabled = live_enabled
         self._live_host = live_host
@@ -132,7 +139,9 @@ class CFDChatMCP:
         while time.time() < end:
             self._process_events()
             proxy.UpdatePipeline()
-            if proxy.GetDataInformation().GetDataClassName() not in (None, "vtkDataObject"):
+            # Wait for real content: an empty composite arrives first, and showing it
+            # would pick a representation without Volume or Slice.
+            if proxy.GetDataInformation().GetNumberOfPoints() > 0:
                 return True
             time.sleep(0.1)
         return False
@@ -183,6 +192,7 @@ class CFDChatMCP:
         # Use pause_on_connect flag if pause not explicitly specified
         should_pause = pause if pause is not None else self._pause_on_connect
         
+        self._load_live_proxies()
         try:
             # IMPORTANT: Save the display session before connecting to Catalyst
             # This is what ParaView GUI does - we need to restore it after connecting
@@ -288,6 +298,104 @@ class CFDChatMCP:
         except:
             return False
     
+    def _load_live_proxies(self):
+        if self._live_proxies_loaded or not self._live_proxies:
+            return
+        from paraview.modules.vtkRemotingServerManager import vtkSMProxyManager
+        plugins = vtkSMProxyManager.GetProxyManager().GetPluginManager()
+        for path in filter(None, self._live_proxies.split(":")):
+            if not plugins.LoadLocalPlugin(path):
+                print(f"[Live] Could not load proxy definitions from {path}")
+        self._live_proxies_loaded = True
+
+    def _steerable_proxies(self) -> dict:
+        if not self._live_link:
+            return {}
+        self._process_events()
+        ipm = self._live_link.GetInsituProxyManager()
+        if ipm is None:
+            return {}
+        proxies = {}
+        for i in range(ipm.GetNumberOfProxies("sources")):
+            name = ipm.GetProxyName("sources", i)
+            proxy = ipm.GetProxy("sources", name)
+            if proxy is not None and proxy.GetVTKClassName() == "vtkSteeringDataGenerator":
+                proxies[name] = proxy
+        return proxies
+
+    @staticmethod
+    def _describe_property(proxy, key):
+        from paraview.modules.vtkRemotingServerManager import vtkSMPropertyHelper
+        prop = proxy.GetProperty(key)
+        entry = {"name": key, "label": prop.GetXMLLabel(),
+                 "value": vtkSMPropertyHelper(proxy, key).GetAsDouble()}
+        doc = prop.GetDocumentation()
+        if doc is not None and doc.GetDescription():
+            entry["description"] = " ".join(doc.GetDescription().split())
+        rng = prop.GetDomain("range")
+        if rng is not None and rng.GetMinimumExists(0):
+            entry["min"] = rng.GetMinimum(0)
+            entry["max"] = rng.GetMaximum(0)
+        enum = prop.GetDomain("enum")
+        if enum is not None:
+            entry["choices"] = {enum.GetEntryText(i): enum.GetEntryValue(i)
+                                for i in range(enum.GetNumberOfEntries())}
+        return entry
+
+    def get_simulation_parameters(self) -> dict:
+        """List the parameters of the running simulation that can be changed while it runs
+        (steering), with their current values, valid ranges and choices."""
+        if not self._live_link:
+            return {"error": "Not connected. Call connect_live() first."}
+        params = []
+        for proxy in self._steerable_proxies().values():
+            it = proxy.NewPropertyIterator()
+            it.Begin()
+            while not it.IsAtEnd():
+                prop = it.GetProperty()
+                if prop.GetPanelVisibility() != "never" and not prop.GetInformationOnly():
+                    params.append(self._describe_property(proxy, it.GetKey()))
+                it.Next()
+        if not params:
+            return {"status": "none", "message": "This simulation publishes no steerable parameters."}
+        return {"status": "ok", "parameters": params}
+
+    def set_simulation_parameter(self, name: str, value: str) -> dict:
+        """Change a parameter of the running simulation, for example name="Reynolds", value="500"
+        or name="Collision", value="Smagorinsky LES". The simulation applies it at its next
+        Catalyst update, within a few hundred iterations. Call get_simulation_parameters() for
+        the names, ranges and choices."""
+        if not self._live_link:
+            return {"error": "Not connected. Call connect_live() first."}
+        from paraview.modules.vtkRemotingServerManager import vtkSMPropertyHelper
+        for proxy in self._steerable_proxies().values():
+            prop = proxy.GetProperty(name)
+            if prop is None:
+                continue
+            info = self._describe_property(proxy, name)
+            choices = info.get("choices")
+            if choices:
+                match = {k.lower(): v for k, v in choices.items()}.get(str(value).strip().lower())
+                number = float(match) if match is not None else float(value)
+                if int(number) not in choices.values():
+                    return {"error": f"'{value}' is not one of {list(choices)}"}
+            else:
+                number = float(value)
+                if "min" in info and not info["min"] <= number <= info["max"]:
+                    return {"error": f"{name} must be between {info['min']} and {info['max']}"}
+            vtkSMPropertyHelper(proxy, name).Set(number)
+            proxy.UpdateVTKObjects()
+            # Marks the Live state dirty so it is pushed to the simulation.
+            self._live_link.GetInsituProxyManager().Modified()
+            if self._live_link.GetProperty("SimulationPaused").GetElement(0) == 1:
+                self._live_link.PushUpdatedStates()
+            if self.on_steer:
+                self.on_steer(name, number)
+            return {"status": "requested", "name": name, "previous": info["value"], "value": number,
+                    "note": "The simulation applies this at its next Catalyst update."}
+        return {"error": f"No steerable parameter named '{name}'",
+                "available": [p["name"] for p in self.get_simulation_parameters().get("parameters", [])]}
+
     def live_channels(self) -> list:
         """Names of the data channels the connected simulation publishes."""
         if not self._live_link:
@@ -896,6 +1004,8 @@ class CFDChatMCP:
                 self.step_simulation,
                 self.extract_live_data,
                 self.show_live_source,
+                self.get_simulation_parameters,
+                self.set_simulation_parameter,
                 self.extract_monitors,
                 self.show_monitor_chart,
                 self.get_current_monitors,
@@ -920,6 +1030,11 @@ Workflow for visualizing live data:
 Alternative: Call set_pause_on_connect() before starting simulation to auto-pause on connect.
 
 The extract step is REQUIRED when paused - it copies data from simulation memory.
+
+Steering: get_simulation_parameters() lists what can be changed while the simulation
+runs (for example Reynolds number or the collision model); set_simulation_parameter()
+changes one. Report the requested change, and check the monitors afterwards to show
+its effect (for example the reynolds monitor field and the drag and lift response).
 
 Other tools:
 - resume_simulation() - Continue after analysis

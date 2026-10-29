@@ -342,8 +342,39 @@ class WorkflowMCP:
         result = self._base_mcp.update_representation(representation_type=representation_type,
                                                        proxy_name=proxy_name)
         if "error" not in result:
+            if str(representation_type).strip().lower() == "volume":
+                result.update(self._volume_scalar_coloring(proxy_name))
             self._notify_pipeline_and_panel()
+            ctrl = self._base_mcp.app.ctrl
+            if ctrl.on_representation_change.exists():
+                ctrl.on_representation_change()
         return self._with_visibility_note(result, proxy_name)
+
+    def _volume_scalar_coloring(self, proxy_name):
+        """Volume rendering composite data by a vector's magnitude draws nothing in VTK,
+        so color the volume by a matching scalar array instead."""
+        proxy = self._base_mcp.get_proxy_from_name(proxy_name)
+        view = simple.GetActiveView()
+        rep = servermanager.GetRepresentation(proxy, view) if proxy is not None else None
+        if rep is None:
+            return {}
+        association, name = rep.ColorArrayName[0], rep.ColorArrayName[1]
+        if not name:
+            return {}
+        arrays = proxy.PointData if association == "POINTS" else proxy.CellData
+        array = arrays[name] if name in arrays.keys() else None
+        if array is None or array.GetNumberOfComponents() == 1:
+            return {}
+        for candidate in ("speed", f"{name}_magnitude", f"{name}Magnitude", "magnitude"):
+            match = next((a for a in arrays.keys() if a.lower() == candidate.lower()), None)
+            if match and arrays[match].GetNumberOfComponents() == 1:
+                simple.ColorBy(rep, (association, match))
+                rep.RescaleTransferFunctionToDataRange(True, False)
+                self._base_mcp.render()
+                return {"color_by": match,
+                        "note": f"Volume rendering uses the scalar '{match}' (the magnitude of '{name}')."}
+        return {"note": f"Volume rendering needs a scalar; '{name}' is a vector. "
+                        "Compute its magnitude with a Calculator and color the volume by that."}
 
     def show_only(self, proxy_names: list[str]) -> dict:
         """Show the named results and hide everything else in the view, with their scalar bars.
