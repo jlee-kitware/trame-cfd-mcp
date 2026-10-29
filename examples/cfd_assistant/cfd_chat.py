@@ -23,7 +23,7 @@ Usage:
 
 UI Features:
     - Pipeline browser: click branch icon (left toolbar) or press 'p'
-    - Live chart: click chart icon (top-right) - opens on LEFT side
+    - Live chart: click chart icon (top-right)
     - Live connection: click broadcast icon (top-right, only with --live)
     - Chat: click chat icon (bottom-right)
 
@@ -65,9 +65,9 @@ logging.getLogger("trame_llm").setLevel(logging.INFO)
 
 from paraview import simple
 
-import ptc
-from ptc.apps.lite import Lite
-from trame.widgets import vuetify3 as v3, html
+import ptc.react as ptc
+from ptc.react.apps.lite import Lite
+from trame.widgets import html, mui, react
 
 try:
     from trame.widgets import plotly as trame_plotly
@@ -602,175 +602,185 @@ def main():
         if not app.state.chart_drawer_open:
             app.state.chart_drawer_open = True
     
-    # State for chart panel position and collapse
     app.state.setdefault("chart_collapsed", False)
-    app.state.setdefault("chart_pos_x", None)  # None = use default position
-    app.state.setdefault("chart_pos_y", 50)
     
     with app.ui:
-        # JavaScript for dragging
-        html.Script("""
-            window.initDraggable = function(el) {
-                if (!el || el._dragInitialized) return;
-                el._dragInitialized = true;
-                
-                const header = el.querySelector('.drag-handle');
-                if (!header) return;
-                
-                let isDragging = false;
-                let startX, startY, startLeft, startTop;
-                
-                header.style.cursor = 'move';
-                
-                header.addEventListener('mousedown', function(e) {
-                    if (e.target.closest('button')) return; // Don't drag when clicking buttons
-                    isDragging = true;
-                    startX = e.clientX;
-                    startY = e.clientY;
-                    const rect = el.getBoundingClientRect();
-                    startLeft = rect.left;
-                    startTop = rect.top;
-                    e.preventDefault();
-                });
-                
-                document.addEventListener('mousemove', function(e) {
-                    if (!isDragging) return;
-                    const dx = e.clientX - startX;
-                    const dy = e.clientY - startY;
-                    el.style.left = (startLeft + dx) + 'px';
-                    el.style.top = (startTop + dy) + 'px';
-                    el.style.right = 'auto';
-                });
-                
-                document.addEventListener('mouseup', function() {
-                    isDragging = false;
-                });
-            };
-        """)
-        
-        # Chart panel - floating card, draggable and collapsible
-        with v3.VCard(
-            v_show="chart_drawer_open",
-            style="position: fixed; top: 50px; right: 80px; z-index: 10000; width: 520px; max-height: calc(100vh - 60px);",
-            elevation=8,
-            ref="chartPanel",
-            __events=["mounted"],
-            mounted="window.initDraggable($refs.chartPanel.$el)",
+        # Chart panel - floating card, draggable by its header and collapsible
+        with ptc.FloatingPanel(
+            open=react.Bind("chart_drawer_open"),
+            style={
+                "top": "50px",
+                "right": "80px",
+                "zIndex": 1200,
+                "width": "520px",
+            },
         ):
-            # Header with drag handle, collapse, and close buttons
-            with v3.VCardTitle(
-                classes="drag-handle d-flex justify-space-between align-center py-1 flex-shrink-0",
-                style="user-select: none;",
+            with mui.Paper(
+                elevation=8,
+                style={
+                    "display": "flex",
+                    "flexDirection": "column",
+                    "maxHeight": "calc(100vh - 60px)",
+                },
             ):
-                with html.Div(classes="d-flex align-center"):
-                    v3.VBtn(
-                        icon=("chart_collapsed ? 'mdi-chevron-right' : 'mdi-chevron-down'",),
-                        click="chart_collapsed = !chart_collapsed",
-                        variant="text",
-                        size="x-small",
-                        density="compact",
-                        title="Collapse/Expand",
-                    )
-                    html.Span("Charts", classes="text-subtitle-2 ml-1")
-                with html.Div(classes="d-flex"):
-                    v3.VBtn(
-                        icon="mdi-delete-outline",
-                        click=(clear_analysis_charts,),
-                        variant="text",
-                        size="x-small",
-                        density="compact",
-                        title="Clear Charts",
-                    )
-                    v3.VBtn(icon="mdi-close", click="chart_drawer_open = false", variant="text", size="x-small", density="compact")
-            
-            v3.VDivider()
-            
-            # Scrollable content with multiple chart slots
-            with v3.VExpandTransition():
-                with html.Div(v_show="!chart_collapsed"):
-                    with v3.VCardText(classes="pa-2", style="overflow-y: auto; max-height: calc(100vh - 120px);"):
-                        if PLOTLY_AVAILABLE:
-                            # Dedicated live residual chart (shown when monitoring)
+                with html.Div(
+                    classes="ptc-drag-handle",
+                    style={
+                        "display": "flex",
+                        "alignItems": "center",
+                        "justifyContent": "space-between",
+                        "padding": "2px 8px",
+                    },
+                ):
+                    with html.Div(style={"display": "flex", "alignItems": "center"}):
+                        with mui.IconButton(
+                            size="small",
+                            title="Collapse/Expand",
+                            on_click=react.Callback("chart_collapsed = !chart_collapsed"),
+                        ):
+                            ptc.Icon(
+                                icon=react.Bind(
+                                    "chart_collapsed ? 'mdi-chevron-right' : 'mdi-chevron-down'"
+                                )
+                            )
+                        html.Span("Charts", style={"marginLeft": "4px", "fontWeight": 500})
+                    with html.Div(style={"display": "flex"}):
+                        with mui.IconButton(
+                            size="small",
+                            title="Clear Charts",
+                            on_click=react.Callback(clear_analysis_charts),
+                        ):
+                            ptc.Icon(icon="mdi-delete-outline")
+                        with mui.IconButton(
+                            size="small",
+                            title="Close",
+                            on_click=react.Callback("chart_drawer_open = false"),
+                        ):
+                            ptc.Icon(icon="mdi-close")
+                mui.Divider()
+
+                # Scrollable content with multiple chart slots
+                with html.Div(
+                    style={
+                        "display": ptc.show_if("!chart_collapsed"),
+                        "overflowY": "auto",
+                        "padding": "8px",
+                    }
+                ):
+                    if PLOTLY_AVAILABLE:
+                        # Dedicated live residual chart (shown when monitoring)
+                        with html.Div(
+                            style={
+                                "display": ptc.show_if("monitoring_active"),
+                                "width": "100%",
+                                "marginBottom": "8px",
+                            }
+                        ):
+                            live_fig = go.Figure()
+                            live_fig.update_layout(
+                                title="Residual Convergence",
+                                height=320,
+                                margin=dict(l=50, r=20, t=70, b=40),
+                            )
+                            app.live_chart_widget = trame_plotly.Figure(
+                                live_fig,
+                                style={"width": "100%", "height": "320px"},
+                            )
+
+                        # Analysis chart widget slots
+                        for i in range(MAX_CHARTS):
                             with html.Div(
-                                v_show="monitoring_active",
-                                style="width: 100%; margin-bottom: 8px;",
+                                style={
+                                    "display": ptc.show_if(f"chart_visibility[{i}]"),
+                                    "width": "100%",
+                                    "marginBottom": "8px",
+                                }
                             ):
-                                live_fig = go.Figure()
-                                live_fig.update_layout(
-                                    title="Residual Convergence",
+                                initial_fig = go.Figure()
+                                initial_fig.update_layout(
+                                    title=f"Chart {i + 1}",
                                     height=320,
-                                    margin=dict(l=50, r=20, t=70, b=40)
+                                    margin=dict(l=50, r=20, t=70, b=40),
                                 )
-                                app.live_chart_widget = trame_plotly.Figure(
-                                    live_fig,
-                                    style="width: 100%; height: 320px;"
+                                widget = trame_plotly.Figure(
+                                    initial_fig,
+                                    style={"width": "100%", "height": "320px"},
                                 )
-                            
-                            # Analysis chart widget slots
-                            for i in range(MAX_CHARTS):
-                                with html.Div(
-                                    v_show=f"chart_visibility[{i}]",
-                                    style="width: 100%; margin-bottom: 8px;",
-                                ):
-                                    initial_fig = go.Figure()
-                                    initial_fig.update_layout(title=f"Chart {i+1}", height=320, margin=dict(l=50, r=20, t=70, b=40))
-                                    widget = trame_plotly.Figure(initial_fig, style="width: 100%; height: 320px;")
-                                    app.chart_widgets.append(widget)
-                        else:
-                            html.P("Install trame-plotly for charts", classes="text-grey")
-                        
-                        # Status info at bottom
-                        html.P("{{ live_chart_status }}", classes="text-caption text-grey mt-1")
-        
-        # Buttons in top-right corner - z-index 10001 to stay above chat and chart panel
-        with html.Div(style="position: fixed; top: 12px; right: 80px; z-index: 10001; display: flex; gap: 8px;"):
-            # Chart button
-            v3.VBtn(
-                icon="mdi-chart-line",
-                click=toggle_chart_drawer,
-                color=("chart_drawer_open ? 'primary' : ''",),
-                variant="elevated",
+                                app.chart_widgets.append(widget)
+                    else:
+                        html.P("Install trame-plotly for charts", style={"color": "grey"})
+
+                    # Status info at bottom
+                    html.P(
+                        [react.Bind("live_chart_status")],
+                        style={"fontSize": "0.75rem", "color": "grey", "margin": "4px 0 0"},
+                    )
+
+        # Buttons in top-right corner, above the chat and chart panel
+        with html.Div(
+            style={
+                "position": "fixed",
+                "top": "12px",
+                "right": "80px",
+                "zIndex": 1201,
+                "display": "flex",
+                "gap": "8px",
+                "alignItems": "center",
+            }
+        ):
+            with mui.Fab(
                 size="small",
                 title="Live Residual Chart",
-            )
-            
+                color=react.Bind("chart_drawer_open ? 'primary' : 'default'"),
+                on_click=react.Callback(toggle_chart_drawer),
+            ):
+                ptc.Icon(icon="mdi-chart-line")
+
             # Live connection and transport controls
-            with html.Div(v_if="live_enabled", style="display: flex; gap: 4px; align-items: center;"):
-                v3.VBtn(
-                    icon=("live_connected ? 'mdi-broadcast' : 'mdi-broadcast-off'",),
-                    click=toggle_live_connection,
-                    color=("live_connected ? 'success' : 'grey'",),
-                    variant="elevated",
-                    size="small",
-                    title=("live_connected ? 'Connected' : 'Click to connect'",),
-                )
-                # Transport controls - only visible when connected
-                with html.Div(v_show="live_connected", style="display: flex; gap: 2px; align-items: center;"):
-                    v3.VBtn(
-                        icon=("simulation_paused ? 'mdi-play' : 'mdi-pause'",),
-                        click=(toggle_pause,),
-                        color=("simulation_paused ? 'success' : 'warning'",),
-                        variant="elevated",
+            with react.If("live_enabled"):
+                with html.Div(style={"display": "flex", "gap": "4px", "alignItems": "center"}):
+                    with mui.Fab(
                         size="small",
-                        title=("simulation_paused ? 'Resume' : 'Pause'",),
-                    )
-                    v3.VTextField(
-                        v_model=("step_count",),
-                        type="number",
-                        density="compact",
-                        variant="outlined",
-                        hide_details=True,
-                        style="width: 60px; max-width: 60px;",
-                        bg_color="white",
-                    )
-                    v3.VBtn(
-                        icon="mdi-skip-forward",
-                        click=(step_forward,),
-                        variant="elevated",
-                        size="small",
-                        title="Step N iterations",
-                    )
-        
+                        title=react.Bind("live_connected ? 'Connected' : 'Click to connect'"),
+                        color=react.Bind("live_connected ? 'success' : 'default'"),
+                        on_click=react.Callback(toggle_live_connection),
+                    ):
+                        ptc.Icon(
+                            icon=react.Bind(
+                                "live_connected ? 'mdi-broadcast' : 'mdi-broadcast-off'"
+                            )
+                        )
+                    # Transport controls - only visible when connected
+                    with html.Div(
+                        style={
+                            "display": ptc.show_if("live_connected", "flex"),
+                            "gap": "4px",
+                            "alignItems": "center",
+                        }
+                    ):
+                        with mui.Fab(
+                            size="small",
+                            title=react.Bind("simulation_paused ? 'Resume' : 'Pause'"),
+                            color=react.Bind("simulation_paused ? 'success' : 'warning'"),
+                            on_click=react.Callback(toggle_pause),
+                        ):
+                            ptc.Icon(
+                                icon=react.Bind("simulation_paused ? 'mdi-play' : 'mdi-pause'")
+                            )
+                        mui.TextField(
+                            value=react.Bind("step_count"),
+                            on_change=react.Callback("step_count = Number($event.target.value)"),
+                            type="number",
+                            size="small",
+                            style={"width": "70px", "background": "white", "borderRadius": "4px"},
+                        )
+                        with mui.Fab(
+                            size="small",
+                            title="Step N iterations",
+                            on_click=react.Callback(step_forward),
+                        ):
+                            ptc.Icon(icon="mdi-skip-forward")
+
         llm.Chat(
             app_name="cfd",
             enabled_message_types=[
