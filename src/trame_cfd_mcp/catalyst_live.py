@@ -404,6 +404,27 @@ class CFDChatMCP:
         return {"error": f"No steerable parameter named '{name}'",
                 "available": [p["name"] for p in self.get_simulation_parameters().get("parameters", [])]}
 
+    @staticmethod
+    def _describe(source) -> dict:
+        """Type, size and extent of a source's output, with a hint for 3D volumes."""
+        info = source.GetDataInformation().DataInformation
+        result = {
+            "data_type": info.GetPrettyDataTypeString() or info.GetDataClassName(),
+            "points": info.GetNumberOfPoints(),
+            "cells": info.GetNumberOfCells(),
+            "bounds": [round(b, 4) for b in info.GetBounds()],
+        }
+        extent = info.GetExtent()
+        if extent[0] <= extent[1]:
+            result["dimensions"] = [extent[2 * i + 1] - extent[2 * i] + 1 for i in range(3)]
+        bounds = info.GetBounds()
+        if info.GetNumberOfCells() and not info.HasDataSetType(0):
+            if all(bounds[2 * i + 1] > bounds[2 * i] for i in range(3)):
+                result["note"] = ("This channel is a full 3D volume. A Surface display shows only its "
+                                  "outer faces; use a slice, clip, contour, streamlines or the Volume "
+                                  "representation to see the interior.")
+        return result
+
     def live_channels(self) -> list:
         """Names of the data channels the connected simulation publishes."""
         if not self._live_link:
@@ -604,7 +625,7 @@ class CFDChatMCP:
                 result = {
                     "status": "extracted",
                     "source": source_name,
-                    "data_type": data_type,
+                    **self._describe(extracted),
                     "points": n_points,
                     "cells": n_cells,
                     "point_fields": point_fields,
@@ -701,6 +722,7 @@ class CFDChatMCP:
                 "status": "shown",
                 "source": source_name,
                 "color_by": color_by,
+                **self._describe(source),
             }
         except Exception as e:
             import traceback
@@ -1046,7 +1068,11 @@ class CFDChatMCP:
 
 A live simulation publishes named data channels. get_live_status() lists them
 in "channels" (for example "grid" for the flow field and "monitors" for residuals
-and forces). Use those names; never assume "surface" or "volume".
+and forces). Use those names; never assume "surface" or "volume". Each channel is
+one dataset: a request for "the live volume" or "the flow field" means the fluid
+grid channel, and a second channel such as "solid" is a separate body. A 3D grid
+shown as a Surface displays only its outer faces, so show the interior with
+slices, clips, contours, streamlines or the Volume representation.
 
 Workflow for visualizing live data:
 1. connect_live() - Connect to simulation (optionally with pause=True)

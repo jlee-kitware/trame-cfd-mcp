@@ -622,6 +622,8 @@ def main():
                 source.UpdatePipeline()
             for view in app.views:
                 view.StillRender()
+            if app.state.ptc_drawer_pipeline:
+                app.ctrl.ptc_info_update()
 
         def update_live_charts():
             """Update Plotly chart if monitoring is active."""
