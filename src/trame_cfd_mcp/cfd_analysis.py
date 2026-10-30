@@ -15,7 +15,7 @@ Methods include:
 from paraview import simple
 from trame_llm.paraview import (
     safe_delete, ensure_flat_input,
-    get_field_names, run_server_script, fetch_table,
+    get_field_names, run_server_script, fetch_table, resolve_field,
     fetch_data,  # retained for Catalyst Live path only
 )
 import numpy as np
@@ -169,30 +169,14 @@ class CFDAnalysis:
         Returns:
             Actual field name found in proxy, or field_type if not a semantic type
         """
-        # If it's not a known semantic type, assume it's already a field name
-        if field_type not in FIELD_TYPE_PATTERNS:
-            return field_type
-
-        patterns = FIELD_TYPE_PATTERNS[field_type]
-
-        # Use metadata only — no data movement
         info = get_field_names(proxy)
-        all_fields = list(info["point"].keys()) + list(info["cell"].keys())
+        found = resolve_field(field_type, {**info["cell"], **info["point"]})
+        if found:
+            return found
+        if field_type in FIELD_TYPE_PATTERNS:
+            return FIELD_TYPE_PATTERNS[field_type][0]
+        return field_type
 
-        # First pass: exact match (case-insensitive)
-        for name in all_fields:
-            for pattern in patterns:
-                if pattern.lower() == name.lower():
-                    return name
-
-        # Second pass: substring match for patterns >= 3 chars
-        for name in all_fields:
-            for pattern in patterns:
-                if len(pattern) >= 3 and pattern.lower() in name.lower():
-                    return name
-
-        return patterns[0]
-    
     def _get_available_fields(self, proxy) -> dict:
         """Get available fields and their types from proxy using metadata only."""
         info = get_field_names(proxy)
@@ -287,6 +271,14 @@ class CFDAnalysis:
             arr = arrays.GetArray(field_name)
             if arr is not None:
                 return arr, field_name, assoc
+        for getter, assoc in [(data.GetPointData, "POINTS"), (data.GetCellData, "CELLS")]:
+            arrays = getter()
+            if arrays is None:
+                continue
+            names = [arrays.GetArrayName(i) for i in range(arrays.GetNumberOfArrays())]
+            found = resolve_field(field_name, [n for n in names if n])
+            if found:
+                return arrays.GetArray(found), found, assoc
         return None, None, None
     
     def _get_body_bounds(self, proxy, clip_margin: float = 0.05):
@@ -3964,36 +3956,8 @@ out.GetPointData().AddArray(arr)
     
     def _resolve_field_name(self, field_name: str, proxy) -> str:
         """Resolve field name aliases and find actual field name."""
-        # First check if exact name exists using ParaView's data information API
-        simple.UpdatePipeline(proxy=proxy)
-        
-        # Use GetDataInformation for array names - works for all proxy types
-        di = proxy.GetDataInformation()
-        point_info = di.GetPointDataInformation()
-        cell_info = di.GetCellDataInformation()
-        
-        # Check point data
-        for i in range(point_info.GetNumberOfArrays()):
-            name = point_info.GetArrayInformation(i).GetName()
-            if name == field_name:
-                return field_name
-            if name.lower() == field_name.lower():
-                return name
-        
-        # Check cell data
-        for i in range(cell_info.GetNumberOfArrays()):
-            name = cell_info.GetArrayInformation(i).GetName()
-            if name == field_name:
-                return field_name
-            if name.lower() == field_name.lower():
-                return name
-        
-        # Try alias
-        if field_name in self.FIELD_ALIASES:
-            return self._resolve_field_name(self.FIELD_ALIASES[field_name], proxy)
-        
-        return field_name  # Return original if not found
-    
+        return self._resolve_field_type(field_name, proxy)
+
     def _get_proxy(self, proxy_name: str = None):
         """Get proxy by name or active source."""
         if proxy_name:

@@ -14,6 +14,7 @@ Usage:
 """
 
 from paraview import simple
+from trame_llm.paraview import resolve_field
 
 
 class CFDChatMCP:
@@ -663,7 +664,8 @@ class CFDChatMCP:
                 cell_fields = list(source.CellData.keys())
                 
                 location = None
-                actual_name = color_by
+                actual_name = resolve_field(color_by, point_fields + cell_fields) or color_by
+                color_by = actual_name
                 
                 # Check point data
                 for name in point_fields:
