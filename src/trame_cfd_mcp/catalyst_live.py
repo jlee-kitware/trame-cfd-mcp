@@ -14,7 +14,12 @@ Usage:
 """
 
 from paraview import simple
+from vtkmodules.vtkCommonDataModel import vtkDataObject
 from trame_llm.paraview import resolve_field
+
+
+POINT = vtkDataObject.POINT
+ROW = vtkDataObject.ROW
 
 
 class CFDChatMCP:
@@ -73,7 +78,7 @@ class CFDChatMCP:
                 data = data.GetPartition(0)
             elif hasattr(data, 'GetBlock') and data.GetNumberOfBlocks() > 0:
                 data = data.GetBlock(0)
-            elif hasattr(data, 'GetNumberOfPoints'):
+            elif hasattr(data, 'GetRowData') or hasattr(data, 'GetNumberOfPoints'):
                 break
             else:
                 data = None
@@ -104,6 +109,27 @@ class CFDChatMCP:
             n_cells = fetched.GetNumberOfCells()
         return n_points, n_cells
 
+    @staticmethod
+    def _monitor_arrays(data):
+        """Columns of a monitor table, or point arrays of a monitor point set."""
+        if data is None:
+            return None
+        if hasattr(data, 'GetRowData'):
+            return data.GetRowData()
+        if hasattr(data, 'GetPointData'):
+            return data.GetPointData()
+        return None
+
+    @staticmethod
+    def _field_names(proxy):
+        """Array names of a source: columns for a table, point arrays otherwise."""
+        info = proxy.GetDataInformation().DataInformation
+        attributes = info.GetAttributeInformation(ROW if info.GetNumberOfRows() else POINT)
+        if attributes is None:
+            return []
+        return [attributes.GetArrayInformation(i).GetName()
+                for i in range(attributes.GetNumberOfArrays())]
+
     def _accumulate_monitor_points(self, data):
         """Append new iteration data to client-side monitor history.
 
@@ -111,9 +137,9 @@ class CFDChatMCP:
         and appends them to ``_monitor_history``.  Returns the number of
         new points added.
         """
-        if not data or not hasattr(data, 'GetPointData'):
+        pd = self._monitor_arrays(data)
+        if pd is None:
             return 0
-        pd = data.GetPointData()
         iter_arr = pd.GetArray('iteration')
         if not iter_arr:
             return 0
@@ -142,7 +168,8 @@ class CFDChatMCP:
             proxy.UpdatePipeline()
             # Wait for real content: an empty composite arrives first, and showing it
             # would pick a representation without Volume or Slice.
-            if proxy.GetDataInformation().GetNumberOfPoints() > 0:
+            info = proxy.GetDataInformation().DataInformation
+            if info.GetNumberOfPoints() > 0 or info.GetNumberOfRows() > 0:
                 return True
             time.sleep(0.1)
         return False
@@ -750,7 +777,7 @@ class CFDChatMCP:
                 "status": "monitoring",
                 "channel": channel_name,
                 "history_points": len(self._monitor_history['iteration']),
-                "fields": list(self._monitor_source.PointData.keys()),
+                "fields": self._field_names(self._monitor_source),
                 "note": "Using existing extraction"
             }
         
@@ -797,9 +824,7 @@ class CFDChatMCP:
                     if hasattr(self._app.server.controller, 'on_data_change'):
                         self._app.server.controller.on_data_change()
                 
-                info = extracted.GetDataInformation()
-                n_points = info.GetNumberOfPoints()
-                fields = list(extracted.PointData.keys())
+                fields = self._field_names(extracted)
                 
                 return {
                     "status": "monitoring",
@@ -839,10 +864,9 @@ class CFDChatMCP:
         
         try:
             self._monitor_source.UpdatePipeline()
-            available_fields = list(self._monitor_source.PointData.keys())
-            
-            info = self._monitor_source.GetDataInformation()
-            n_points = info.GetNumberOfPoints()
+            available_fields = self._field_names(self._monitor_source)
+            info = self._monitor_source.GetDataInformation().DataInformation
+            n_points = info.GetNumberOfRows() or info.GetNumberOfPoints()
             
             # Store config (used by get_monitor_data)
             self._chart_config = {
@@ -964,25 +988,18 @@ class CFDChatMCP:
             
             result = {"status": "ok", "data_type": data_type, "values": {}}
             
-            if data_type == "vtkTable":
-                row_info = info.GetRowDataInformation()
-                result["num_rows"] = info.GetNumberOfRows()
-                
-                for i in range(row_info.GetNumberOfArrays()):
-                    arr_info = row_info.GetArrayInformation(i)
-                    name = arr_info.GetName()
-                    ranges = arr_info.GetComponentRange(0)
-                    result["values"][name] = {"min": ranges[0], "max": ranges[1]}
+            raw = info.DataInformation
+            is_table = raw.GetNumberOfRows() > 0
+            if is_table:
+                result["num_rows"] = raw.GetNumberOfRows()
             else:
-                point_info = info.GetPointDataInformation()
-                result["num_points"] = info.GetNumberOfPoints()
-                
-                for i in range(point_info.GetNumberOfArrays()):
-                    arr_info = point_info.GetArrayInformation(i)
-                    name = arr_info.GetName()
-                    ranges = arr_info.GetComponentRange(0)
-                    result["values"][name] = {"min": ranges[0], "max": ranges[1]}
-            
+                result["num_points"] = raw.GetNumberOfPoints()
+            attributes = raw.GetAttributeInformation(ROW if is_table else POINT)
+            for i in range(attributes.GetNumberOfArrays() if attributes else 0):
+                arr_info = attributes.GetArrayInformation(i)
+                ranges = arr_info.GetComponentRange(0)
+                result["values"][arr_info.GetName()] = {"min": ranges[0], "max": ranges[1]}
+
             latest = self._latest_monitor_values()
             if latest:
                 result["latest"] = latest
@@ -1000,7 +1017,7 @@ class CFDChatMCP:
         from paraview import servermanager
         try:
             data = self._unwrap_composite(servermanager.Fetch(self._monitor_source))
-            pd = data.GetPointData() if data is not None and hasattr(data, "GetPointData") else None
+            pd = self._monitor_arrays(data)
             iteration = pd.GetArray("iteration") if pd else None
             if iteration is None or iteration.GetNumberOfTuples() == 0:
                 return {}
