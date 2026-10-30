@@ -312,6 +312,7 @@ def main():
     app.state.live_host = args.host
     app.state.live_chart_visible = False
     app.state.live_chart_status = "Not connected"
+    app.state.live_status_text = ""
     app.state.live_port = args.port
     app.state.monitoring_active = False
     app.state.analysis_chart_active = False  # True when showing analysis chart (not live)
@@ -603,7 +604,31 @@ def main():
             except:
                 pass
         
-        live_seen = {"time": None}
+        live_seen = {"time": None, "auto_monitors": False}
+
+        def live_link_step():
+            link = chat_mcp._live_link
+            link = link.SMProxy if hasattr(link, "SMProxy") else link
+            return link.GetTimeStep() if hasattr(link, "GetTimeStep") else None
+
+        def update_live_status(paused):
+            """Show whether the connected run is going, and start its monitors once they arrive."""
+            step = live_link_step()
+            channels = chat_mcp.live_channels()
+            if not channels:
+                text = "Waiting for simulation data"
+            else:
+                text = f"{'Paused' if paused else 'Running'} at step {step}"
+            if app.state.live_status_text != text:
+                with app.state:
+                    app.state.live_status_text = text
+            if not live_seen["auto_monitors"] and "monitors" in channels and not chat_mcp._monitoring_active:
+                live_seen["auto_monitors"] = True
+                result = chat_mcp.extract_monitors("monitors")
+                if result.get("status") == "monitoring":
+                    with app.state:
+                        app.state.monitoring_active = True
+                        app.state.chart_drawer_open = True
 
         def refresh_live_extracts():
             """Re-execute extracted channels and re-render when the simulation sends a new step.
@@ -638,8 +663,14 @@ def main():
                         if app.state.simulation_paused != paused:
                             with app.state:
                                 app.state.simulation_paused = paused
+                        update_live_status(paused)
                     except Exception:
-                        pass
+                        logging.debug("[Live] status update failed", exc_info=True)
+                elif not app.state.live_connected:
+                    live_seen["auto_monitors"] = False
+                    if app.state.live_status_text:
+                        with app.state:
+                            app.state.live_status_text = ""
                 refresh_live_extracts()
                 # Check if connection dropped
                 if app.state.live_connected and not chat_mcp.is_connection_alive():
@@ -894,6 +925,11 @@ def main():
                             variant=react.Bind("live_connected ? 'contained' : 'outlined'"),
                             color=react.Bind("live_connected ? 'success' : 'primary'"),
                             on_click=react.Callback(toggle_live_connection),
+                        )
+                        html.Span(
+                            [react.Bind("live_status_text")],
+                            style={"display": ptc.show_if("live_connected && live_status_text", "inline"),
+                                   "color": MUTED, "fontSize": "0.8rem", "whiteSpace": "nowrap"},
                         )
                         with html.Div(
                             style={
