@@ -766,7 +766,7 @@ def main():
         app.state.chart_drawer_open = not app.state.chart_drawer_open
     
     app.state.update({"steer_available": False, "steer_reynolds": 0, "steer_collision": -1,
-                      "steer_collisions": []})
+                      "steer_collisions": [], "steer_has_power": False, "steer_power": 0})
 
     def refresh_steering():
         result = chat_mcp.get_simulation_parameters() if app.state.live_connected else {}
@@ -775,6 +775,9 @@ def main():
             app.state.steer_available = "Reynolds" in params
             if "Reynolds" in params:
                 app.state.steer_reynolds = round(params["Reynolds"]["value"])
+            app.state.steer_has_power = "Power" in params
+            if "Power" in params:
+                app.state.steer_power = round(params["Power"]["value"], 1)
             if "Collision" in params:
                 app.state.steer_collision = int(params["Collision"]["value"])
                 app.state.steer_collisions = [{"text": k, "value": v}
@@ -787,14 +790,22 @@ def main():
         if key == "Enter":
             apply_reynolds()
 
+    def apply_power():
+        chat_mcp.set_simulation_parameter("Power", str(app.state.steer_power))
+
+    def on_power_key(key):
+        if key == "Enter":
+            apply_power()
+
     def apply_collision(value):
         chat_mcp.set_simulation_parameter("Collision", str(value))
 
     def on_steer(name, value):
-        key = {"Reynolds": "steer_reynolds", "Collision": "steer_collision"}.get(name)
+        key = {"Reynolds": "steer_reynolds", "Collision": "steer_collision", "Power": "steer_power"}.get(name)
         if key:
             with app.state:
-                app.state[key] = round(value) if key == "steer_reynolds" else int(value)
+                app.state[key] = {"steer_reynolds": round(value), "steer_collision": int(value),
+                                  "steer_power": round(value, 1)}[key]
 
     chat_mcp.on_steer = on_steer
 
@@ -922,6 +933,18 @@ def main():
                                     size="small",
                                     style={"width": "96px"},
                                 )
+                                with react.If("steer_has_power"):
+                                    mui.TextField(
+                                        label="Power",
+                                        title="Heater power under the heat sink; press Enter to send it",
+                                        value=react.Bind("steer_power"),
+                                        on_change=react.Callback("steer_power = Number($event.target.value)"),
+                                        on_key_down=react.Callback(on_power_key, args="[$event.key]"),
+                                        on_blur=react.Callback(apply_power),
+                                        type="number",
+                                        size="small",
+                                        style={"width": "96px"},
+                                    )
                                 with mui.ButtonGroup(size="small", title="Collision model (each is its own JIT-compiled kernel)"):
                                     for text, value in (("BGK", 0), ("TRT", 1), ("LES", 2)):
                                         mui.Button(

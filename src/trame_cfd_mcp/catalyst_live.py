@@ -369,6 +369,13 @@ class CFDChatMCP:
             return {"error": "Not connected. Call connect_live() first."}
         from paraview.modules.vtkRemotingServerManager import vtkSMPropertyHelper
         for proxy in self._steerable_proxies().values():
+            it = proxy.NewPropertyIterator()
+            it.Begin()
+            while not it.IsAtEnd():
+                if it.GetKey().lower() == str(name).lower():
+                    name = it.GetKey()
+                    break
+                it.Next()
             prop = proxy.GetProperty(name)
             if prop is None:
                 continue
@@ -952,6 +959,9 @@ class CFDChatMCP:
                     ranges = arr_info.GetComponentRange(0)
                     result["values"][name] = {"min": ranges[0], "max": ranges[1]}
             
+            latest = self._latest_monitor_values()
+            if latest:
+                result["latest"] = latest
             convergence = self._convergence_summary()
             if convergence:
                 result["convergence"] = convergence
@@ -961,6 +971,21 @@ class CFDChatMCP:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
+    def _latest_monitor_values(self) -> dict:
+        """Each monitor's value at the most recent iteration (heater power, temperatures, forces)."""
+        from paraview import servermanager
+        try:
+            data = self._unwrap_composite(servermanager.Fetch(self._monitor_source))
+            pd = data.GetPointData() if data is not None and hasattr(data, "GetPointData") else None
+            iteration = pd.GetArray("iteration") if pd else None
+            if iteration is None or iteration.GetNumberOfTuples() == 0:
+                return {}
+            last = max(range(iteration.GetNumberOfTuples()), key=iteration.GetValue)
+            return {pd.GetArrayName(i): pd.GetArray(i).GetTuple1(last)
+                    for i in range(pd.GetNumberOfArrays()) if pd.GetArray(i) is not None}
+        except Exception:
+            return {}
+
     def _with_live_channels(self, list_data):
         """Wrap list_data so its result also names the connected simulation's channels."""
         import functools
@@ -1032,6 +1057,13 @@ Workflow for visualizing live data:
 Alternative: Call set_pause_on_connect() before starting simulation to auto-pause on connect.
 
 The extract step is REQUIRED when paused - it copies data from simulation memory.
+
+The "monitors" channel carries the simulation's scalar histories: residuals, forces and
+any case quantities (for example heater power, heat_flux into the fluid, solid_t_max).
+For questions like "how hot is it" or "how much heat is leaving", call extract_monitors()
+once, then get_current_monitors() and read its "latest" values. Field channels (for
+example "grid" for the fluid and "solid" for a solid part) are displayed and analyzed
+with show_live_source() and the regular tools.
 
 Steering: get_simulation_parameters() lists what can be changed while the simulation
 runs (for example Reynolds number or the collision model); set_simulation_parameter()
