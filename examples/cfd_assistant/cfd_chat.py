@@ -110,6 +110,19 @@ GLOBAL_STYLES = (
     ":root { " + " ".join(f"{k}: {v};" for k, v in CSS_VARS.items()) + " }"
 )
 
+# One layout for the live residual chart, used when it is created and on every
+# update, so the figure keeps its size; uirevision keeps zoom and legend state.
+LIVE_CHART_LAYOUT = dict(
+    title="Residual Convergence",
+    xaxis_title="Iteration",
+    yaxis_title="Residual",
+    yaxis_type="log",
+    height=320,
+    margin=dict(l=50, r=20, t=40, b=40),
+    showlegend=True,
+    uirevision="live-residuals",
+)
+
 try:
     from trame.widgets import plotly as trame_plotly
     import plotly.graph_objects as go
@@ -123,6 +136,7 @@ try:
         title=dict(font=dict(size=14)),
     ))
     pio.templates.default = "plotly_white+cfd"
+
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
@@ -650,15 +664,7 @@ def main():
                                     mode='lines',
                                     name=name,
                                 ))
-                            fig.update_layout(
-                                title="Residual Convergence",
-                                xaxis_title="Iteration",
-                                yaxis_title="Residual",
-                                yaxis_type="log",
-                                margin=dict(l=50, r=20, t=40, b=40),
-                                height=400,
-                                showlegend=True,
-                            )
+                            fig.update_layout(**LIVE_CHART_LAYOUT)
                             
                             # Update dedicated live chart widget
                             if app.live_chart_widget:
@@ -1047,11 +1053,7 @@ def main():
                             }
                         ):
                             live_fig = go.Figure()
-                            live_fig.update_layout(
-                                title="Residual Convergence",
-                                height=320,
-                                margin=dict(l=50, r=20, t=70, b=40),
-                            )
+                            live_fig.update_layout(**LIVE_CHART_LAYOUT)
                             app.live_chart_widget = trame_plotly.Figure(
                                 live_fig,
                                 style={"width": "100%", "height": "320px"},

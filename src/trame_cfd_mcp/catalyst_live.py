@@ -404,7 +404,9 @@ class CFDChatMCP:
         ipm = self._live_link.GetInsituProxyManager()
         if ipm is None:
             return []
-        return [ipm.GetProxyName("sources", i) for i in range(ipm.GetNumberOfProxies("sources"))]
+        names = [ipm.GetProxyName("sources", i) for i in range(ipm.GetNumberOfProxies("sources"))]
+        steering = set(self._steerable_proxies())
+        return [name for name in names if name not in steering]
 
     def get_live_status(self) -> dict:
         """Get the live simulation's time, pause state and the names of its data channels."""
