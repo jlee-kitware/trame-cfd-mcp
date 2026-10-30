@@ -603,12 +603,42 @@ def main():
             except:
                 pass
         
+        live_seen = {"time": None}
+
+        def refresh_live_extracts():
+            """Re-execute extracted channels and re-render when the simulation sends a new step.
+
+            Live marks extracts modified on each new timestep, but nothing updates them,
+            so displays would keep showing the first payload.
+            """
+            if not (app.state.live_connected and chat_mcp._extracted_sources and chat_mcp._live_link):
+                return
+            link = chat_mcp._live_link.SMProxy if hasattr(chat_mcp._live_link, "SMProxy") else chat_mcp._live_link
+            step = link.GetTimeStep() if hasattr(link, "GetTimeStep") else None
+            if step is not None and step == live_seen["time"]:
+                return
+            live_seen["time"] = step
+            for source in list(chat_mcp._extracted_sources.values()):
+                source.UpdatePipeline()
+            for view in app.views:
+                view.StillRender()
+
         def update_live_charts():
             """Update Plotly chart if monitoring is active."""
             try:
                 # The steering proxy shows up with the simulation's first Live update.
                 if app.state.live_connected and not app.state.steer_available:
                     refresh_steering()
+                # The chat can pause or resume too; keep the header button in step with the link.
+                if app.state.live_connected and chat_mcp._live_link:
+                    try:
+                        paused = chat_mcp._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
+                        if app.state.simulation_paused != paused:
+                            with app.state:
+                                app.state.simulation_paused = paused
+                    except Exception:
+                        pass
+                refresh_live_extracts()
                 # Check if connection dropped
                 if app.state.live_connected and not chat_mcp.is_connection_alive():
                     # Connection was lost - update state
