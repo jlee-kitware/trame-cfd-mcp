@@ -366,6 +366,9 @@ class CFDChatMCP:
             codes = [int(prop.GetElement(i)) for i in range(prop.GetNumberOfElements())]
             entry["kind"] = "text"
             entry["value"] = bytes(c for c in codes if 0 < c < 256).decode("utf-8", "replace")
+            hint = prop.GetHints().FindNestedElementByName("Expression")
+            if hint.GetAttribute("status"):
+                entry["status_channel"] = hint.GetAttribute("status")
         else:
             entry["value"] = vtkSMPropertyHelper(proxy, key).GetAsDouble()
         doc = prop.GetDocumentation()
@@ -397,7 +400,38 @@ class CFDChatMCP:
                 it.Next()
         if not params:
             return {"status": "none", "message": "This simulation publishes no steerable parameters."}
+        for entry in params:
+            channel = entry.pop("status_channel", None)
+            if channel:
+                entry["outcome"] = self._read_text_channel(channel)
         return {"status": "ok", "parameters": params}
+
+    def _read_text_channel(self, name):
+        """A channel the simulation publishes as a table whose "message" column holds UTF-8
+        byte values: the outcome of a text steering request, for example."""
+        from paraview import servermanager
+        from paraview.live import ExtractCatalystData
+        if name not in self.live_channels():
+            return None
+        proxy = self._extracted_sources.get(name)
+        if proxy is None:
+            proxy = ExtractCatalystData(self._live_link, name)
+            self._extracted_sources[name] = proxy
+        self._wait_for_data(proxy, timeout=5.0)
+        proxy.UpdatePipeline()
+        data = servermanager.Fetch(proxy)
+        tables = [data]
+        if hasattr(data, "GetNumberOfPartitionedDataSets"):
+            tables = [data.GetPartition(i, j) for i in range(data.GetNumberOfPartitionedDataSets())
+                      for j in range(data.GetNumberOfPartitions(i))]
+        elif hasattr(data, "GetNumberOfPartitions"):
+            tables = [data.GetPartition(i) for i in range(data.GetNumberOfPartitions())]
+        for table in tables:
+            column = table.GetColumnByName("message") if table is not None and hasattr(table, "GetColumnByName") else None
+            if column is not None:
+                codes = [int(column.GetTuple1(i)) for i in range(column.GetNumberOfTuples())]
+                return bytes(c for c in codes if 0 < c < 256).decode("utf-8", "replace")
+        return None
 
     def set_simulation_parameter(self, name: str, value: str) -> dict:
         """Change a parameter of the running simulation, for example name="Reynolds", value="500"
@@ -436,10 +470,10 @@ class CFDChatMCP:
                 if self.on_steer:
                     self.on_steer(name, text)
                 return {"status": "requested", "name": name, "previous": info["value"], "value": text,
-                        "note": "The simulation applies this at its next Catalyst update. For "
-                                "DerivedFields, the derived_error monitor is 0 when the text compiled, "
-                                "otherwise the column of the error; the new fields then appear on "
-                                "the grid channel."}
+                        "note": "The simulation applies this at its next Catalyst update. Call "
+                                "get_simulation_parameters() after it for the outcome: the fields "
+                                "added, or the error and where it is in the text. New fields "
+                                "appear on the grid channel."}
             if choices:
                 match = {k.lower(): v for k, v in choices.items()}.get(str(value).strip().lower())
                 number = float(match) if match is not None else float(value)
