@@ -352,11 +352,22 @@ class CFDChatMCP:
         return proxies
 
     @staticmethod
-    def _describe_property(proxy, key):
+    def _is_text(prop):
+        """A property marked <Expression/> in its hints holds text as UTF-8 byte values."""
+        hints = prop.GetHints()
+        return hints is not None and hints.FindNestedElementByName("Expression") is not None
+
+    @classmethod
+    def _describe_property(cls, proxy, key):
         from paraview.modules.vtkRemotingServerManager import vtkSMPropertyHelper
         prop = proxy.GetProperty(key)
-        entry = {"name": key, "label": prop.GetXMLLabel(),
-                 "value": vtkSMPropertyHelper(proxy, key).GetAsDouble()}
+        entry = {"name": key, "label": prop.GetXMLLabel()}
+        if cls._is_text(prop):
+            codes = [int(prop.GetElement(i)) for i in range(prop.GetNumberOfElements())]
+            entry["kind"] = "text"
+            entry["value"] = bytes(c for c in codes if 0 < c < 256).decode("utf-8", "replace")
+        else:
+            entry["value"] = vtkSMPropertyHelper(proxy, key).GetAsDouble()
         doc = prop.GetDocumentation()
         if doc is not None and doc.GetDescription():
             entry["description"] = " ".join(doc.GetDescription().split())
@@ -390,9 +401,12 @@ class CFDChatMCP:
 
     def set_simulation_parameter(self, name: str, value: str) -> dict:
         """Change a parameter of the running simulation, for example name="Reynolds", value="500"
-        or name="Collision", value="Smagorinsky LES". The simulation applies it at its next
-        Catalyst update, within a few hundred iterations. Call get_simulation_parameters() for
-        the names, ranges and choices."""
+        or name="Collision", value="Smagorinsky LES". A parameter of kind "text" takes text: for
+        name="DerivedFields", NAME=EXPRESSION entries separated by ';' in VTK calculator syntax,
+        with @cells after an expression with derivatives, for example
+        value="helicity=dot(velocity, curl(velocity))@cells; cp=2 * pressure / 0.0064".
+        The simulation applies it at its next Catalyst update, within a few hundred iterations.
+        Call get_simulation_parameters() for the names, ranges, choices and descriptions."""
         if not self._live_link:
             return {"error": "Not connected. Call connect_live() first."}
         from paraview.modules.vtkRemotingServerManager import vtkSMPropertyHelper
@@ -409,6 +423,23 @@ class CFDChatMCP:
                 continue
             info = self._describe_property(proxy, name)
             choices = info.get("choices")
+            if info.get("kind") == "text":
+                text = str(value).strip()
+                codes = list(text.encode("utf-8")) or [0]
+                prop.SetNumberOfElements(len(codes))
+                for i, code in enumerate(codes):
+                    prop.SetElement(i, code)
+                proxy.UpdateVTKObjects()
+                self._live_link.GetInsituProxyManager().Modified()
+                if self._live_link.GetProperty("SimulationPaused").GetElement(0) == 1:
+                    self._live_link.PushUpdatedStates()
+                if self.on_steer:
+                    self.on_steer(name, text)
+                return {"status": "requested", "name": name, "previous": info["value"], "value": text,
+                        "note": "The simulation applies this at its next Catalyst update. For "
+                                "DerivedFields, the derived_error monitor is 0 when the text compiled, "
+                                "otherwise the column of the error; the new fields then appear on "
+                                "the grid channel."}
             if choices:
                 match = {k.lower(): v for k, v in choices.items()}.get(str(value).strip().lower())
                 number = float(match) if match is not None else float(value)
@@ -1114,6 +1145,9 @@ Steering: get_simulation_parameters() lists what can be changed while the simula
 runs (for example Reynolds number or the collision model); set_simulation_parameter()
 changes one. Report the requested change, and check the monitors afterwards to show
 its effect (for example the reynolds monitor field and the drag and lift response).
+A simulation may offer DerivedFields, a text parameter: fields computed on the grid from
+VTK calculator expressions (helicity, vorticity components, pressure coefficient, any
+quantity the user describes), which then appear on the grid channel to show or analyze.
 
 Other tools:
 - resume_simulation() - Continue after analysis
