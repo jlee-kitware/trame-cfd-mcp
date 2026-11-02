@@ -215,6 +215,13 @@ class CFDWorkflows:
                     logging.debug(f"[_get_data_reader] Found Live source: {source_name}")
                     return proxy
         
+        # Otherwise the live channel with the most points, whatever the simulation named it
+        live = [proxy for proxy in simple.GetSources().values() if 'TrivialProducer' in proxy.GetXMLName()]
+        if live:
+            largest = max(live, key=lambda p: p.GetDataInformation().GetNumberOfPoints())
+            if largest.GetDataInformation().GetNumberOfPoints() > 0:
+                return largest
+
         # Fall back to active source
         active = simple.GetActiveSource()
         logging.debug(f"[_get_data_reader] Falling back to active source: {active.GetXMLName() if active else None}")
