@@ -487,11 +487,19 @@ class CFDChatMCP:
                     self._live_link.PushUpdatedStates()
                 if self.on_steer:
                     self.on_steer(name, text)
-                return {"status": "requested", "name": name, "previous": info["value"], "value": text,
-                        "note": "The simulation applies this at its next Catalyst update. Call "
-                                "get_simulation_parameters() after it for the outcome: the fields "
-                                "added, or the error and where it is in the text. New fields "
-                                "appear on the grid channel."}
+                result = {"status": "requested", "name": name, "previous": info["value"], "value": text,
+                          "note": "The simulation applies this at its next Catalyst update. Call "
+                                  "get_simulation_parameters() after it for the outcome: the fields "
+                                  "added, or the error and where it is in the text. New fields "
+                                  "appear on the grid channel."}
+                names = [entry.partition("=")[0].strip() for entry in text.split(";") if "=" in entry]
+                if names and self._extracted_sources:
+                    ready = self._wait_for_fields(names)
+                    result["fields_ready"] = ready
+                    if len(ready) == len(names):
+                        result["note"] = ("The new fields have arrived on the channels listed in fields_ready: "
+                                          "color or analyze them now, without stepping or pausing the simulation.")
+                return result
             if choices:
                 match = {k.lower(): v for k, v in choices.items()}.get(str(value).strip().lower())
                 number = float(match) if match is not None else float(value)
@@ -514,6 +522,27 @@ class CFDChatMCP:
         return {"error": f"No steerable parameter named '{name}'",
                 "available": [p["name"] for p in self.get_simulation_parameters().get("parameters", [])]}
 
+    def _wait_for_fields(self, names: list, timeout: float = 20.0) -> dict:
+        """Pump Live events until each name is a field of an extracted channel: {name: [channels]}."""
+        import time
+        end, found = time.time() + timeout, {}
+        while time.time() < end:
+            self._process_events()
+            found = {}
+            for channel, proxy in self._extracted_sources.items():
+                try:
+                    proxy.UpdatePipeline()
+                    fields = set(proxy.PointData.keys()) | set(proxy.CellData.keys())
+                except AttributeError:
+                    continue
+                for name in names:
+                    if name in fields:
+                        found.setdefault(name, []).append(channel)
+            if len(found) == len(names):
+                break
+            time.sleep(0.25)
+        return found
+
     @staticmethod
     def _describe(source) -> dict:
         """Type, size and extent of a source's output, with a hint for 3D volumes."""
@@ -523,6 +552,7 @@ class CFDChatMCP:
             "points": info.GetNumberOfPoints(),
             "cells": info.GetNumberOfCells(),
             "bounds": [round(b, 4) for b in info.GetBounds()],
+            "data_size_kb": info.GetMemorySize(),
         }
         extent = info.GetExtent()
         if extent[0] <= extent[1]:
@@ -545,7 +575,7 @@ class CFDChatMCP:
             return []
         names = [ipm.GetProxyName("sources", i) for i in range(ipm.GetNumberOfProxies("sources"))]
         steering = set(self._steerable_proxies())
-        return [name for name in names if name not in steering]
+        return [name for name in names if name not in steering and not name.startswith("_")]
 
     def get_live_status(self) -> dict:
         """Get the live simulation's time, pause state and the names of its data channels."""
@@ -783,6 +813,10 @@ class CFDChatMCP:
             return {"error": f"Source '{source_name}' not found. Available: {available}"}
         
         try:
+            view = simple.GetActiveView()
+            for other in simple.GetSources().values():
+                if other is not source:
+                    simple.Hide(other, view)
             simple.SetActiveSource(source)
             rep = simple.Show(source)
             # A volume grid shows as an outline by default, which hides the coloring.
@@ -1180,7 +1214,8 @@ class CFDChatMCP:
             "fields": fields,
             "conditions": conditions,
             "note": "One entry per operating condition, oldest first. A condition that is not settled "
-                    "needs more iterations before its mean can be quoted as final.",
+                    "needs more iterations before its mean can be quoted as final. These numbers are a "
+                    "snapshot: call again after steering or for any later question.",
         }
 
     def get_current_monitors(self) -> dict:
@@ -1238,6 +1273,39 @@ class CFDChatMCP:
         except Exception:
             return {}
 
+    def _with_live_sources(self, update_color):
+        """Wrap update_color so a live channel's name colors the extracted channel that is shown."""
+        import functools
+
+        @functools.wraps(update_color)
+        def wrapper(proxy_name: str | None = None, field_name: str | None = None, rgb: list | None = None):
+            source = self._extracted_sources.get(proxy_name or "")
+            if source is None or rgb is not None or not field_name:
+                return update_color(proxy_name=proxy_name, field_name=field_name, rgb=rgb)
+            view = simple.GetActiveView()
+            source.UpdatePipeline()
+            points, cells = list(source.PointData.keys()), list(source.CellData.keys())
+            name = resolve_field(field_name, points + cells) or field_name
+            location = "POINTS" if name in points else "CELLS" if name in cells else None
+            if location is None:
+                return {"error": f"Could not find field {field_name} in {points + cells}"}
+            rep = simple.GetDisplayProperties(source, view)
+            simple.ColorBy(rep, (location, name))
+            rep.RescaleTransferFunctionToDataRange(True, False)
+            lut = simple.GetColorTransferFunction(name)
+            lo, hi = lut.RGBPoints[0], lut.RGBPoints[-4]
+            if lo < 0 < hi:
+                extent = max(-lo, hi)
+                lut.ApplyPreset("Cool to Warm", True)
+                lut.AutomaticRescaleRangeMode = "Never"
+                lut.RescaleTransferFunction(-extent, extent)
+            rep.SetScalarBarVisibility(view, True)
+            simple.Render(view)
+            return {"name": proxy_name, "field": name, "location": location,
+                    "range": [round(lo, 6), round(hi, 6)]}
+
+        return wrapper
+
     def _with_live_channels(self, list_data):
         """Wrap list_data so its result also names the connected simulation's channels."""
         import functools
@@ -1269,7 +1337,8 @@ class CFDChatMCP:
         ]
         
         if self._live_enabled:
-            tools = [self._with_live_channels(tool) if getattr(tool, "__name__", "") == "list_data" else tool
+            wrappers = {"list_data": self._with_live_channels, "update_color": self._with_live_sources}
+            tools = [wrappers[tool.__name__](tool) if getattr(tool, "__name__", "") in wrappers else tool
                      for tool in tools]
             tools.extend([
                 self.connect_live,
@@ -1321,17 +1390,30 @@ For questions like "how hot is it" or "how much heat is leaving", call extract_m
 once, then get_current_monitors() and read its "latest" values. For average or accumulated
 drag and lift, how the forces changed after steering, the shedding frequency, or whether the
 loads are settled, call get_force_statistics() and quote its numbers per operating condition.
+The history grows while the simulation runs and changes after every steering change, so call
+get_force_statistics() again for each such question; never reuse an earlier result.
 To plot forces live, call show_monitor_chart(y_fields=["drag", "lift"], log_scale=False). Field channels (for
 example "grid" for the fluid and "solid" for a solid part) are displayed and analyzed
 with show_live_source() and the regular tools.
 
 Steering: get_simulation_parameters() lists what can be changed while the simulation
 runs (for example Reynolds number or the collision model); set_simulation_parameter()
-changes one. Report the requested change, and check the monitors afterwards to show
+changes one. Change parameters, pause, resume or step the simulation only when the user asks
+for that. Report the requested change, and check the monitors afterwards to show
 its effect (for example the reynolds monitor field and the drag and lift response).
 A simulation may offer DerivedFields, a text parameter: fields computed on the grid from
 VTK calculator expressions (helicity, vorticity components, pressure coefficient, any
 quantity the user describes), which then appear on the grid channel to show or analyze.
+
+Two places to compute: in ParaView (show_vortices, slices, calculators) after the full grid
+is transferred, which is flexible; or in the simulation, which sends less data. When the
+user asks for something computed "in the solver" or "in situ", use the simulation: a new
+field goes into DerivedFields (keep the entries already there, separated by ';', and use
+@cells for expressions with curl, grad, div or qcrit); a channel other than the grid and
+monitors (for example "vortices") is an extract the simulation already computed, shown
+with show_live_source(). An extract carries the grid's fields, derived ones included, so a
+new derived field can color it. Results report data_size_kb: compare it with the grid's when
+the user asks what was transferred.
 
 Other tools:
 - resume_simulation() - Continue after analysis
