@@ -1134,7 +1134,8 @@ class CFDChatMCP:
         The history is split wherever a steered parameter (reynolds, collision) changes. For each
         condition it reports, per force coefficient: the mean over every sample since the condition
         began, and the mean, standard deviation and RMS over the settled second half, plus the
-        drift between the last two quarters (settled when under 2 percent). The shedding period
+        drift between the last two quarters (settled when under 2 percent over at least 20 samples
+        and two shedding periods). The shedding period
         comes from the lift signal, as a Strouhal number when the monitors carry convective time.
 
         Args:
@@ -1197,7 +1198,7 @@ class CFDChatMCP:
                     "settled_mean": r(mean),
                     "settled_std": r(std),
                     "settled_rms": r((sum(v * v for v in settled) / len(settled)) ** 0.5),
-                    "settled": drift is not None and drift < 0.02 and len(settled) >= 8,
+                    "settled": drift is not None and drift < 0.02 and len(settled) >= max(20, 2 * cycle),
                     "drift_fraction": None if drift is None else r(drift),
                 }
             if period:
