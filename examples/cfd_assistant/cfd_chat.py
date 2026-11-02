@@ -719,15 +719,25 @@ def main():
                         
                         # Build Plotly figure
                         if PLOTLY_AVAILABLE:
+                            config = getattr(chat_mcp, "_chart_config", None) or {}
+                            names = config.get("y_fields") or [n for n in residuals if chat_mcp.is_residual(n)]
+                            log = config.get("log_scale", True)
                             fig = go.Figure()
-                            for name, values in residuals.items():
+                            for name in names:
+                                values = residuals.get(name, [])
                                 fig.add_trace(go.Scatter(
-                                    x=iterations,
+                                    x=iterations[-len(values):] if values else [],
                                     y=values,
                                     mode='lines',
                                     name=name,
                                 ))
-                            fig.update_layout(**LIVE_CHART_LAYOUT)
+                            fig.update_layout(**{
+                                **LIVE_CHART_LAYOUT,
+                                "title": "Residual Convergence" if log else "Monitors",
+                                "yaxis_title": "Residual" if log else ", ".join(names),
+                                "yaxis_type": "log" if log else "linear",
+                                "uirevision": f"live-{log}-{'-'.join(names)}",
+                            })
                             
                             # Update dedicated live chart widget
                             if app.live_chart_widget:

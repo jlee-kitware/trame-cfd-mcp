@@ -15,6 +15,7 @@ Usage:
 
 from paraview import simple
 from vtkmodules.vtkCommonDataModel import vtkDataObject
+import re
 from trame_llm.paraview import resolve_field
 
 
@@ -109,6 +110,14 @@ class CFDChatMCP:
             n_cells = fetched.GetNumberOfCells()
         return n_points, n_cells
 
+    RESIDUAL_PATTERN = re.compile(r"^(continuity|momentum|energy|mass|residual|res_|r_)", re.IGNORECASE)
+    FORCE_PATTERN = re.compile(r"(drag|lift|^c[dl]$|force)", re.IGNORECASE)
+    STATE_MONITORS = ("reynolds", "collision")
+
+    @classmethod
+    def is_residual(cls, name: str) -> bool:
+        return bool(cls.RESIDUAL_PATTERN.match(name))
+
     @staticmethod
     def _monitor_arrays(data):
         """Columns of a monitor table, or point arrays of a monitor point set."""
@@ -149,10 +158,10 @@ class CFDChatMCP:
             iteration = iter_arr.GetValue(i)
             if iteration > self._last_iteration:
                 self._monitor_history['iteration'].append(iteration)
-                for name in ['continuity', 'momentum_x', 'momentum_y', 'momentum_z', 'energy']:
-                    arr = pd.GetArray(name)
-                    if arr and i < arr.GetNumberOfTuples():
-                        self._monitor_history[name].append(arr.GetValue(i))
+                for a in range(pd.GetNumberOfArrays()):
+                    arr, name = pd.GetArray(a), pd.GetArrayName(a)
+                    if arr is not None and name != 'iteration' and i < arr.GetNumberOfTuples():
+                        self._monitor_history.setdefault(name, []).append(arr.GetValue(i))
                 self._last_iteration = iteration
                 added += 1
         return added
@@ -216,7 +225,16 @@ class CFDChatMCP:
         
         host = host or self._live_host
         port = port or self._live_port
-        
+
+        if self._live_link and self.is_connection_alive():
+            return {
+                "status": "already_connected",
+                "host": host,
+                "port": port,
+                "channels": self.live_channels(),
+                "tip": "The live link is up; use get_live_status() and show_live_source() directly.",
+            }
+
         # Use pause_on_connect flag if pause not explicitly specified
         should_pause = pause if pause is not None else self._pause_on_connect
         
@@ -920,9 +938,13 @@ class CFDChatMCP:
                            y_fields: list | None = None,
                            log_scale: bool = True) -> dict:
         """
-        Start showing the live residual chart.
-        
-        The chart appears in the right drawer panel and updates automatically.
+        Show a live chart of monitor histories in the right drawer; it updates as the solver steps.
+
+        Args:
+            x_field: Field for the x axis (default: "iteration").
+            y_fields: Monitor fields to plot (default: the residuals). For forces, for example
+                ["drag", "lift"], set log_scale=False.
+            log_scale: Logarithmic y axis, right for residuals (default: True).
         """
         if not self._monitor_source:
             return {"error": "No monitor data. Call extract_monitors() first."}
@@ -936,9 +958,12 @@ class CFDChatMCP:
             # Store config (used by get_monitor_data)
             self._chart_config = {
                 'x_field': x_field,
-                'y_fields': y_fields or [f for f in available_fields if f not in ['iteration', 'time']],
+                'y_fields': y_fields or [f for f in available_fields if self.is_residual(f)],
                 'log_scale': log_scale
             }
+            if self._app and hasattr(self._app, 'state'):
+                self._app.state.analysis_chart_active = False
+                self._app.state.chart_drawer_open = True
             
             return {
                 "status": "chart_ready",
@@ -1002,7 +1027,7 @@ class CFDChatMCP:
             return {}
         fields = {}
         for name, values in self._monitor_history.items():
-            if name == 'iteration' or len(values) != len(iterations):
+            if not self.is_residual(name) or len(values) != len(iterations):
                 continue
             positive = [v for v in values if v and v > 0]
             if len(positive) < 4:
@@ -1027,14 +1052,135 @@ class CFDChatMCP:
             "min_orders_dropped": min_drop,
             "still_decreasing": decreasing,
             "flow_features_trustworthy": features_ok,
-            "loads_trustworthy": "unknown: force and moment histories are not monitored in this session, "
-                                 "so residuals alone cannot confirm the loads",
+            "loads_trustworthy": self._loads_note(),
             "verdict": (f"Every residual has dropped at least {min_drop:.1f} orders from its peak"
                         + (" and is still decreasing" if decreasing else " but some have stopped decreasing")
                         + (": flow features can be trusted." if features_ok
                            else ": flow features should not be trusted yet.")
-                        + " Integrated loads also need flat force histories, which are not monitored here."),
+                        + " Integrated loads also need flat force histories: " + self._loads_note() + "."),
             "guidance": "Report the verdict. Details: ontology analysis_recommendations.convergence_assessment.",
+        }
+
+    def _loads_note(self) -> str:
+        if any(self.FORCE_PATTERN.search(name) for name in self._monitor_history):
+            return "force histories are monitored; get_force_statistics() reports whether they have settled"
+        return "force and moment histories are not monitored in this session"
+
+    def _monitor_columns(self) -> dict:
+        """The full monitor history as lists, read from the monitors channel."""
+        from paraview import servermanager
+        self._process_events()
+        self._monitor_source.UpdatePipeline()
+        pd = self._monitor_arrays(self._unwrap_composite(servermanager.Fetch(self._monitor_source)))
+        if pd is None or pd.GetArray("iteration") is None:
+            return {}
+        columns = {pd.GetArrayName(i): [pd.GetArray(i).GetValue(j) for j in range(pd.GetArray(i).GetNumberOfTuples())]
+                   for i in range(pd.GetNumberOfArrays()) if pd.GetArray(i) is not None}
+        order = sorted(range(len(columns["iteration"])), key=columns["iteration"].__getitem__)
+        return {name: [values[j] for j in order] for name, values in columns.items() if len(values) == len(order)}
+
+    @staticmethod
+    def _shedding_period(x: list, y: list) -> float | None:
+        """Mean spacing in x of upward zero crossings of y about its mean."""
+        if len(y) < 8:
+            return None
+        mean = sum(y) / len(y)
+        crossings = [x[i - 1] + (x[i] - x[i - 1]) * (mean - y[i - 1]) / (y[i] - y[i - 1])
+                     for i in range(1, len(y)) if y[i - 1] < mean <= y[i]]
+        if len(crossings) < 3:
+            return None
+        return (crossings[-1] - crossings[0]) / (len(crossings) - 1)
+
+    def get_force_statistics(self, fields: list[str] | None = None) -> dict:
+        """Time-averaged force coefficients from the monitor history, one entry per operating condition.
+
+        Use this for average or accumulated drag and lift, how forces changed after steering, the
+        vortex shedding frequency (Strouhal number), or whether the loads have settled.
+
+        The history is split wherever a steered parameter (reynolds, collision) changes. For each
+        condition it reports, per force coefficient: the mean over every sample since the condition
+        began, and the mean, standard deviation and RMS over the settled second half, plus the
+        drift between the last two quarters (settled when under 2 percent). The shedding period
+        comes from the lift signal, as a Strouhal number when the monitors carry convective time.
+
+        Args:
+            fields: Force coefficient names (default: every drag, lift or force monitor).
+        """
+        if not self._monitor_source:
+            return {"error": "No monitor data. Call extract_monitors() first."}
+        try:
+            columns = self._monitor_columns()
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        iterations = columns.get("iteration", [])
+        fields = fields or [name for name in columns if self.FORCE_PATTERN.search(name)]
+        missing = [name for name in fields if name not in columns]
+        if missing or not fields or len(iterations) < 4:
+            return {"error": "No force history to analyze", "missing": missing, "available": sorted(columns)}
+
+        state = [name for name in self.STATE_MONITORS if name in columns]
+        starts = [0] + [i for i in range(1, len(iterations))
+                        if any(columns[name][i] != columns[name][i - 1] for name in state)]
+        lift = next((name for name in fields if "lift" in name.lower() or name.lower() == "cl"), None)
+
+        def r(v):
+            return float(f"{v:.4g}")
+
+        conditions = []
+        for k, start in enumerate(starts):
+            end = starts[k + 1] if k + 1 < len(starts) else len(iterations)
+            idx = list(range(start, end))
+            half = idx[len(idx) // 2:]
+            entry = {"iterations": [iterations[start], iterations[end - 1]], "samples": len(idx)}
+            entry.update({name: r(columns[name][start]) for name in state})
+            if len(idx) < 4:
+                entry["note"] = "transitional: too few samples to average"
+                conditions.append(entry)
+                continue
+            period = None
+            if lift:
+                period = self._shedding_period([iterations[i] for i in half], [columns[lift][i] for i in half])
+            spacing = (iterations[half[-1]] - iterations[half[0]]) / max(len(half) - 1, 1)
+            cycle = max(1, round(period / spacing)) if period and spacing else 1
+
+            def whole_cycles(values):
+                keep = len(values) // cycle * cycle
+                return values[-keep:] if keep else values
+
+            for name in fields:
+                values = [columns[name][i] for i in idx]
+                settled = [columns[name][i] for i in half]
+                mean = sum(settled) / len(settled)
+                std = (sum((v - mean) ** 2 for v in settled) / len(settled)) ** 0.5
+                q = len(settled) // 2
+                drift = None
+                if q >= 2:
+                    first, second = whole_cycles(settled[:q]), whole_cycles(settled[q:])
+                    a, b = sum(first) / len(first), sum(second) / len(second)
+                    drift = abs(b - a) / max(abs(mean), std, 1e-12)
+                entry[name] = {
+                    "mean_since_condition_start": r(sum(values) / len(values)),
+                    "settled_mean": r(mean),
+                    "settled_std": r(std),
+                    "settled_rms": r((sum(v * v for v in settled) / len(settled)) ** 0.5),
+                    "settled": drift is not None and drift < 0.02 and len(settled) >= 8,
+                    "drift_fraction": None if drift is None else r(drift),
+                }
+            if period:
+                entry["shedding_period_iterations"] = r(period)
+                if "time" in columns:
+                    t = [columns["time"][i] for i in half]
+                    p_time = self._shedding_period(t, [columns[lift][i] for i in half])
+                    if p_time:
+                        entry["strouhal_number"] = r(1.0 / p_time)
+            conditions.append(entry)
+
+        return {
+            "status": "ok",
+            "fields": fields,
+            "conditions": conditions,
+            "note": "One entry per operating condition, oldest first. A condition that is not settled "
+                    "needs more iterations before its mean can be quoted as final.",
         }
 
     def get_current_monitors(self) -> dict:
@@ -1142,6 +1288,7 @@ class CFDChatMCP:
                 self.extract_monitors,
                 self.show_monitor_chart,
                 self.get_current_monitors,
+                self.get_force_statistics,
             ])
             
             base_mcp["instructions"] += """
@@ -1171,7 +1318,10 @@ The extract step is REQUIRED when paused - it copies data from simulation memory
 The "monitors" channel carries the simulation's scalar histories: residuals, forces and
 any case quantities (for example heater power, heat_flux into the fluid, solid_t_max).
 For questions like "how hot is it" or "how much heat is leaving", call extract_monitors()
-once, then get_current_monitors() and read its "latest" values. Field channels (for
+once, then get_current_monitors() and read its "latest" values. For average or accumulated
+drag and lift, how the forces changed after steering, the shedding frequency, or whether the
+loads are settled, call get_force_statistics() and quote its numbers per operating condition.
+To plot forces live, call show_monitor_chart(y_fields=["drag", "lift"], log_scale=False). Field channels (for
 example "grid" for the fluid and "solid" for a solid part) are displayed and analyzed
 with show_live_source() and the regular tools.
 
@@ -1189,7 +1339,8 @@ Other tools:
 - set_breakpoint(iteration=100) - Pause when iteration is reached
 - clear_breakpoint() - Remove active breakpoint
 - extract_monitors("monitors") - Get residual data
-- show_monitor_chart() - Visualize convergence
+- show_monitor_chart() - Live chart of residuals, or of chosen monitors such as drag and lift
+- get_force_statistics() - Time-averaged forces and shedding per operating condition
 """
         
         base_mcp["tools"] = tools
