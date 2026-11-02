@@ -31,7 +31,7 @@ class TopologyWorkflows:
 
     # -- show_* tools ------------------------------------------------------
 
-    def show_persistence_diagram(self, field: str = None) -> dict:
+    def show_persistence_diagram(self, field: str | None = None) -> dict:
         """
         Compute and display the persistence diagram of a scalar field (TTK).
         Reveals the signal/noise gap: high-persistence pairs are robust features,
@@ -77,7 +77,7 @@ class TopologyWorkflows:
                    "To denoise, say 'simplify by persistence' with a threshold in the gap.",
         }
 
-    def show_critical_points(self, field: str = None) -> dict:
+    def show_critical_points(self, field: str | None = None) -> dict:
         """
         Compute and display the critical points of a scalar field (TTK):
         minima, 1-saddles, 2-saddles, maxima, colored by CriticalType.
@@ -113,7 +113,7 @@ class TopologyWorkflows:
                    "Run 'simplify by persistence' first to drop noise critical points.",
         }
 
-    def show_morse_smale(self, field: str = None) -> dict:
+    def show_morse_smale(self, field: str | None = None) -> dict:
         """
         Compute and display the Morse-Smale complex (TTK): the separatrix
         skeleton plus critical points. A threshold-free structural decomposition.
@@ -164,7 +164,7 @@ class TopologyWorkflows:
                    "Dense skeletons usually mean the field needs simplification first.",
         }
 
-    def show_simplified(self, field: str = None, persistence_threshold: float = 0.05) -> dict:
+    def show_simplified(self, field: str | None = None, persistence_threshold: float = 0.05) -> dict:
         """
         Compute and display a persistence-simplified (denoised) scalar field (TTK).
         persistence_threshold is relative to the field range (e.g. 0.05 = 5%).

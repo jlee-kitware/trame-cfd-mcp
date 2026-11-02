@@ -204,7 +204,7 @@ class WorkflowMCP:
         self,
         property_name: str,
         value,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Set display/representation property like opacity, interpolation, or line width.
@@ -319,7 +319,7 @@ class WorkflowMCP:
         }
     
     def update_list_property(self, property_name: str, property_value: list[float] | float | None = None,
-                             proxy_name: str = None) -> dict:
+                             proxy_name: str | None = None) -> dict:
         """Set an array property, such as contour values, to a complete list of values.
 
         Each call replaces the whole list. To set several values, pass all of them
@@ -337,7 +337,7 @@ class WorkflowMCP:
             self._notify_pipeline_and_panel()
         return self._with_visibility_note(result, proxy_name)
 
-    def update_representation(self, representation_type: str, proxy_name: str = None) -> dict:
+    def update_representation(self, representation_type: str, proxy_name: str | None = None) -> dict:
         """Update representation and refresh pipeline browser."""
         result = self._base_mcp.update_representation(representation_type=representation_type,
                                                        proxy_name=proxy_name)
@@ -426,7 +426,7 @@ class WorkflowMCP:
         array = getattr(rep, "ColorArrayName", None)
         return bool(getattr(rep, "LookupTable", None) and array and array[1])
 
-    def _with_visibility_note(self, result: dict, proxy_name: str = None) -> dict:
+    def _with_visibility_note(self, result: dict, proxy_name: str | None = None) -> dict:
         """Tell the model when a changed proxy is hidden, so the change cannot be seen."""
         if "error" in result:
             return result
@@ -448,7 +448,7 @@ class WorkflowMCP:
         "orange": [1.0, 0.55, 0.0], "gray": [0.6, 0.6, 0.6], "grey": [0.6, 0.6, 0.6],
     }
 
-    def update_color(self, proxy_name: str = None, field_name: str = None, rgb: list = None) -> dict:
+    def update_color(self, proxy_name: str | None = None, field_name: str | None = None, rgb: list | None = None) -> dict:
         """Color a proxy by a data field, or give it a solid color.
 
         Args:
@@ -501,7 +501,7 @@ class WorkflowMCP:
         with state:
             pass  # flush any remaining pending state
 
-    def get_ontology(self, key: str = None) -> dict:
+    def get_ontology(self, key: str | None = None) -> dict:
         """
         Get CFD domain knowledge for interpreting results.
         
@@ -527,7 +527,7 @@ class WorkflowMCP:
                 return {"error": f"ontology key not found: {key}"}
         return {key: cur}
     
-    def set_filter_property(self, proxy_name: str, properties: dict = None) -> dict:
+    def set_filter_property(self, proxy_name: str, properties: dict | None = None) -> dict:
         """
         Modify properties of an existing filter.
         

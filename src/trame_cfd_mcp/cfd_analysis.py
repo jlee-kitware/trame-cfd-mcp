@@ -426,7 +426,7 @@ class CFDAnalysis:
             "tip": "Any filter with num_points > 0 can be used as seed_source in show_streamlines().",
         }
     
-    def characterize_dataset(self, proxy_name: str = None) -> dict:
+    def characterize_dataset(self, proxy_name: str | None = None) -> dict:
         """
         Analyze CFD dataset to characterize simulation type and available physics.
         
@@ -549,7 +549,7 @@ class CFDAnalysis:
         except Exception as e:
             return {"error": str(e)}
     
-    def get_geometry_info(self, proxy_name: str = None) -> dict:
+    def get_geometry_info(self, proxy_name: str | None = None) -> dict:
         """
         Get geometric information about a dataset: bounds, center, and extents.
         
@@ -606,11 +606,11 @@ class CFDAnalysis:
 
     def ensure_velocity_vector(
         self, 
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         output_name: str = "Velocity",
-        u_component: str = None,
-        v_component: str = None, 
-        w_component: str = None
+        u_component: str | None = None,
+        v_component: str | None = None, 
+        w_component: str | None = None
     ) -> dict:
         """
         Ensure a 3-component velocity vector exists, creating it from components if needed.
@@ -734,7 +734,7 @@ class CFDAnalysis:
         except Exception as e:
             return {"error": str(e)}
     
-    def validate_for_analysis(self, analysis_type: str, proxy_name: str = None) -> dict:
+    def validate_for_analysis(self, analysis_type: str, proxy_name: str | None = None) -> dict:
         """
         Check if a dataset has the required fields for a specific analysis type.
         
@@ -838,7 +838,7 @@ class CFDAnalysis:
     # QUERY AND SELECTION TOOLS
     # =========================================================================
     
-    def find_by_threshold(self, field: str, threshold: float, below: bool = True, proxy_name: str = None) -> dict:
+    def find_by_threshold(self, field: str, threshold: float, below: bool = True, proxy_name: str | None = None) -> dict:
         """
         Find centroid of region where field is below/above threshold.
         
@@ -954,7 +954,7 @@ class CFDAnalysis:
         except Exception as e:
             return {"error": str(e)}
     
-    def query_select(self, query: str, field_type: str = "POINT", proxy_name: str = None) -> dict:
+    def query_select(self, query: str, field_type: str = "POINT", proxy_name: str | None = None) -> dict:
         """
         Select points or cells matching a query expression (ANALYSIS ONLY).
         
@@ -1010,7 +1010,7 @@ class CFDAnalysis:
         except Exception as e:
             return {"error": str(e), "query": query}
     
-    def get_selection_info(self, proxy_name: str = None) -> dict:
+    def get_selection_info(self, proxy_name: str | None = None) -> dict:
         """
         Get information about the current selection.
         
@@ -1060,7 +1060,7 @@ class CFDAnalysis:
         except Exception as e:
             return {"error": str(e)}
     
-    def find_by_query(self, query: str, proxy_name: str = None) -> dict:
+    def find_by_query(self, query: str, proxy_name: str | None = None) -> dict:
         """
         Find the centroid of points matching a query expression.
         
@@ -1122,7 +1122,7 @@ class CFDAnalysis:
         except Exception as e:
             return {"error": str(e), "query": query}
 
-    def find_minimum(self, field: str, proxy_name: str = None, exclude_boundaries: bool = True) -> dict:
+    def find_minimum(self, field: str, proxy_name: str | None = None, exclude_boundaries: bool = True) -> dict:
         """
         Find location where a field has minimum value/magnitude.
         
@@ -1173,7 +1173,7 @@ class CFDAnalysis:
             "type": "minimum",
         }
     
-    def find_maximum(self, field: str, proxy_name: str = None) -> dict:
+    def find_maximum(self, field: str, proxy_name: str | None = None) -> dict:
         """
         Find location where a field has maximum value/magnitude.
         
@@ -1222,7 +1222,7 @@ class CFDAnalysis:
             "type": "maximum",
         }
     
-    def find_high_gradient(self, field: str, proxy_name: str = None) -> dict:
+    def find_high_gradient(self, field: str, proxy_name: str | None = None) -> dict:
         """
         Find location of maximum gradient magnitude.
         
@@ -1292,7 +1292,7 @@ class CFDAnalysis:
 
     def compute_schlieren(
         self,
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         field: str = "Density",
         log_scale: bool = True,
     ) -> dict:
@@ -1408,7 +1408,7 @@ class CFDAnalysis:
 
     def compute_shadowgraph(
         self,
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         field: str = "Density",
     ) -> dict:
         """
@@ -1512,7 +1512,7 @@ class CFDAnalysis:
 
     def compute_shear_layer(
         self,
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         velocity_field: str = "Velocity",
         log_scale: bool = True,
     ) -> dict:
@@ -1627,7 +1627,7 @@ class CFDAnalysis:
 
     def compute_recirculation(
         self,
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         velocity_field: str = "Velocity",
         flow_direction: str = "x",
         method: str = "reverse_flow",
@@ -1775,7 +1775,7 @@ class CFDAnalysis:
             simple.SetActiveSource(original_active)
             return {"error": str(e)}
     
-    def field_statistics(self, field: str, proxy_name: str = None) -> dict:
+    def field_statistics(self, field: str, proxy_name: str | None = None) -> dict:
         """
         Get statistics for a field (min, max, mean, std).
         
@@ -1829,7 +1829,7 @@ class CFDAnalysis:
         self,
         field: str,
         num_bins: int = 20,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Get histogram data for a field.
@@ -1885,7 +1885,7 @@ class CFDAnalysis:
         self,
         method: str = "q_criterion",
         percentile: float = 50.0,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Compute vortex detection field (ANALYSIS ONLY - no visualization).
@@ -2060,12 +2060,12 @@ out.GetPointData().AddArray(arr)
     
     def compute_forces(
         self,
-        freestream_velocity: float = None,
-        reference_area: float = None,
+        freestream_velocity: float | None = None,
+        reference_area: float | None = None,
         density: float = 1.0,
         streamwise_axis: str = "x",
         lift_axis: str = "y",
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         _shared_normals=None,
         _shared_body_surf=None,
     ) -> dict:
@@ -2222,7 +2222,7 @@ out.GetPointData().AddArray(arr)
         force_axis: str = "auto",
         distribution_axis: str = "auto",
         num_bins: int = 40,
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         _shared_normals=None,
     ) -> dict:
         """
@@ -2360,7 +2360,7 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
     
-    def compute_span_loading(self, num_stations: int = 30, proxy_name: str = None) -> dict:
+    def compute_span_loading(self, num_stations: int = 30, proxy_name: str | None = None) -> dict:
         """
         Spanwise lift and drag distribution plus integrated CL and CD from surface pressure.
 
@@ -2435,9 +2435,9 @@ out.GetPointData().AddArray(arr)
 
     def compute_projected_area(
         self,
-        flow_direction: list = None,
+        flow_direction: list | None = None,
         resolution: int = 1024,
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         _shared_body_surf=None,
     ) -> dict:
         """
@@ -2575,7 +2575,7 @@ out.GetPointData().AddArray(arr)
 
     def compute_flow_topology(
         self,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Compute flow topology using vortex core detection.
@@ -2654,7 +2654,7 @@ out.GetPointData().AddArray(arr)
         self,
         field: str,
         num_bins: int = 20,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Compute field histogram and return Plotly-compatible data.
@@ -2713,7 +2713,7 @@ out.GetPointData().AddArray(arr)
         force_axis: str = "auto",
         distribution_axis: str = "auto",
         num_bins: int = 40,
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         _shared_normals=None,
     ) -> dict:
         """
@@ -2776,7 +2776,7 @@ out.GetPointData().AddArray(arr)
     def set_view(
         self,
         direction: str = "iso",
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Set camera to a standard view direction and focus on a proxy.
@@ -2870,7 +2870,7 @@ out.GetPointData().AddArray(arr)
             "focal_point": [cx, cy, cz]
         }
     
-    def detect_streamwise_direction(self, proxy_name: str = None) -> dict:
+    def detect_streamwise_direction(self, proxy_name: str | None = None) -> dict:
         """
         Detect the principal flow (streamwise) direction from velocity field.
         
@@ -2957,7 +2957,7 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
 
-    def detect_span_direction(self, proxy_name: str = None) -> dict:
+    def detect_span_direction(self, proxy_name: str | None = None) -> dict:
         """
         Detect the spanwise direction based on body geometry and flow direction.
         
@@ -3029,7 +3029,7 @@ out.GetPointData().AddArray(arr)
     def compute_spanwise_slice_params(
         self,
         offset: float = 0.0,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Compute slice parameters for a spanwise cut through the body.
@@ -3097,7 +3097,7 @@ out.GetPointData().AddArray(arr)
     def detect_wake_region(
         self, 
         velocity_deficit: float = 0.5,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Detect wake region based on velocity deficit, constrained to downstream of body.
@@ -3207,7 +3207,7 @@ out.GetPointData().AddArray(arr)
 
     def compute_streamline_seed(
         self,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Compute optimal streamline seed location and radius (ANALYSIS ONLY).
@@ -3320,7 +3320,7 @@ out.GetPointData().AddArray(arr)
 
     def compute_body_center(
         self,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Compute body geometry center (ANALYSIS ONLY).
@@ -3357,7 +3357,7 @@ out.GetPointData().AddArray(arr)
         self,
         normal: str = "z",
         offset: float = 0.0,
-        proxy_name: str = None
+        proxy_name: str | None = None
     ) -> dict:
         """
         Compute slice plane parameters based on body geometry (ANALYSIS ONLY).
@@ -3419,7 +3419,7 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
 
-    def set_streamwise_view(self, proxy_name: str = None) -> dict:
+    def set_streamwise_view(self, proxy_name: str | None = None) -> dict:
         """
         Set camera to an isometric view oriented along the streamwise direction.
         
@@ -3501,7 +3501,7 @@ out.GetPointData().AddArray(arr)
             "focal_point": [cx, cy, cz]
         }
     
-    def rescale_color_map(self, proxy_name: str = None) -> dict:
+    def rescale_color_map(self, proxy_name: str | None = None) -> dict:
         """
         Rescale the color map to the data range of the current proxy.
         
@@ -3533,7 +3533,7 @@ out.GetPointData().AddArray(arr)
         except Exception as e:
             return {"error": str(e)}
     
-    def set_scalar_bar_visibility(self, visible: bool = True, proxy_name: str = None) -> dict:
+    def set_scalar_bar_visibility(self, visible: bool = True, proxy_name: str | None = None) -> dict:
         """
         Show or hide the scalar bar (color legend) for a proxy.
         
@@ -3758,10 +3758,10 @@ out.GetPointData().AddArray(arr)
     
     def show_data_context(
         self,
-        proxy_name: str = None,
+        proxy_name: str | None = None,
         opacity: float = 0.3,
-        color: list[float] = None,
-        representation: str = None,
+        color: list[float] | None = None,
+        representation: str | None = None,
         clip_farfield: bool = True,
         clip_margin: float = 0.05
     ) -> dict:
@@ -3958,7 +3958,7 @@ out.GetPointData().AddArray(arr)
         """Resolve field name aliases and find actual field name."""
         return self._resolve_field_type(field_name, proxy)
 
-    def _get_proxy(self, proxy_name: str = None):
+    def _get_proxy(self, proxy_name: str | None = None):
         """Get proxy by name or active source."""
         if proxy_name:
             return simple.FindSource(proxy_name)
@@ -3975,7 +3975,7 @@ out.GetPointData().AddArray(arr)
     
     def compute_boundary_layer_profile(self, proxy=None, x_over_chord: float = 0.5,
                                         span_fraction: float = 0.5,
-                                        probe_length: float = None, proxy_name: str = None,
+                                        probe_length: float | None = None, proxy_name: str | None = None,
                                         _shared_surface=None) -> dict:
         """
         Compute boundary layer profile data at a given chordwise and spanwise location.

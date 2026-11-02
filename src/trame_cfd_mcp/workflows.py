@@ -94,7 +94,7 @@ class CFDWorkflows:
         if self._on_pipeline_changed:
             self._on_pipeline_changed()
     
-    def _create_chart_table(self, chart_type: str, title: str, data: dict, metadata: dict = None) -> str:
+    def _create_chart_table(self, chart_type: str, title: str, data: dict, metadata: dict | None = None) -> str:
         """
         Create a vtkTable proxy for chart data.
         
@@ -237,7 +237,7 @@ class CFDWorkflows:
             return str(fn)
         return "unknown"
 
-    def get_fields(self, proxy_name: str = None) -> dict:
+    def get_fields(self, proxy_name: str | None = None) -> dict:
         """
         Get available fields on a data source.
         
@@ -382,7 +382,7 @@ class CFDWorkflows:
         self,
         color_by: str = "Velocity",
         num_points: int = 100,
-        seed_source: str = None,
+        seed_source: str | None = None,
     ) -> dict:
         """
         Show streamlines seeded from an existing pipeline source or the auto-detected wake.
@@ -1010,7 +1010,7 @@ class CFDWorkflows:
         on_slice: bool = True,
         slice_normal: str = "auto",
         as_isosurface: bool = False,
-        iso_level: float = None,
+        iso_level: float | None = None,
         volume: bool = False,
     ) -> dict:
         """
@@ -1242,7 +1242,7 @@ class CFDWorkflows:
 
     _VIEW_DIRECTIONS = {"iso": ([0.7, 0.5, 0.7], [0, 1, 0])}
 
-    def _frame_body(self, view, pad: float = 0.75, direction: str = None, target=None):
+    def _frame_body(self, view, pad: float = 0.75, direction: str | None = None, target=None):
         """Frame the camera on a result (target) or the region around the body; fall back to the whole scene.
 
         With a direction, the camera also looks from that direction, so the result does
@@ -1532,7 +1532,7 @@ class CFDWorkflows:
         }
 
     def show_boundary_layer(self, x_over_chord: float = 0.5, span_fraction: float = 0.5, 
-                            probe_length: float = None,
+                            probe_length: float | None = None,
                             stations: object = None) -> dict:
         """
         Show boundary layer velocity profile at given chordwise and spanwise location(s).
@@ -1673,7 +1673,7 @@ class CFDWorkflows:
         }
 
     def _show_boundary_layer_multi(self, stations: list, span_fraction: float = 0.5,
-                                    probe_length: float = None) -> dict:
+                                    probe_length: float | None = None) -> dict:
         """Internal: compute boundary layer profiles at multiple stations in one call.
         Creates shared ExtractSurface+Clip infrastructure once, reused across all stations."""
         import numpy as np
@@ -1810,7 +1810,7 @@ class CFDWorkflows:
             ]),
         }
 
-    def create_section_debug_chart(self, bl_results: list = None, title: str = None) -> dict:
+    def create_section_debug_chart(self, bl_results: list | None = None, title: str | None = None) -> dict:
         """
         Create a debug chart showing airfoil section with probe locations.
         

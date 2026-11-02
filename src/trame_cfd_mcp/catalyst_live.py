@@ -199,7 +199,7 @@ class CFDChatMCP:
     # Live connection tools (only available if --live flag used)
     # =========================================================================
     
-    def connect_live(self, host: str = None, port: int = None, pause: bool = None) -> dict:
+    def connect_live(self, host: str | None = None, port: int | None = None, pause: bool | None = None) -> dict:
         """
         Connect to a running Catalyst-enabled simulation.
         
@@ -740,7 +740,7 @@ class CFDChatMCP:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
-    def show_live_source(self, source_name: str, color_by: str = None) -> dict:
+    def show_live_source(self, source_name: str, color_by: str | None = None) -> dict:
         """
         Show a live source in the render view.
         
