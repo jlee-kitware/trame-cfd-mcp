@@ -396,7 +396,7 @@ class CFDWorkflows:
 
         Args:
             color_by: Field to color by (default: "Velocity")
-            num_points: Number of seed points when using auto wake seeding (default: 100)
+            num_points: Number of seed points; a larger seed source is subsampled to this (default: 100)
             seed_source: Name of any existing pipeline proxy to use as seed points.
                          Can be any source visible in the pipeline browser — a slice,
                          surface extraction, vortex contour, custom geometry, etc.
@@ -422,6 +422,16 @@ class CFDWorkflows:
                 return {"error": f"Seed source '{seed_source}' not found in pipeline"}
 
             stream_name = f"Streamlines_{seed_source}"
+            simple.UpdatePipeline(proxy=seed_proxy)
+            n_seed = seed_proxy.GetDataInformation().GetNumberOfPoints()
+            if n_seed > num_points:
+                seed_proxy = simple.MaskPoints(
+                    Input=seed_proxy,
+                    OnRatio=max(1, n_seed // num_points),
+                    MaximumNumberofPoints=num_points,
+                    GenerateVertices=1,
+                    registrationName=f"{stream_name}_seeds",
+                )
             stream = simple.StreamTracerWithCustomSource(
                 Input=proxy,
                 SeedSource=seed_proxy,
@@ -457,7 +467,7 @@ class CFDWorkflows:
             display.RescaleTransferFunctionToDataRange(True, False)
             display.SetScalarBarVisibility(view, True)
 
-        self._frame_body(view, pad=1.0, direction="iso")
+        self._frame_body(view, pad=0.1, direction="iso", target=stream)
         simple.Render(view)
 
         provenance = {
