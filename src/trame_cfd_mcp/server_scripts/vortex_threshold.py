@@ -28,6 +28,10 @@ else:
 
     if METHOD == "lambda2":
         threshold = 0.01 * field_min
+    elif METHOD == "liutex":
+        # Liutex is weakly positive almost everywhere; keep the strong rotation.
+        positive = arr[arr > 0]
+        threshold = float(np.percentile(positive, PERCENTILE if PERCENTILE > 80.0 else 80.0)) if len(positive) else 0.0
     else:
         positive = arr[arr > 0]
         if len(positive) > 0:

@@ -1897,9 +1897,10 @@ class CFDAnalysis:
         - "q_criterion": Q = 0.5*(||Ω||² - ||S||²). Positive Q = vortex. (default)
         - "vorticity": Vorticity magnitude ||ω||. High = rotation.
         - "lambda2": Second eigenvalue of S² + Ω². Negative λ2 = vortex core.
+        - "liutex": Liutex magnitude (vtkLiutex), the rigid rotation with shear removed.
         
         Args:
-            method: "q_criterion", "vorticity", or "lambda2"
+            method: "q_criterion", "vorticity", "lambda2" or "liutex"
             percentile: Percentile of positive values for threshold (default: 50)
             proxy_name: Source proxy name
             
@@ -1918,7 +1919,7 @@ class CFDAnalysis:
 
             # Find velocity field name from metadata — no data movement
             info = get_field_names(flat_proxy)
-            precomputed = None
+            precomputed, vel_name = None, None
             if method == "q_criterion":
                 for association in ("point", "cell"):
                     for name in info.get(association, {}):
@@ -1948,75 +1949,91 @@ class CFDAnalysis:
                         safe_delete(_flat_cleanup)
                     return {"error": "No velocity field found for vortex detection"}
             
-                # Compute gradient with appropriate fields
-                gradient = simple.Gradient(Input=flat_proxy)
-                gradient.ScalarArray = ['POINTS', vel_name]
-            
-                if method == "q_criterion":
-                    gradient.ComputeQCriterion = 1
-                    gradient.QCriterionArrayName = "Q"
-                    field_name = "Q"
-                elif method == "vorticity":
-                    gradient.ComputeVorticity = 1
-                    gradient.VorticityArrayName = "Vorticity"
-                    field_name = "Vorticity"
-                elif method == "lambda2":
-                    gradient.ComputeGradient = 1
-                    gradient.ResultArrayName = "VelocityGradient"
-                    field_name = "Lambda2"
-                else:
-                    if _flat_cleanup:
-                        safe_delete(_flat_cleanup)
-                    return {"error": f"Unknown method: {method}. Use 'q_criterion', 'vorticity', or 'lambda2'"}
-            
-                simple.UpdatePipeline(proxy=gradient)
-            
-                # For vorticity, compute magnitude
-                if method == "vorticity":
-                    calc = simple.Calculator(Input=gradient)
-                    calc.ResultArrayName = "VorticityMagnitude"
-                    calc.Function = "mag(Vorticity)"
-                    simple.UpdatePipeline(proxy=calc)
-                    output_proxy = calc
-                    field_name = "VorticityMagnitude"
-                elif method == "lambda2":
-                    # Lambda2 needs eigenvalue computation via ProgrammableFilter
-                    prog = simple.ProgrammableFilter(Input=gradient)
-                    prog.Script = '''
-    import numpy as np
-    from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
-
-    inp = inputs[0]
-    out = output
-    out.ShallowCopy(inp.VTKObject)
-
-    grad_vtk = inp.PointData.GetArray("VelocityGradient")
-    n = grad_vtk.GetNumberOfTuples()
-    G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
-
-    lambda2 = np.zeros(n, dtype=np.float64)
-    valid_mask = np.all(np.isfinite(G), axis=(1, 2))
-    valid_indices = np.where(valid_mask)[0]
-
-    if len(valid_indices) > 0:
-        G_valid = G[valid_indices]
-        S = 0.5 * (G_valid + np.transpose(G_valid, (0, 2, 1)))
-        Omega = 0.5 * (G_valid - np.transpose(G_valid, (0, 2, 1)))
-        M = np.matmul(S, S) + np.matmul(Omega, Omega)
-        try:
-            eigvals = np.linalg.eigvalsh(M)
-            lambda2[valid_indices] = eigvals[:, 1]
-        except:
-            pass
-
-    arr = numpy_to_vtk(np.ascontiguousarray(lambda2))
-    arr.SetName("Lambda2")
-    out.GetPointData().AddArray(arr)
-    '''
-                    simple.UpdatePipeline(proxy=prog)
-                    output_proxy = prog
-                else:
+                if method == "liutex":
+                    # vtkLiutex: the rigid-rotation part of the velocity gradient, free of shear
+                    gradient = simple.ProgrammableFilter(Input=flat_proxy)
+                    gradient.Script = (
+                        "from vtkmodules.vtkFiltersFlowPaths import vtkLiutex\n"
+                        "f = vtkLiutex()\n"
+                        "f.SetInputData(inputs[0].VTKObject)\n"
+                        f"f.SetInputArrayToProcess(0, 0, 0, 0, {vel_name!r})\n"
+                        "f.Update()\n"
+                        "output.ShallowCopy(f.GetOutput())\n"
+                    )
+                    simple.UpdatePipeline(proxy=gradient)
                     output_proxy = gradient
+                    field_name = "LiutexMagnitude"
+                    self._log_analysis("liutex", filter="vtkLiutex", velocity_field=vel_name)
+                else:
+                    # Compute gradient with appropriate fields
+                    gradient = simple.Gradient(Input=flat_proxy)
+                    gradient.ScalarArray = ['POINTS', vel_name]
+            
+                    if method == "q_criterion":
+                        gradient.ComputeQCriterion = 1
+                        gradient.QCriterionArrayName = "Q"
+                        field_name = "Q"
+                    elif method == "vorticity":
+                        gradient.ComputeVorticity = 1
+                        gradient.VorticityArrayName = "Vorticity"
+                        field_name = "Vorticity"
+                    elif method == "lambda2":
+                        gradient.ComputeGradient = 1
+                        gradient.ResultArrayName = "VelocityGradient"
+                        field_name = "Lambda2"
+                    else:
+                        if _flat_cleanup:
+                            safe_delete(_flat_cleanup)
+                        return {"error": f"Unknown method: {method}. Use 'q_criterion', 'vorticity', or 'lambda2'"}
+            
+                    simple.UpdatePipeline(proxy=gradient)
+            
+                    # For vorticity, compute magnitude
+                    if method == "vorticity":
+                        calc = simple.Calculator(Input=gradient)
+                        calc.ResultArrayName = "VorticityMagnitude"
+                        calc.Function = "mag(Vorticity)"
+                        simple.UpdatePipeline(proxy=calc)
+                        output_proxy = calc
+                        field_name = "VorticityMagnitude"
+                    elif method == "lambda2":
+                        # Lambda2 needs eigenvalue computation via ProgrammableFilter
+                        prog = simple.ProgrammableFilter(Input=gradient)
+                        prog.Script = '''
+        import numpy as np
+        from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+
+        inp = inputs[0]
+        out = output
+        out.ShallowCopy(inp.VTKObject)
+
+        grad_vtk = inp.PointData.GetArray("VelocityGradient")
+        n = grad_vtk.GetNumberOfTuples()
+        G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
+
+        lambda2 = np.zeros(n, dtype=np.float64)
+        valid_mask = np.all(np.isfinite(G), axis=(1, 2))
+        valid_indices = np.where(valid_mask)[0]
+
+        if len(valid_indices) > 0:
+            G_valid = G[valid_indices]
+            S = 0.5 * (G_valid + np.transpose(G_valid, (0, 2, 1)))
+            Omega = 0.5 * (G_valid - np.transpose(G_valid, (0, 2, 1)))
+            M = np.matmul(S, S) + np.matmul(Omega, Omega)
+            try:
+                eigvals = np.linalg.eigvalsh(M)
+                lambda2[valid_indices] = eigvals[:, 1]
+            except:
+                pass
+
+        arr = numpy_to_vtk(np.ascontiguousarray(lambda2))
+        arr.SetName("Lambda2")
+        out.GetPointData().AddArray(arr)
+        '''
+                        simple.UpdatePipeline(proxy=prog)
+                        output_proxy = prog
+                    else:
+                        output_proxy = gradient
             
             # Compute threshold server-side — only scalar KPIs come back
             thresh_pf = run_server_script(
@@ -2066,6 +2083,7 @@ class CFDAnalysis:
                 "threshold": float(threshold),
                 "field_range": [field_min, field_max],
                 "method": method,
+                "velocity_field": vel_name if not precomputed else None,
             }
         except Exception as e:
             return {"error": str(e)}

@@ -307,14 +307,18 @@ class CFDWorkflows:
     def show_vortices(
         self,
         method: str = "q_criterion",
-        color_by: str = "Velocity"
+        color_by: str = "Velocity",
+        core_lines: bool = False,
     ) -> dict:
         """
-        Show vortex structures using Q-criterion, vorticity, or lambda2.
+        Show vortex structures using Q-criterion, vorticity, lambda2 or Liutex.
 
         Args:
-            method: "q_criterion" (default), "vorticity", or "lambda2"
+            method: "q_criterion" (default), "vorticity", "lambda2" or "liutex". Liutex
+                (vtkLiutex) measures rigid rotation with the shear removed.
             color_by: Field to color by (default: "Velocity")
+            core_lines: With method="liutex", also draw the Liutex vortex core lines
+                (vtkLiutexCoreLines) through the centers of the vortices.
 
         Returns:
             Dict with visualization info including proxy_name and full provenance
@@ -349,6 +353,30 @@ class CFDWorkflows:
             display.RescaleTransferFunctionToDataRange(True, False)
             display.SetScalarBarVisibility(view, True)
         
+        lines_info = None
+        if core_lines and method == "liutex" and vortex.get("velocity_field"):
+            lines = simple.ProgrammableFilter(Input=vortex_proxy, registrationName="Liutex_core_lines")
+            lines.OutputDataSetType = "vtkPolyData"
+            lines.Script = (
+                "from vtkmodules.vtkFiltersFlowPaths import vtkLiutexCoreLines\n"
+                "f = vtkLiutexCoreLines()\n"
+                "f.SetInputData(inputs[0].VTKObject)\n"
+                f"f.SetInputArrayToProcess(0, 0, 0, 0, {vortex['velocity_field']!r})\n"
+                f"f.SetMinimumLiutexMagnitude({vortex['threshold']!r})\n"
+                "f.Update()\n"
+                "output.ShallowCopy(f.GetOutput())\n"
+            )
+            simple.UpdatePipeline(proxy=lines)
+            bounds = contour.GetDataInformation().GetBounds()
+            tubes = simple.Tube(Input=lines, registrationName="Liutex_core_tubes")
+            tubes.Radius = 0.004 * max(bounds[1] - bounds[0], bounds[3] - bounds[2], 1e-6)
+            tube_display = simple.Show(tubes, view)
+            tube_display.ColorArrayName = ["POINTS", ""]
+            tube_display.AmbientColor = tube_display.DiffuseColor = [1.0, 0.85, 0.2]
+            display.Opacity = 0.35
+            lines_info = {"proxy_name": "Liutex_core_tubes",
+                          "line_cells": lines.GetDataInformation().GetNumberOfCells()}
+
         self._frame_body(view, pad=0.1, direction="iso", target=contour)
         simple.Render(view)
         
@@ -378,6 +406,7 @@ class CFDWorkflows:
                 "threshold": vortex["threshold"],
                 "field_range": vortex.get("field_range")
             },
+            **({"core_lines": lines_info} if lines_info else {}),
             "tip": (
                 f"Threshold {vortex['threshold']:.2f} is auto-computed. A LOWER threshold shows MORE structures. "
                 f"More: set Isosurfaces on '{contour_name}' to [{vortex['threshold'] / 2:.2f}]. "
