@@ -852,7 +852,13 @@ class CFDChatMCP:
                     rep.RescaleTransferFunctionToDataRange(True, False)
             
             view = simple.GetActiveView()
-            simple.ResetCamera(view)
+            info = source.GetDataInformation().DataInformation
+            bounds = info.GetBounds()
+            volume = not info.HasDataSetType(0) and all(bounds[2 * i + 1] > bounds[2 * i] for i in range(3))
+            if volume or not hasattr(self._workflow_mcp, "_workflows"):
+                simple.ResetCamera(view)
+            else:
+                self._workflow_mcp._workflows._frame_body(view, pad=0.1, direction="iso", target=source)
             simple.Render(view)
             
             # Update the trame app to refresh pipeline browser
@@ -873,6 +879,75 @@ class CFDChatMCP:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
+    @staticmethod
+    def _sm(item):
+        item = getattr(item, "Proxy", item)
+        return getattr(item, "SMProxy", item)
+
+    def _delete_with_consumers(self, proxy) -> list:
+        """Delete proxy and every filter built on it; the names removed, consumers first."""
+        removed = []
+        for (name, _), other in list(simple.GetSources().items()):
+            if other is proxy:
+                continue
+            inputs = []
+            for key in ("Input", "SeedSource", "Source"):
+                if key in other.ListProperties():
+                    value = other.GetPropertyValue(key)
+                    inputs += value if isinstance(value, (list, tuple)) else [value]
+            if any(item is not None and self._sm(item) is self._sm(proxy) for item in inputs):
+                removed += self._delete_with_consumers(other)
+        names = [name for (name, _), p in simple.GetSources().items() if p is proxy]
+        simple.Delete(proxy)
+        return removed + names
+
+    def release_live_source(self, source_name: str) -> dict:
+        """Stop transferring a live channel: remove its extract and the filters built on it.
+
+        Every extracted channel is sent on each Live update whether it is shown or not, so
+        release the full grid when switching to a leaner channel."""
+        proxy = self._extracted_sources.get(source_name)
+        if proxy is None:
+            return {"error": f"'{source_name}' is not extracted", "extracted": list(self._extracted_sources)}
+        if proxy is self._monitor_source:
+            return {"error": "The monitors channel stays extracted for the charts and force statistics."}
+        size = proxy.GetDataInformation().DataInformation.GetMemorySize()
+        if self._live_link:
+            getattr(self._live_link, "SMProxy", self._live_link).RemoveExtract(proxy.SMProxy)
+        removed = self._delete_with_consumers(proxy)
+        del self._extracted_sources[source_name]
+        if self._app:
+            self._app.update()
+            if hasattr(self._app.server.controller, "on_data_change"):
+                self._app.server.controller.on_data_change()
+        return {"status": "released", "source": source_name, "no_longer_sent_kb": size,
+                "removed": removed, "still_extracted": list(self._extracted_sources)}
+
+    def use_live_channel(self, channel: str) -> dict:
+        """Switch the analysis to one live field channel, for example from the full "grid" to a
+        leaner one: extract it and release the other extracted field channels so they stop
+        transferring (the monitors stay). show_vortices() and the other analysis tools then read
+        this channel. Reports what each update now sends and what was released."""
+        if not self._live_link:
+            return {"error": "Not connected. Call connect_live() first."}
+        result = self.extract_live_data(channel)
+        if "error" in result or result.get("status") == "error":
+            return result
+        keep = {channel, "derived_status"}
+        released = {}
+        for name in list(self._extracted_sources):
+            if name in keep or self._extracted_sources[name] is self._monitor_source:
+                continue
+            outcome = self.release_live_source(name)
+            if outcome.get("status") == "released":
+                released[name] = outcome["no_longer_sent_kb"]
+        source = self._extracted_sources[channel]
+        return {"status": "switched", "channel": channel,
+                "sent_kb_per_update": source.GetDataInformation().DataInformation.GetMemorySize(),
+                "released_kb_per_update": released,
+                "point_fields": list(source.PointData.keys()), "cell_fields": list(source.CellData.keys()),
+                "tip": "Analysis tools now read this channel: call show_vortices() for vortices."}
+
     def extract_monitors(self, channel_name: str = "monitors") -> dict:
         """
         Start monitoring residuals from the live simulation.
@@ -1280,7 +1355,7 @@ class CFDChatMCP:
 
         @functools.wraps(update_color)
         def wrapper(proxy_name: str | None = None, field_name: str | None = None, rgb: list | None = None):
-            source = self._extracted_sources.get(proxy_name or "")
+            source = self._extracted_sources.get(proxy_name or "") or (proxy_name and simple.FindSource(proxy_name))
             if source is None or rgb is not None or not field_name:
                 return update_color(proxy_name=proxy_name, field_name=field_name, rgb=rgb)
             view = simple.GetActiveView()
@@ -1359,6 +1434,8 @@ class CFDChatMCP:
                 self.show_monitor_chart,
                 self.get_current_monitors,
                 self.get_force_statistics,
+                self.release_live_source,
+                self.use_live_channel,
             ])
             
             base_mcp["instructions"] += """
@@ -1410,11 +1487,15 @@ Two places to compute: in ParaView (show_vortices, slices, calculators) after th
 is transferred, which is flexible; or in the simulation, which sends less data. When the
 user asks for something computed "in the solver" or "in situ", use the simulation: a new
 field goes into DerivedFields (keep the entries already there, separated by ';', and use
-@cells for expressions with curl, grad, div or qcrit); a channel other than the grid and
-monitors (for example "vortices") is an extract the simulation already computed, shown
-with show_live_source(). An extract carries the grid's fields, derived ones included, so a
-new derived field can color it. Results report data_size_kb: compare it with the grid's when
-the user asks what was transferred.
+@cells for expressions with curl, grad, div or qcrit).
+Channels: "grid" is the full flow field. A "lean" channel is the same grid with only speed and
+the fields the solver computed (q_criterion and the steered derived fields): switch to it with
+use_live_channel("lean"), which also releases the full grid, then show_vortices() contours its
+precomputed q_criterion instead of differentiating velocity. A channel such as "vortices" is a surface the simulation extracted
+itself, shown with show_live_source(): the smallest transfer, but it refreshes less often and
+costs solver time. Every extracted channel is sent on each update, shown or not, which is why
+use_live_channel() releases the others. Results
+report data_size_kb: compare the channels' sizes when the user asks what was transferred.
 
 Other tools:
 - resume_simulation() - Continue after analysis

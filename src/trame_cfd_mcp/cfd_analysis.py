@@ -1918,91 +1918,105 @@ class CFDAnalysis:
 
             # Find velocity field name from metadata — no data movement
             info = get_field_names(flat_proxy)
-            vel_name = None
-            for name in self._VELOCITY_NAMES:
-                if name in info["point"]:
-                    vel_name = name
-                    break
-            if vel_name is None:
-                # Fall back to first 3-component point field
-                for name, ncomp in info["point"].items():
-                    if ncomp == 3:
+            precomputed = None
+            if method == "q_criterion":
+                for association in ("point", "cell"):
+                    for name in info.get(association, {}):
+                        if name.lower() in ("q_criterion", "qcriterion", "q"):
+                            precomputed = precomputed or (name, association)
+            if precomputed:
+                # The simulation already computed Q: contour it instead of differentiating velocity.
+                field_name, association = precomputed
+                gradient = simple.CellDatatoPointData(Input=flat_proxy) if association == "cell" else flat_proxy
+                simple.UpdatePipeline(proxy=gradient)
+                output_proxy = gradient
+                self._log_analysis("precomputed_field", field=field_name, association=association)
+            else:
+                vel_name = None
+                for name in self._VELOCITY_NAMES:
+                    if name in info["point"]:
                         vel_name = name
                         break
-            if vel_name is None:
-                if _flat_cleanup:
-                    safe_delete(_flat_cleanup)
-                return {"error": "No velocity field found for vortex detection"}
+                if vel_name is None:
+                    # Fall back to first 3-component point field
+                    for name, ncomp in info["point"].items():
+                        if ncomp == 3:
+                            vel_name = name
+                            break
+                if vel_name is None:
+                    if _flat_cleanup:
+                        safe_delete(_flat_cleanup)
+                    return {"error": "No velocity field found for vortex detection"}
             
-            # Compute gradient with appropriate fields
-            gradient = simple.Gradient(Input=flat_proxy)
-            gradient.ScalarArray = ['POINTS', vel_name]
+                # Compute gradient with appropriate fields
+                gradient = simple.Gradient(Input=flat_proxy)
+                gradient.ScalarArray = ['POINTS', vel_name]
             
-            if method == "q_criterion":
-                gradient.ComputeQCriterion = 1
-                gradient.QCriterionArrayName = "Q"
-                field_name = "Q"
-            elif method == "vorticity":
-                gradient.ComputeVorticity = 1
-                gradient.VorticityArrayName = "Vorticity"
-                field_name = "Vorticity"
-            elif method == "lambda2":
-                gradient.ComputeGradient = 1
-                gradient.ResultArrayName = "VelocityGradient"
-                field_name = "Lambda2"
-            else:
-                if _flat_cleanup:
-                    safe_delete(_flat_cleanup)
-                return {"error": f"Unknown method: {method}. Use 'q_criterion', 'vorticity', or 'lambda2'"}
+                if method == "q_criterion":
+                    gradient.ComputeQCriterion = 1
+                    gradient.QCriterionArrayName = "Q"
+                    field_name = "Q"
+                elif method == "vorticity":
+                    gradient.ComputeVorticity = 1
+                    gradient.VorticityArrayName = "Vorticity"
+                    field_name = "Vorticity"
+                elif method == "lambda2":
+                    gradient.ComputeGradient = 1
+                    gradient.ResultArrayName = "VelocityGradient"
+                    field_name = "Lambda2"
+                else:
+                    if _flat_cleanup:
+                        safe_delete(_flat_cleanup)
+                    return {"error": f"Unknown method: {method}. Use 'q_criterion', 'vorticity', or 'lambda2'"}
             
-            simple.UpdatePipeline(proxy=gradient)
+                simple.UpdatePipeline(proxy=gradient)
             
-            # For vorticity, compute magnitude
-            if method == "vorticity":
-                calc = simple.Calculator(Input=gradient)
-                calc.ResultArrayName = "VorticityMagnitude"
-                calc.Function = "mag(Vorticity)"
-                simple.UpdatePipeline(proxy=calc)
-                output_proxy = calc
-                field_name = "VorticityMagnitude"
-            elif method == "lambda2":
-                # Lambda2 needs eigenvalue computation via ProgrammableFilter
-                prog = simple.ProgrammableFilter(Input=gradient)
-                prog.Script = '''
-import numpy as np
-from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
+                # For vorticity, compute magnitude
+                if method == "vorticity":
+                    calc = simple.Calculator(Input=gradient)
+                    calc.ResultArrayName = "VorticityMagnitude"
+                    calc.Function = "mag(Vorticity)"
+                    simple.UpdatePipeline(proxy=calc)
+                    output_proxy = calc
+                    field_name = "VorticityMagnitude"
+                elif method == "lambda2":
+                    # Lambda2 needs eigenvalue computation via ProgrammableFilter
+                    prog = simple.ProgrammableFilter(Input=gradient)
+                    prog.Script = '''
+    import numpy as np
+    from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 
-inp = inputs[0]
-out = output
-out.ShallowCopy(inp.VTKObject)
+    inp = inputs[0]
+    out = output
+    out.ShallowCopy(inp.VTKObject)
 
-grad_vtk = inp.PointData.GetArray("VelocityGradient")
-n = grad_vtk.GetNumberOfTuples()
-G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
+    grad_vtk = inp.PointData.GetArray("VelocityGradient")
+    n = grad_vtk.GetNumberOfTuples()
+    G = np.array([grad_vtk.GetTuple(i) for i in range(n)]).reshape(-1, 3, 3)
 
-lambda2 = np.zeros(n, dtype=np.float64)
-valid_mask = np.all(np.isfinite(G), axis=(1, 2))
-valid_indices = np.where(valid_mask)[0]
+    lambda2 = np.zeros(n, dtype=np.float64)
+    valid_mask = np.all(np.isfinite(G), axis=(1, 2))
+    valid_indices = np.where(valid_mask)[0]
 
-if len(valid_indices) > 0:
-    G_valid = G[valid_indices]
-    S = 0.5 * (G_valid + np.transpose(G_valid, (0, 2, 1)))
-    Omega = 0.5 * (G_valid - np.transpose(G_valid, (0, 2, 1)))
-    M = np.matmul(S, S) + np.matmul(Omega, Omega)
-    try:
-        eigvals = np.linalg.eigvalsh(M)
-        lambda2[valid_indices] = eigvals[:, 1]
-    except:
-        pass
+    if len(valid_indices) > 0:
+        G_valid = G[valid_indices]
+        S = 0.5 * (G_valid + np.transpose(G_valid, (0, 2, 1)))
+        Omega = 0.5 * (G_valid - np.transpose(G_valid, (0, 2, 1)))
+        M = np.matmul(S, S) + np.matmul(Omega, Omega)
+        try:
+            eigvals = np.linalg.eigvalsh(M)
+            lambda2[valid_indices] = eigvals[:, 1]
+        except:
+            pass
 
-arr = numpy_to_vtk(np.ascontiguousarray(lambda2))
-arr.SetName("Lambda2")
-out.GetPointData().AddArray(arr)
-'''
-                simple.UpdatePipeline(proxy=prog)
-                output_proxy = prog
-            else:
-                output_proxy = gradient
+    arr = numpy_to_vtk(np.ascontiguousarray(lambda2))
+    arr.SetName("Lambda2")
+    out.GetPointData().AddArray(arr)
+    '''
+                    simple.UpdatePipeline(proxy=prog)
+                    output_proxy = prog
+                else:
+                    output_proxy = gradient
             
             # Compute threshold server-side — only scalar KPIs come back
             thresh_pf = run_server_script(
