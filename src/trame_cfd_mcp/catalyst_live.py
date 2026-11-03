@@ -499,6 +499,13 @@ class CFDChatMCP:
                     if len(ready) == len(names):
                         result["note"] = ("The new fields have arrived on the channels listed in fields_ready: "
                                           "color or analyze them now, without stepping or pausing the simulation.")
+                    else:
+                        outcome = next((p.get("outcome") for p in self.get_simulation_parameters().get("parameters", [])
+                                        if p.get("name") == name), None)
+                        result["status"] = "not_applied"
+                        result["outcome"] = outcome
+                        result["note"] = ("The fields did not arrive. If outcome reports an error, correct the "
+                                          "expression and set it again; do not step or pause the simulation.")
                 return result
             if choices:
                 match = {k.lower(): v for k, v in choices.items()}.get(str(value).strip().lower())
@@ -653,7 +660,8 @@ class CFDChatMCP:
     
     def step_simulation(self, count: int = 1) -> dict:
         """
-        Step the simulation forward by a number of iterations, then pause.
+        Step the simulation forward by a number of iterations, then pause. The simulation
+        stays paused afterwards, so call this only when the user asks to step.
         
         Resumes the simulation and sets a breakpoint at current_iteration + count.
         Auto-starts monitoring if not already active.
@@ -942,11 +950,22 @@ class CFDChatMCP:
             if outcome.get("status") == "released":
                 released[name] = outcome["no_longer_sent_kb"]
         source = self._extracted_sources[channel]
-        return {"status": "switched", "channel": channel,
-                "sent_kb_per_update": source.GetDataInformation().DataInformation.GetMemorySize(),
-                "released_kb_per_update": released,
-                "point_fields": list(source.PointData.keys()), "cell_fields": list(source.CellData.keys()),
-                "tip": "Analysis tools now read this channel: call show_vortices() for vortices."}
+        result = {"status": "switched", "channel": channel,
+                  "sent_kb_per_update": source.GetDataInformation().DataInformation.GetMemorySize(),
+                  "released_kb_per_update": released,
+                  "point_fields": list(source.PointData.keys()), "cell_fields": list(source.CellData.keys()),
+                  "tip": "Analysis tools now read this channel."}
+        from paraview import servermanager
+        view = simple.GetActiveView()
+        reps = (servermanager.GetRepresentation(p, view) for p in simple.GetSources().values())
+        visible = any(rep.Visibility for rep in reps if rep is not None)
+        workflows = getattr(self._workflow_mcp, "_workflows", None)
+        if not visible and workflows is not None and "q_criterion" in result["cell_fields"] + result["point_fields"]:
+            # Releasing the old channel removed what was on screen: show this channel's vortices.
+            shown = workflows.show_vortices(method="q_criterion", color_by="speed")
+            result["shown"] = {key: shown.get(key) for key in ("status", "proxy_name", "result", "error") if key in shown}
+            result["tip"] = "The view now shows q_criterion vortices contoured from this channel."
+        return result
 
     def extract_monitors(self, channel_name: str = "monitors") -> dict:
         """
@@ -1411,6 +1430,12 @@ class CFDChatMCP:
             self.get_session_cost,
             self.reset_session_cost,
         ]
+        import os
+        if os.environ.get("CFD_MCP_VIEW_CRITIC", "1") == "0":
+            # Without a vision endpoint the critic only repeats computable checks; leave it out.
+            tools = [tool for tool in tools if getattr(tool, "__name__", "") != "inspect_view"]
+            base_mcp["instructions"] = re.sub(r"== LOOK AND CORRECT ==.*?(?=KEEP RESPONSES CONCISE)", "",
+                                              base_mcp["instructions"], flags=re.S)
         
         if self._live_enabled:
             wrappers = {"list_data": self._with_live_channels, "update_color": self._with_live_sources}
@@ -1489,8 +1514,9 @@ user asks for something computed "in the solver" or "in situ", use the simulatio
 field goes into DerivedFields (keep the entries already there, separated by ';', and use
 @cells for expressions with curl, grad, div or qcrit).
 Channels: "grid" is the full flow field. A "lean" channel is the same grid with only speed and
-the fields the solver computed (q_criterion and the steered derived fields): switch to it with
-use_live_channel("lean"), which also releases the full grid, then show_vortices() contours its
+the fields the solver computed (q_criterion and the steered derived fields). To switch to a
+channel ("switch to", "use the lean channel"), call use_live_channel(channel) first, never
+show_live_source(): it also releases the full grid, then show_vortices() contours its
 precomputed q_criterion instead of differentiating velocity. A channel such as "vortices" is a surface the simulation extracted
 itself, shown with show_live_source(): the smallest transfer, but it refreshes less often and
 costs solver time. Every extracted channel is sent on each update, shown or not, which is why
