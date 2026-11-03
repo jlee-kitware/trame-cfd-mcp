@@ -372,11 +372,16 @@ class CFDWorkflows:
             line_display.AmbientColor = line_display.DiffuseColor = [1.0, 0.8, 0.0]
             line_display.LineWidth = 3.0
             line_display.RenderLinesAsTubes = 1
-            display.Opacity = 0.5
+            display.SetScalarBarVisibility(view, False)
+            display.ColorArrayName = ["POINTS", ""]
+            display.AmbientColor = display.DiffuseColor = [0.75, 0.82, 0.92]
+            display.Opacity = 0.35
             lines_info = {"proxy_name": "Liutex_core_lines",
                           "line_cells": lines.GetDataInformation().GetNumberOfCells()}
 
         self._frame_body(view, pad=0.1, direction="iso", target=contour)
+        if lines_info:
+            view.GetActiveCamera().Dolly(1.6)
         simple.Render(view)
         
         # Build provenance: filter chain from ParaView, analysis from our log
