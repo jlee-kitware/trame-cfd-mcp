@@ -367,14 +367,13 @@ class CFDWorkflows:
                 "output.ShallowCopy(f.GetOutput())\n"
             )
             simple.UpdatePipeline(proxy=lines)
-            bounds = contour.GetDataInformation().GetBounds()
-            tubes = simple.Tube(Input=lines, registrationName="Liutex_core_tubes")
-            tubes.Radius = 0.008 * max(bounds[1] - bounds[0], bounds[3] - bounds[2], 1e-6)
-            tube_display = simple.Show(tubes, view)
-            tube_display.ColorArrayName = ["POINTS", ""]
-            tube_display.AmbientColor = tube_display.DiffuseColor = [1.0, 0.8, 0.0]
+            line_display = simple.Show(lines, view)
+            line_display.ColorArrayName = ["POINTS", ""]
+            line_display.AmbientColor = line_display.DiffuseColor = [1.0, 0.8, 0.0]
+            line_display.LineWidth = 3.0
+            line_display.RenderLinesAsTubes = 1
             display.Opacity = 0.5
-            lines_info = {"proxy_name": "Liutex_core_tubes",
+            lines_info = {"proxy_name": "Liutex_core_lines",
                           "line_cells": lines.GetDataInformation().GetNumberOfCells()}
 
         self._frame_body(view, pad=0.1, direction="iso", target=contour)
