@@ -112,7 +112,7 @@ class CFDChatMCP:
 
     RESIDUAL_PATTERN = re.compile(r"^(continuity|momentum|energy|mass|residual|res_|r_)", re.IGNORECASE)
     FORCE_PATTERN = re.compile(r"(drag|lift|^c[dl]$|force)", re.IGNORECASE)
-    STATE_MONITORS = ("reynolds", "collision")
+    STATE_MONITORS = ("reynolds", "collision", "power")
 
     @classmethod
     def is_residual(cls, name: str) -> bool:
@@ -863,7 +863,7 @@ class CFDChatMCP:
             info = source.GetDataInformation().DataInformation
             bounds = info.GetBounds()
             volume = not info.HasDataSetType(0) and all(bounds[2 * i + 1] > bounds[2 * i] for i in range(3))
-            if volume or not hasattr(self._workflow_mcp, "_workflows"):
+            if volume and not info.HasDataSetType(4) or not hasattr(self._workflow_mcp, "_workflows"):
                 simple.ResetCamera(view)
             else:
                 self._workflow_mcp._workflows._frame_body(view, pad=0.1, direction="iso", target=source)
@@ -1313,6 +1313,87 @@ class CFDChatMCP:
                     "snapshot: call again after steering or for any later question.",
         }
 
+    def get_thermal_statistics(self) -> dict:
+        """Heat balance, peak temperature and thermal resistance from the monitor history, one entry per operating condition.
+
+        Use this for whether a heated part has reached thermal steady state, how hot it runs, its
+        thermal resistance, or how these changed after the heater power or the flow was steered.
+        Needs the monitors power (heat input), heat_flux (heat into the fluid) and solid_t_max.
+
+        The history is split wherever a steered parameter (power, reynolds, collision) changes. For
+        each condition it reports the settled means (second half of the condition) of heat_flux,
+        solid_t_max and solid_t_mean, the energy balance heat_flux / power, and the thermal
+        resistance (solid_t_max - t_ambient) / power: the peak temperature rise above the inflow air
+        per unit power, in K/W when the simulation publishes SI units.
+        A quantity is settled when it drifts under 1 percent between the last two quarters.
+        """
+        if not self._monitor_source:
+            return {"error": "No monitor data. Call extract_monitors() first."}
+        try:
+            columns = self._monitor_columns()
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        needed = ["power", "heat_flux", "solid_t_max"]
+        missing = [name for name in needed if name not in columns]
+        iterations = columns.get("iteration", [])
+        if missing or len(iterations) < 4:
+            return {"error": "No thermal history to analyze", "missing": missing, "available": sorted(columns)}
+        fields = [name for name in ("heat_flux", "solid_t_max", "solid_t_mean") if name in columns]
+        state = [name for name in self.STATE_MONITORS if name in columns]
+        starts = [0] + [i for i in range(1, len(iterations))
+                        if any(columns[name][i] != columns[name][i - 1] for name in state)]
+
+        def r(v):
+            return float(f"{v:.4g}")
+
+        conditions = []
+        for k, start in enumerate(starts):
+            end = starts[k + 1] if k + 1 < len(starts) else len(iterations)
+            idx = list(range(start, end))
+            entry = {"iterations": [iterations[start], iterations[end - 1]], "samples": len(idx)}
+            entry.update({name: r(columns[name][start]) for name in state})
+            if len(idx) < 8:
+                entry["note"] = "transitional: too few samples to judge"
+                conditions.append(entry)
+                continue
+            half = idx[len(idx) // 2:]
+            q = len(half) // 2
+            settled_all = True
+            means = {}
+            for name in fields:
+                values = [columns[name][i] for i in half]
+                mean = sum(values) / len(values)
+                a = sum(values[:q]) / q
+                b = sum(values[q:]) / (len(values) - q)
+                drift = abs(b - a) / max(abs(mean), 1e-12)
+                settled = drift < 0.01 and len(half) >= 10
+                settled_all &= settled
+                means[name] = mean
+                entry[name] = {"settled_mean": r(mean), "latest": r(columns[name][end - 1]),
+                               "settled": settled, "drift_fraction": r(drift)}
+            power = columns["power"][end - 1]
+            ambient = columns["t_ambient"][end - 1] if "t_ambient" in columns else 0.0
+            if "t_ambient" in columns:
+                entry["peak_rise_above_inflow"] = r(means["solid_t_max"] - ambient)
+            if power:
+                entry["energy_balance"] = r(means["heat_flux"] / power)
+                entry["thermal_resistance"] = r((means["solid_t_max"] - ambient) / power)
+            entry["thermal_steady_state"] = settled_all and abs(entry.get("energy_balance", 0) - 1) < 0.02
+            conditions.append(entry)
+
+        si = "t_ambient" in columns
+        return {
+            "status": "ok",
+            "conditions": conditions,
+            "units": ("SI: temperatures in degC (t_ambient is the inflow air), power and heat_flux in W, "
+                      "peak_rise_above_inflow in K, thermal_resistance in K/W." if si else
+                      "Lattice units: temperatures are rises above the inflow air, power and heat_flux are "
+                      "heat per step. Quote them as given, without physical units such as W or K."),
+            "note": "One entry per operating condition, oldest first. Thermal steady state means the heat "
+                    "leaving into the air matches the heater power and the temperatures have stopped "
+                    "rising. Call again after steering or for any later question.",
+        }
+
     def get_current_monitors(self) -> dict:
         """Get the latest monitor values and a convergence assessment of the residual history.
 
@@ -1459,6 +1540,7 @@ class CFDChatMCP:
                 self.show_monitor_chart,
                 self.get_current_monitors,
                 self.get_force_statistics,
+                self.get_thermal_statistics,
                 self.release_live_source,
                 self.use_live_channel,
             ])
@@ -1495,6 +1577,12 @@ drag and lift, how the forces changed after steering, the shedding frequency, or
 loads are settled, call get_force_statistics() and quote its numbers per operating condition.
 The history grows while the simulation runs and changes after every steering change, so call
 get_force_statistics() again for each such question; never reuse an earlier result.
+For a heated part (power, heat_flux and solid_t_max monitors), questions about thermal steady
+state, how hot it runs, thermal resistance or the response to a power change go to
+get_thermal_statistics(), called fresh each time; quote its values in the units it reports
+(SI or lattice units), and never add units it does not report. Chart the heat balance with
+show_monitor_chart(y_fields=["power", "heat_flux"], log_scale=False) and temperatures with
+show_monitor_chart(y_fields=["solid_t_max", "solid_t_mean"], log_scale=False).
 To plot forces live, call show_monitor_chart(y_fields=["drag", "lift"], log_scale=False). Field channels (for
 example "grid" for the fluid and "solid" for a solid part) are displayed and analyzed
 with show_live_source() and the regular tools.
@@ -1531,6 +1619,7 @@ Other tools:
 - extract_monitors("monitors") - Get residual data
 - show_monitor_chart() - Live chart of residuals, or of chosen monitors such as drag and lift
 - get_force_statistics() - Time-averaged forces and shedding per operating condition
+- get_thermal_statistics() - Heat balance, peak temperature and thermal resistance per operating condition
 """
         
         base_mcp["tools"] = tools
