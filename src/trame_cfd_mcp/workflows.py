@@ -423,6 +423,7 @@ class CFDWorkflows:
         color_by: str = "Velocity",
         num_points: int = 100,
         seed_source: str | None = None,
+        show_with: str | None = None,
     ) -> dict:
         """
         Show streamlines seeded from an existing pipeline source or the auto-detected wake.
@@ -435,6 +436,8 @@ class CFDWorkflows:
                          surface extraction, vortex contour, custom geometry, etc.
                          Use list_data() to see available proxy names.
                          If None, seeds are auto-placed in the wake region.
+            show_with: Name of a source to show together with the streamlines, such as a
+                       live "solid" channel when the user wants the body in view.
 
         Returns:
             Dict with visualization info including proxy_name and provenance
@@ -500,6 +503,26 @@ class CFDWorkflows:
             display.RescaleTransferFunctionToDataRange(True, False)
             display.SetScalarBarVisibility(view, True)
 
+        shown_with = None
+        if show_with:
+            body = simple.FindSource(show_with)
+            if body is None:
+                return {"error": f"Source '{show_with}' to show with the streamlines not found"}
+            body_display = simple.Show(body, view)
+            body_array = self._mcp._resolve_field_type(color_by, body)
+            if body_array:
+                simple.ColorBy(body_display, ('POINTS', body_array))
+                if body_array == color_array:
+                    # One fixed scale over both, so the body and the flow read against each other
+                    # and later updates (a body cooling down) show as a change of color.
+                    ranges = [src.PointData[body_array].GetRange() for src in (stream, body)]
+                    lut = simple.GetColorTransferFunction(body_array)
+                    lut.AutomaticRescaleRangeMode = "Never"
+                    lut.RescaleTransferFunction(min(r[0] for r in ranges), max(r[1] for r in ranges))
+                    simple.GetOpacityTransferFunction(body_array).RescaleTransferFunction(
+                        min(r[0] for r in ranges), max(r[1] for r in ranges))
+            shown_with = show_with
+
         self._frame_body(view, pad=0.1, direction="iso", target=stream)
         simple.Render(view)
 
@@ -523,6 +546,7 @@ class CFDWorkflows:
             "type": "streamlines",
             "proxy_name": stream_name,
             "seed_source": seed_source or "wake (auto)",
+            "shown_with": shown_with,
             "provenance": provenance,
             "ontology_hints": self._ontology_hints([
                 "causal_relationships.drag_increase",
