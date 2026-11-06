@@ -418,6 +418,12 @@ class CFDWorkflows:
             ),
         }
 
+    @staticmethod
+    def _point_range(source, name):
+        """The range of a point array on a source, or None when it has no such array or no points."""
+        array = source.PointData[name] if source.GetDataInformation().GetNumberOfPoints() else None
+        return array.GetRange() if array is not None else None
+
     def show_streamlines(
         self,
         color_by: str = "Velocity",
@@ -509,18 +515,16 @@ class CFDWorkflows:
             if body is None:
                 return {"error": f"Source '{show_with}' to show with the streamlines not found"}
             body_display = simple.Show(body, view)
-            body_array = self._mcp._resolve_field_type(color_by, body)
-            if body_array:
-                simple.ColorBy(body_display, ('POINTS', body_array))
-                if body_array == color_array:
-                    # One fixed scale over both, so the body and the flow read against each other
-                    # and later updates (a body cooling down) show as a change of color.
-                    ranges = [src.PointData[body_array].GetRange() for src in (stream, body)]
-                    lut = simple.GetColorTransferFunction(body_array)
-                    lut.AutomaticRescaleRangeMode = "Never"
-                    lut.RescaleTransferFunction(min(r[0] for r in ranges), max(r[1] for r in ranges))
-                    simple.GetOpacityTransferFunction(body_array).RescaleTransferFunction(
-                        min(r[0] for r in ranges), max(r[1] for r in ranges))
+            ranges = [self._point_range(src, color_array) for src in (stream, body)] if color_array else []
+            if ranges and all(ranges):
+                # One fixed scale over both, so the body and the flow read against each other
+                # and later updates (a body cooling down) show as a change of color.
+                simple.ColorBy(body_display, ('POINTS', color_array))
+                lo, hi = min(r[0] for r in ranges), max(r[1] for r in ranges)
+                lut = simple.GetColorTransferFunction(color_array)
+                lut.AutomaticRescaleRangeMode = "Never"
+                lut.RescaleTransferFunction(lo, hi)
+                simple.GetOpacityTransferFunction(color_array).RescaleTransferFunction(lo, hi)
             shown_with = show_with
 
         self._frame_body(view, pad=0.1, direction="iso", target=stream)
