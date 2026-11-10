@@ -25,6 +25,9 @@ ROW = vtkDataObject.ROW
 
 class CFDChatMCP:
     """MCP wrapper that adds cost tracking and optional live monitoring tools."""
+
+    # A running simulation that sends no new step for this long is reported as stalled.
+    LIVE_STALL_SECONDS = 30
     
     def __init__(self, workflow_mcp, llm_client, live_enabled=False, live_host="localhost", live_port=22222,
                  live_proxies=None):
@@ -57,6 +60,7 @@ class CFDChatMCP:
         }
         self._last_iteration = -1
         self._pause_at_iteration = None  # Breakpoint target (iteration number)
+        self._step_seen = (None, 0.0)
 
     @property
     def _app(self):
@@ -275,7 +279,7 @@ class CFDChatMCP:
                 self._live_link.GetProperty('SimulationPaused').SetElement(0, 1)
                 self._live_link.UpdateVTKObjects()
                 result["paused"] = True
-                result["tip"] = "Simulation paused. Use 'extract surface' or 'extract volume' to get data."
+                result["tip"] = "Simulation paused. get_live_status() lists the channels to extract."
             else:
                 result["tip"] = "Use 'pause simulation' then extract data to visualize."
             
@@ -584,17 +588,33 @@ class CFDChatMCP:
         steering = set(self._steerable_proxies())
         return [name for name in names if name not in steering and not name.startswith("_")]
 
+    def live_step(self):
+        """The link's latest timestep, and the seconds since it last changed while the run was not paused."""
+        import time
+        link = getattr(self._live_link, "SMProxy", self._live_link)
+        step = link.GetTimeStep()
+        now = time.time()
+        paused = self._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
+        if paused or step != self._step_seen[0]:
+            self._step_seen = (step, now)
+        return step, now - self._step_seen[1]
+
     def get_live_status(self) -> dict:
-        """Get the live simulation's time, pause state and the names of its data channels."""
+        """Get the live simulation's step, pause state and the names of its data channels."""
         if not self._live_link:
             return {"status": "not_connected"}
 
         try:
-            time = simple.GetAnimationScene().TimeKeeper.Time
             paused = self._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
-            return {"status": "connected", "time": time, "paused": paused,
-                    "channels": self.live_channels(),
-                    "extracted": list(self._extracted_sources)}
+            step, quiet = self.live_step()
+            result = {"status": "connected", "step": step, "paused": paused,
+                      "seconds_since_last_update": round(quiet),
+                      "channels": self.live_channels(),
+                      "extracted": list(self._extracted_sources)}
+            if not paused and quiet > self.LIVE_STALL_SECONDS:
+                result["warning"] = (f"No update from the simulation for {quiet:.0f} s although it is not "
+                                     "paused. The run may have stopped or be blocked.")
+            return result
         except Exception as e:
             return {"status": "error", "message": str(e)}
     
@@ -704,7 +724,7 @@ class CFDChatMCP:
         The data is copied from the simulation to the local session.
         
         Args:
-            source_name: Name of the source to extract (e.g., "surface", "volume", "grid")
+            source_name: A channel name from get_live_status()["channels"], such as "grid"
         """
         if not self._live_link:
             return {"error": "Not connected to live simulation"}
@@ -728,74 +748,87 @@ class CFDChatMCP:
         try:
             # Process any pending notifications first
             self._process_events()
-            
+
+            # Live advances the client's timestep only once every extract has received data, so an
+            # extract of a channel the simulation does not publish would stop all later updates.
+            channels = self.live_channels()
+            if source_name not in channels:
+                return {"status": "error",
+                        "message": f"The simulation does not publish a '{source_name}' channel.",
+                        "channels": channels,
+                        "tip": "Use one of these channel names."}
+
             print(f"[extract_live_data] Extracting '{source_name}'")
-            
-            # Use ExtractCatalystData like extract_monitors does
+
+            previous = simple.GetActiveSource()
             extracted = ExtractCatalystData(self._live_link, source_name)
-            self._wait_for_data(extracted)
-            
-            if extracted:
-                # Force pipeline update
-                extracted.UpdatePipeline()
-                
-                self._extracted_sources[source_name] = extracted
-                
-                # Get info after update
-                info = extracted.GetDataInformation()
-                data_type = info.GetDataClassName()
-                n_points = info.GetNumberOfPoints()
-                n_cells = info.GetNumberOfCells()
-                
-                # For composite/partitioned datasets, Fetch to get actual counts
-                if info.IsCompositeDataSet() or n_points == 0:
-                    from paraview import servermanager
-                    try:
-                        fetched = servermanager.Fetch(extracted)
-                        if fetched:
-                            n_points, n_cells = self._composite_stats(fetched)
-                    except Exception as e:
-                        print(f"[extract_live_data] Fetch failed: {e}")
-                
-                # Get field names
-                point_fields = list(extracted.PointData.keys()) if hasattr(extracted, 'PointData') else []
-                cell_fields = list(extracted.CellData.keys()) if hasattr(extracted, 'CellData') else []
-                
-                print(f"[extract_live_data] {data_type}: {n_points} pts, {n_cells} cells, "
-                      f"fields: {point_fields} / {cell_fields}")
-                
-                # Update trame app to refresh pipeline browser
-                if self._app:
-                    self._app.update()
-                    if hasattr(self._app.server.controller, 'on_data_change'):
-                        self._app.server.controller.on_data_change()
-                
-                result = {
-                    "status": "extracted",
-                    "source": source_name,
-                    **self._describe(extracted),
-                    "points": n_points,
-                    "cells": n_cells,
-                    "point_fields": point_fields,
-                    "cell_fields": cell_fields,
-                    "tip": "Data extracted. Use show_live_source() to visualize."
-                }
-                
-                return result
-            else:
-                # List what sources are available
-                available = [name for (name, _id) in simple.GetSources().keys()]
-                return {
-                    "status": "error", 
-                    "message": f"Failed to extract '{source_name}'",
-                    "available_sources": available
-                }
-                
+            try:
+                return self._finish_extract(source_name, extracted)
+            except Exception:
+                self._drop_extract(extracted, previous)
+                raise
+
         except Exception as e:
             import traceback
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
-    
+
+    def _drop_extract(self, proxy, previous=None):
+        """Undo a failed extract so the Live link stops asking the simulation for it."""
+        if proxy is not None:
+            if self._live_link:
+                getattr(self._live_link, "SMProxy", self._live_link).RemoveExtract(proxy.SMProxy)
+            simple.Delete(proxy)
+        simple.SetActiveSource(previous)
+
+    def _finish_extract(self, source_name, extracted) -> dict:
+        """Wait for a new extract's first data, register it and describe it."""
+        if not extracted:
+            return {"status": "error", "message": f"Failed to extract '{source_name}'",
+                    "channels": self.live_channels()}
+        self._wait_for_data(extracted)
+        extracted.UpdatePipeline()
+
+        info = extracted.GetDataInformation()
+        data_type = info.GetDataClassName()
+        n_points = info.GetNumberOfPoints()
+        n_cells = info.GetNumberOfCells()
+
+        # For composite/partitioned datasets, Fetch to get actual counts
+        if info.IsCompositeDataSet() or n_points == 0:
+            from paraview import servermanager
+            try:
+                fetched = servermanager.Fetch(extracted)
+                if fetched:
+                    n_points, n_cells = self._composite_stats(fetched)
+            except Exception as e:
+                print(f"[extract_live_data] Fetch failed: {e}")
+
+        point_fields = list(extracted.PointData.keys()) if hasattr(extracted, 'PointData') else []
+        cell_fields = list(extracted.CellData.keys()) if hasattr(extracted, 'CellData') else []
+        description = self._describe(extracted)
+        self._extracted_sources[source_name] = extracted
+
+        print(f"[extract_live_data] {data_type}: {n_points} pts, {n_cells} cells, "
+              f"fields: {point_fields} / {cell_fields}")
+
+        # Update trame app to refresh pipeline browser
+        if self._app:
+            self._app.update()
+            if hasattr(self._app.server.controller, 'on_data_change'):
+                self._app.server.controller.on_data_change()
+
+        return {
+            "status": "extracted",
+            "source": source_name,
+            **description,
+            "points": n_points,
+            "cells": n_cells,
+            "point_fields": point_fields,
+            "cell_fields": cell_fields,
+            "tip": "Data extracted. Use show_live_source() to visualize."
+        }
+
     def show_live_source(self, source_name: str, color_by: str | None = None) -> dict:
         """
         Show a live source in the render view.
@@ -997,6 +1030,11 @@ class CFDChatMCP:
             from paraview import servermanager
             
             self._process_events()
+            channels = self.live_channels()
+            if channel_name not in channels:
+                return {"status": "error",
+                        "message": f"The simulation does not publish a '{channel_name}' channel.",
+                        "channels": channels}
             extracted = ExtractCatalystData(self._live_link, channel_name)
             self._wait_for_data(extracted)
             
@@ -1302,6 +1340,10 @@ class CFDChatMCP:
                     p_time = self._shedding_period(t, [columns[lift][i] for i in half])
                     if p_time:
                         entry["strouhal_number"] = r(1.0 / p_time)
+            elif lift and len(idx) >= 4:
+                entry["shedding_note"] = ("Fewer than three lift cycles in the second half of this condition, so "
+                                          "there is no shedding period or Strouhal number yet; ask again after "
+                                          "the run has gone further.")
             conditions.append(entry)
 
         return {
@@ -1553,9 +1595,11 @@ A live simulation publishes named data channels. get_live_status() lists them
 in "channels" (for example "grid" for the flow field and "monitors" for residuals
 and forces). Use those names; never assume "surface" or "volume". Each channel is
 one dataset: a request for "the live volume" or "the flow field" means the fluid
-grid channel, and a second channel such as "solid" is a separate body. A 3D grid
-shown as a Surface displays only its outer faces, so show the interior with
-slices, clips, contours, streamlines or the Volume representation.
+grid channel. Any other channel in that list is a separate dataset, and only the
+listed names can be extracted: a body surface or a solid exists only when its
+channel is listed. A 3D grid shown as a Surface displays only its outer faces,
+so show the interior with slices, clips, contours, streamlines or the Volume
+representation.
 
 Workflow for visualizing live data:
 1. connect_live() - Connect to simulation (optionally with pause=True)

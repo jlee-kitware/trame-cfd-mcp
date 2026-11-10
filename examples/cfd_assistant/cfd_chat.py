@@ -606,19 +606,16 @@ def main():
         
         live_seen = {"time": None, "auto_monitors": False}
 
-        def live_link_step():
-            link = chat_mcp._live_link
-            link = link.SMProxy if hasattr(link, "SMProxy") else link
-            return link.GetTimeStep() if hasattr(link, "GetTimeStep") else None
-
         def update_live_status(paused):
             """Show whether the connected run is going, and start its monitors once they arrive."""
-            step = live_link_step()
+            step, quiet = chat_mcp.live_step()
             channels = chat_mcp.live_channels()
             if not channels:
                 text = "Waiting for simulation data"
             else:
                 text = f"{'Paused' if paused else 'Running'} at step {step}"
+                if not paused and quiet > chat_mcp.LIVE_STALL_SECONDS:
+                    text += f", no update for {quiet:.0f} s"
             if app.state.live_status_text != text:
                 with app.state:
                     app.state.live_status_text = text
@@ -638,13 +635,15 @@ def main():
             """
             if not (app.state.live_connected and chat_mcp._extracted_sources and chat_mcp._live_link):
                 return
-            link = chat_mcp._live_link.SMProxy if hasattr(chat_mcp._live_link, "SMProxy") else chat_mcp._live_link
-            step = link.GetTimeStep() if hasattr(link, "GetTimeStep") else None
-            if step is not None and step == live_seen["time"]:
+            step, _ = chat_mcp.live_step()
+            if step == live_seen["time"]:
                 return
             live_seen["time"] = step
-            for source in list(chat_mcp._extracted_sources.values()):
-                source.UpdatePipeline()
+            for name, source in list(chat_mcp._extracted_sources.items()):
+                try:
+                    source.UpdatePipeline()
+                except Exception:
+                    logging.debug("[Live] refreshing %s failed", name, exc_info=True)
             for view in app.views:
                 view.StillRender()
             if app.state.ptc_drawer_pipeline:
