@@ -829,15 +829,18 @@ class CFDChatMCP:
             "tip": "Data extracted. Use show_live_source() to visualize."
         }
 
-    def show_live_source(self, source_name: str, color_by: str | None = None) -> dict:
+    def show_live_source(self, source_name: str, color_by: str | None = None,
+                         show_with: list[str] | str | None = None) -> dict:
         """
-        Show a live source in the render view.
-        
+        Show a live source in the render view, hiding everything else.
+
         Automatically extracts the data first if not already extracted.
-        
+
         Args:
             source_name: Name of the source to show (e.g., "grid")
             color_by: Optional field name to color by
+            show_with: Other channels to keep visible with it, for example a body such as
+                "wing" or "solid" shown with the colored "grid"
         """
         # Extract first if needed
         if source_name not in self._extracted_sources:
@@ -853,11 +856,24 @@ class CFDChatMCP:
             available = [name for (name, _id) in simple.GetSources().keys()]
             return {"error": f"Source '{source_name}' not found. Available: {available}"}
         
+        companions = [show_with] if isinstance(show_with, str) else list(show_with or [])
+        shown_with = []
+        for name in companions:
+            if name not in self._extracted_sources and self._live_link and name in self.live_channels():
+                if self.extract_live_data(name).get("status") == "error":
+                    continue
+            other = self._extracted_sources.get(name) or simple.FindSource(name)
+            if other is not None and other is not source:
+                shown_with.append((name, other))
+
         try:
             view = simple.GetActiveView()
+            keep = {id(source)} | {id(other) for _, other in shown_with}
             for other in simple.GetSources().values():
-                if other is not source:
+                if id(other) not in keep:
                     simple.Hide(other, view)
+            for _, other in shown_with:
+                simple.Show(other, view)
             simple.SetActiveSource(source)
             rep = simple.Show(source)
             # A volume grid shows as an outline by default, which hides the coloring.
@@ -913,6 +929,7 @@ class CFDChatMCP:
                 "status": "shown",
                 "source": source_name,
                 "color_by": color_by,
+                "shown_with": [name for name, _ in shown_with],
                 **self._describe(source),
             }
         except Exception as e:
