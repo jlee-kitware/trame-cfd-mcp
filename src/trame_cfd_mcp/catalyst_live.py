@@ -529,7 +529,8 @@ class CFDChatMCP:
             if self.on_steer:
                 self.on_steer(name, number)
             return {"status": "requested", "name": name, "previous": info["value"], "value": number,
-                    "note": "The simulation applies this at its next Catalyst update."}
+                    "note": "The simulation applies this at its next Catalyst update and keeps "
+                            "running; its effect builds up in the monitors over the following updates."}
         return {"error": f"No steerable parameter named '{name}'",
                 "available": [p["name"] for p in self.get_simulation_parameters().get("parameters", [])]}
 
@@ -619,7 +620,8 @@ class CFDChatMCP:
             return {"status": "error", "message": str(e)}
     
     def pause_simulation(self) -> dict:
-        """Pause the running simulation for detailed analysis."""
+        """Pause the running simulation. Call only when the user asks to pause: every analysis
+        tool works while the simulation runs."""
         if not self._live_link:
             return {"error": "Not connected to live simulation"}
         
@@ -1140,15 +1142,14 @@ class CFDChatMCP:
     def show_monitor_chart(self, 
                            x_field: str = "iteration",
                            y_fields: list | None = None,
-                           log_scale: bool = True) -> dict:
+                           log_scale: bool | None = None) -> dict:
         """
         Show a live chart of monitor histories in the right drawer; it updates as the solver steps.
 
         Args:
             x_field: Field for the x axis (default: "iteration").
-            y_fields: Monitor fields to plot (default: the residuals). For forces, for example
-                ["drag", "lift"], set log_scale=False.
-            log_scale: Logarithmic y axis, right for residuals (default: True).
+            y_fields: Monitor fields to plot (default: the residuals).
+            log_scale: Logarithmic y axis (default: on when every plotted field is a residual).
         """
         if not self._monitor_source:
             return {"error": "No monitor data. Call extract_monitors() first."}
@@ -1163,7 +1164,8 @@ class CFDChatMCP:
             self._chart_config = {
                 'x_field': x_field,
                 'y_fields': y_fields or [f for f in available_fields if self.is_residual(f)],
-                'log_scale': log_scale
+                'log_scale': (all(self.is_residual(f) for f in y_fields) if y_fields else True)
+                             if log_scale is None else log_scale
             }
             if self._app and hasattr(self._app, 'state'):
                 self._app.state.analysis_chart_active = False
