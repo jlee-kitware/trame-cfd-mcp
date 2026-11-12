@@ -1355,6 +1355,77 @@ class CFDChatMCP:
                     "snapshot: call again after steering or for any later question.",
         }
 
+    def get_oscillation_statistics(self, field: str, cycles: int = 4) -> dict:
+        """Amplitude, period and growth of an oscillating monitor, one entry per operating condition.
+
+        Use this for whether a motion or signal is growing, decaying or steady (for example flutter:
+        field="pitch" or "plunge"), its amplitude and its frequency. Each cycle runs between upward
+        crossings of the condition's late mean; the amplitude of a cycle is half its peak-to-peak.
+        Growth is the ratio of successive cycle amplitudes over the last ``cycles`` cycles: above 1.02
+        growing, below 0.98 decaying, otherwise steady.
+
+        Args:
+            field: Monitor name, for example "pitch".
+            cycles: How many of the most recent cycles to measure (default 4).
+        """
+        import math
+
+        if not self._monitor_source:
+            return {"error": "No monitor data. Call extract_monitors() first."}
+        try:
+            columns = self._monitor_columns()
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        if field not in columns:
+            return {"error": f"No monitor named {field!r}", "available": sorted(columns)}
+        iterations = columns["iteration"]
+        state = [name for name in self.STATE_MONITORS if name in columns]
+        starts = [0] + [i for i in range(1, len(iterations))
+                        if any(columns[name][i] != columns[name][i - 1] for name in state)]
+
+        def r(v):
+            return float(f"{v:.4g}")
+
+        conditions = []
+        for k, start in enumerate(starts):
+            end = starts[k + 1] if k + 1 < len(starts) else len(iterations)
+            x = iterations[start:end]
+            y = columns[field][start:end]
+            entry = {"iterations": [x[0], x[-1]], "samples": len(x)}
+            entry.update({name: r(columns[name][start]) for name in state})
+            late = y[len(y) // 2:]
+            mean = sum(late) / len(late) if late else 0.0
+            ups = [i for i in range(1, len(y)) if y[i - 1] < mean <= y[i]]
+            spans = [(ups[j], ups[j + 1]) for j in range(len(ups) - 1)]
+            amps = [(max(y[a:b + 1]) - min(y[a:b + 1])) / 2 for a, b in spans]
+            if len(amps) < 2:
+                entry["note"] = "fewer than two complete cycles in this condition"
+                entry["latest_value"] = r(y[-1])
+                conditions.append(entry)
+                continue
+            recent = amps[-cycles:]
+            ratios = [recent[j + 1] / recent[j] for j in range(len(recent) - 1) if recent[j] > 1e-12]
+            growth = math.exp(sum(math.log(v) for v in ratios) / len(ratios)) if ratios else 1.0
+            period = (x[spans[-1][1]] - x[spans[-len(recent)][0]]) / len(recent)
+            entry.update({
+                "complete_cycles": len(amps),
+                "amplitude_latest_cycle": r(amps[-1]),
+                "amplitude_first_cycle": r(amps[0]),
+                "mean": r(mean),
+                "period_iterations": r(period),
+                "growth_per_cycle": r(growth),
+                "trend": "growing" if growth > 1.02 else ("decaying" if growth < 0.98 else "steady"),
+            })
+            if "time" in columns:
+                tt = columns["time"][start:end]
+                entry["period_in_time_column"] = r((tt[spans[-1][1]] - tt[spans[-len(recent)][0]]) / len(recent))
+            conditions.append(entry)
+        return {"status": "ok", "field": field, "conditions": conditions,
+                "note": "One entry per operating condition, oldest first; the last is the current one. "
+                        "period_in_time_column is in the unit of the monitors' time column, which the "
+                        "simulation defines (often a convective time such as chord transits, not seconds). "
+                        "Call again for any later question: the run keeps going."}
+
     def get_thermal_statistics(self) -> dict:
         """Heat balance, peak temperature and thermal resistance from the monitor history, one entry per operating condition.
 
@@ -1582,6 +1653,7 @@ class CFDChatMCP:
                 self.show_monitor_chart,
                 self.get_current_monitors,
                 self.get_force_statistics,
+                self.get_oscillation_statistics,
                 self.get_thermal_statistics,
                 self.release_live_source,
                 self.use_live_channel,
@@ -1627,6 +1699,10 @@ get_thermal_statistics(), called fresh each time; quote its values in the units 
 (SI or lattice units), and never add units it does not report. Chart the heat balance with
 show_monitor_chart(y_fields=["power", "heat_flux"], log_scale=False) and temperatures with
 show_monitor_chart(y_fields=["solid_t_max", "solid_t_mean"], log_scale=False).
+For a structure that moves (pitch and plunge monitors, a fluttering wing), questions about
+whether it is fluttering, growing, decaying or steady, its amplitude or frequency go to
+get_oscillation_statistics(field="pitch"), called fresh each time; chart the motion with
+show_monitor_chart(y_fields=["pitch"], log_scale=False).
 To plot forces live, call show_monitor_chart(y_fields=["drag", "lift"], log_scale=False). Field channels (for
 example "grid" for the fluid and "solid" for a solid part) are displayed and analyzed
 with show_live_source() and the regular tools.
@@ -1663,6 +1739,7 @@ Other tools:
 - extract_monitors("monitors") - Get residual data
 - show_monitor_chart() - Live chart of residuals, or of chosen monitors such as drag and lift
 - get_force_statistics() - Time-averaged forces and shedding per operating condition
+- get_oscillation_statistics(field) - Amplitude, period and growth of an oscillating monitor
 - get_thermal_statistics() - Heat balance, peak temperature and thermal resistance per operating condition
 """
         
