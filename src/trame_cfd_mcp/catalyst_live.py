@@ -1379,7 +1379,9 @@ class CFDChatMCP:
         field="pitch" or "plunge"), its amplitude and its frequency. Each cycle runs between upward
         crossings of the condition's late mean; the amplitude of a cycle is half its peak-to-peak.
         Growth is the ratio of successive cycle amplitudes over the last ``cycles`` cycles: above 1.02
-        growing, below 0.98 decaying, otherwise steady.
+        "growing", below 0.98 "decaying", otherwise "sustained": the amplitude holds. A sustained
+        oscillation that grew to that amplitude in this condition is a limit cycle; for a moving
+        structure such as a wing on springs, that is flutter at a steady amplitude.
 
         Args:
             field: Monitor name, for example "pitch".
@@ -1431,8 +1433,13 @@ class CFDChatMCP:
                 "mean": r(mean),
                 "period_iterations": r(period),
                 "growth_per_cycle": r(growth),
-                "trend": "growing" if growth > 1.02 else ("decaying" if growth < 0.98 else "steady"),
+                "trend": "growing" if growth > 1.02 else ("decaying" if growth < 0.98 else "sustained"),
             })
+            if entry["trend"] == "sustained" and amps[-1] > 1.5 * amps[0]:
+                entry["limit_cycle"] = True
+                entry["meaning"] = ("The oscillation grew in this condition and now holds its amplitude: a limit "
+                                    "cycle. For a structure on springs this is flutter, held at a steady amplitude "
+                                    "by a nonlinearity.")
             if "time" in columns:
                 tt = columns["time"][start:end]
                 entry["period_in_time_column"] = r((tt[spans[-1][1]] - tt[spans[-len(recent)][0]]) / len(recent))
