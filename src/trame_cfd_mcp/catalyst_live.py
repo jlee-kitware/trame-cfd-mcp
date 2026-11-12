@@ -1399,10 +1399,11 @@ class CFDChatMCP:
         Use this for whether a motion or signal is growing, decaying or steady (for example flutter:
         field="pitch" or "plunge"), its amplitude and its frequency. Each cycle runs between upward
         crossings of the condition's late mean; the amplitude of a cycle is half its peak-to-peak.
-        Growth is the ratio of successive cycle amplitudes over the last ``cycles`` cycles: above 1.02
-        "growing", below 0.98 "decaying", otherwise "sustained": the amplitude holds. A sustained
-        oscillation that grew to that amplitude in this condition is a limit cycle; for a moving
-        structure such as a wing on springs, that is flutter at a steady amplitude.
+        Growth is the ratio of successive cycle amplitudes over the last ``cycles`` cycles: above 1.05
+        "growing", below 0.95 "decaying", otherwise "sustained": the amplitude holds. Each condition
+        also reports the amplitude it started from (the previous condition's last cycle). A
+        sustained oscillation that grew to that amplitude in this condition is a limit cycle; for a
+        moving structure such as a wing on springs, that is flutter at a steady amplitude.
 
         Args:
             field: Monitor name, for example "pitch".
@@ -1427,12 +1428,15 @@ class CFDChatMCP:
             return float(f"{v:.4g}")
 
         conditions = []
+        entering = None
         for k, start in enumerate(starts):
             end = starts[k + 1] if k + 1 < len(starts) else len(iterations)
             x = iterations[start:end]
             y = columns[field][start:end]
             entry = {"iterations": [x[0], x[-1]], "samples": len(x)}
             entry.update({name: r(columns[name][start]) for name in state})
+            if entering is not None:
+                entry["amplitude_entering"] = r(entering)
             late = y[len(y) // 2:]
             mean = sum(late) / len(late) if late else 0.0
             ups = [i for i in range(1, len(y)) if y[i - 1] < mean <= y[i]]
@@ -1441,6 +1445,9 @@ class CFDChatMCP:
             if len(amps) < 2:
                 entry["note"] = "fewer than two complete cycles in this condition"
                 entry["latest_value"] = r(y[-1])
+                if amps:
+                    entry["amplitude_latest_cycle"] = r(amps[-1])
+                    entering = amps[-1]
                 conditions.append(entry)
                 continue
             recent = amps[-cycles:]
@@ -1454,9 +1461,11 @@ class CFDChatMCP:
                 "mean": r(mean),
                 "period_iterations": r(period),
                 "growth_per_cycle": r(growth),
-                "trend": "growing" if growth > 1.02 else ("decaying" if growth < 0.98 else "sustained"),
+                "trend": "growing" if growth > 1.05 else ("decaying" if growth < 0.95 else "sustained"),
             })
-            if entry["trend"] == "sustained" and amps[-1] > 1.5 * amps[0]:
+            grew = amps[-1] > 1.5 * amps[0] or (entering is not None and amps[-1] > 2.0 * entering)
+            entering = amps[-1]
+            if entry["trend"] == "sustained" and grew:
                 entry["limit_cycle"] = True
                 entry["meaning"] = ("The oscillation grew in this condition and now holds its amplitude: a limit "
                                     "cycle. For a structure on springs this is flutter, held at a steady amplitude "
