@@ -719,8 +719,10 @@ def main():
                         # Build Plotly figure
                         if PLOTLY_AVAILABLE:
                             config = getattr(chat_mcp, "_chart_config", None) or {}
-                            names = config.get("y_fields") or [n for n in residuals if chat_mcp.is_residual(n)]
-                            log = config.get("log_scale", True)
+                            names = config.get("y_fields") or chat_mcp.default_chart_fields(list(residuals))
+                            log = config.get("log_scale")
+                            if log is None:
+                                log = bool(names) and all(chat_mcp.is_residual(n) for n in names)
                             fig = go.Figure()
                             for name in names:
                                 values = residuals.get(name, [])

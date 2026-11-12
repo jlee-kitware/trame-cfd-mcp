@@ -122,6 +122,16 @@ class CFDChatMCP:
     def is_residual(cls, name: str) -> bool:
         return bool(cls.RESIDUAL_PATTERN.match(name))
 
+    def default_chart_fields(self, fields) -> list:
+        """Residuals that carry values; without them, the simulation's own monitors."""
+        def has_values(name):
+            return any(v == v for v in self._monitor_history.get(name, [])[-200:])
+        residuals = [f for f in fields if self.is_residual(f) and has_values(f)]
+        if residuals:
+            return residuals
+        skip = {"iteration", "time", "reduced_velocity", "derived_error", *self.STATE_MONITORS}
+        return [f for f in fields if f not in skip and not self.is_residual(f) and has_values(f)]
+
     @staticmethod
     def _monitor_arrays(data):
         """Columns of a monitor table, or point arrays of a monitor point set."""
@@ -1161,11 +1171,13 @@ class CFDChatMCP:
             n_points = info.GetNumberOfRows() or info.GetNumberOfPoints()
             
             # Store config (used by get_monitor_data)
+            fields = y_fields or self.default_chart_fields(available_fields)
+            if log_scale is None and fields:
+                log_scale = all(self.is_residual(f) for f in fields)
             self._chart_config = {
                 'x_field': x_field,
-                'y_fields': y_fields or [f for f in available_fields if self.is_residual(f)],
-                'log_scale': (all(self.is_residual(f) for f in y_fields) if y_fields else True)
-                             if log_scale is None else log_scale
+                'y_fields': fields or None,
+                'log_scale': log_scale
             }
             if self._app and hasattr(self._app, 'state'):
                 self._app.state.analysis_chart_active = False
@@ -1173,7 +1185,8 @@ class CFDChatMCP:
             
             return {
                 "status": "chart_ready",
-                "message": "Open the chart panel (top-right icon) to see live residuals",
+                "message": "The chart panel shows the live monitors",
+                "plotted": fields,
                 "history_points": n_points,
                 "fields": available_fields,
             }
