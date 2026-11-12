@@ -635,17 +635,32 @@ class CFDChatMCP:
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
+    def _set_link_breakpoint(self, timestep: int) -> bool:
+        """Hand a breakpoint to the simulation, which pauses itself at the first update that
+        reaches it (-1 clears it). False when ParaView has no PauseAtTimeStep: the client then
+        pauses once it sees the step, which is late by however far the run got meanwhile."""
+        prop = self._live_link.GetProperty('PauseAtTimeStep')
+        if prop is None:
+            return False
+        prop.SetElement(0, int(timestep))
+        self._live_link.UpdateVTKObjects()
+        return True
+
+    def _continue(self):
+        """Let the simulation run on, whether the client or a breakpoint paused it."""
+        self._live_link.GetProperty('SimulationPaused').SetElement(0, 0)
+        self._live_link.UpdateVTKObjects()
+        self._live_link.InvokeCommand('LiveChanged')
+
     def resume_simulation(self) -> dict:
-        """Resume a paused simulation."""
+        """Resume a paused simulation, clearing any breakpoint."""
         if not self._live_link:
             return {"error": "Not connected to live simulation"}
-        
+
         try:
-            current_state = self._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
-            if current_state:
-                self._live_link.GetProperty('SimulationPaused').SetElement(0, 0)
-                self._live_link.UpdateVTKObjects()
-                self._live_link.InvokeCommand('LiveChanged')
+            self._pause_at_iteration = None
+            self._set_link_breakpoint(-1)
+            self._continue()
             return {"status": "resumed"}
         except Exception as e:
             import traceback
@@ -663,16 +678,20 @@ class CFDChatMCP:
             iteration: Iteration number to pause at
         """
         self._pause_at_iteration = iteration
+        exact = bool(self._live_link) and self._set_link_breakpoint(iteration)
         return {
             "status": "breakpoint_set",
             "pause_at": iteration,
             "current_iteration": self._last_iteration,
+            "exact": exact,
         }
     
     def clear_breakpoint(self) -> dict:
         """Clear any active breakpoint."""
         was_set = self._pause_at_iteration
         self._pause_at_iteration = None
+        if self._live_link:
+            self._set_link_breakpoint(-1)
         return {
             "status": "breakpoint_cleared",
             "was_set_at": was_set,
@@ -682,10 +701,11 @@ class CFDChatMCP:
         """
         Step the simulation forward by a number of iterations, then pause. The simulation
         stays paused afterwards, so call this only when the user asks to step.
-        
-        Resumes the simulation and sets a breakpoint at current_iteration + count.
+
+        The simulation pauses itself at the first published update at or past
+        current_iteration + count, so count=1 advances exactly one update.
         Auto-starts monitoring if not already active.
-        
+
         Args:
             count: Number of iterations to advance (default: 1)
         """
@@ -701,12 +721,12 @@ class CFDChatMCP:
         
         target = self._last_iteration + count
         self._pause_at_iteration = target
-        
-        # Resume the simulation
-        result = self.resume_simulation()
-        if result.get("status") == "error":
-            return result
-        
+        try:
+            exact = self._set_link_breakpoint(target)
+            self._continue()
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
         print(f"[Live] Stepping from iteration {self._last_iteration} to {target}")
         
         return {
@@ -714,6 +734,7 @@ class CFDChatMCP:
             "from_iteration": self._last_iteration,
             "to_iteration": target,
             "count": count,
+            "exact": exact,
         }
     
     def extract_live_data(self, source_name: str) -> dict:
