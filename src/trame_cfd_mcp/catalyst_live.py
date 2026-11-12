@@ -116,7 +116,7 @@ class CFDChatMCP:
 
     RESIDUAL_PATTERN = re.compile(r"^(continuity|momentum|energy|mass|residual|res_|r_)", re.IGNORECASE)
     FORCE_PATTERN = re.compile(r"(drag|lift|^c[dl]$|force)", re.IGNORECASE)
-    STATE_MONITORS = ("reynolds", "collision", "power")
+    STATE_MONITORS = ("reynolds", "collision", "power", "stiffness")
 
     @classmethod
     def is_residual(cls, name: str) -> bool:
