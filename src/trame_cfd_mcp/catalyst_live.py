@@ -117,6 +117,8 @@ class CFDChatMCP:
     RESIDUAL_PATTERN = re.compile(r"^(continuity|momentum|energy|mass|residual|res_|r_)", re.IGNORECASE)
     FORCE_PATTERN = re.compile(r"(drag|lift|^c[dl]$|force)", re.IGNORECASE)
     STATE_MONITORS = ("reynolds", "collision", "power", "stiffness")
+    # Parameters that trigger an event on every request, so a repeated value is still sent as a change.
+    EVENT_PARAMETERS = ("Gust",)
 
     @classmethod
     def is_residual(cls, name: str) -> bool:
@@ -530,7 +532,11 @@ class CFDChatMCP:
                 number = float(value)
                 if "min" in info and not info["min"] <= number <= info["max"]:
                     return {"error": f"{name} must be between {info['min']} and {info['max']}"}
-            vtkSMPropertyHelper(proxy, name).Set(number)
+            sent = number
+            if name in self.EVENT_PARAMETERS and number == info["value"]:
+                # Smaller differences do not survive the trip to the simulation.
+                sent = number + max(1e-3 * abs(number), 1e-3)
+            vtkSMPropertyHelper(proxy, name).Set(sent)
             proxy.UpdateVTKObjects()
             # Marks the Live state dirty so it is pushed to the simulation.
             self._live_link.GetInsituProxyManager().Modified()
@@ -538,9 +544,12 @@ class CFDChatMCP:
                 self._live_link.PushUpdatedStates()
             if self.on_steer:
                 self.on_steer(name, number)
+            note = ("The simulation applies this at its next Catalyst update and keeps running; its "
+                    "effect builds up in the monitors over the following updates.")
+            if name in self.EVENT_PARAMETERS:
+                note = f"Each request applies one new {name.lower()}, a repeat of the same value too. " + note
             return {"status": "requested", "name": name, "previous": info["value"], "value": number,
-                    "note": "The simulation applies this at its next Catalyst update and keeps "
-                            "running; its effect builds up in the monitors over the following updates."}
+                    "note": note}
         return {"error": f"No steerable parameter named '{name}'",
                 "available": [p["name"] for p in self.get_simulation_parameters().get("parameters", [])]}
 
@@ -618,6 +627,7 @@ class CFDChatMCP:
         try:
             paused = self._live_link.GetProperty('SimulationPaused').GetElement(0) == 1
             step, quiet = self.live_step()
+            self.forget_deleted_extracts()
             result = {"status": "connected", "step": step, "paused": paused,
                       "seconds_since_last_update": round(quiet),
                       "channels": self.live_channels(),
@@ -749,6 +759,23 @@ class CFDChatMCP:
             "exact": exact,
         }
     
+    def forget_deleted_extracts(self) -> list:
+        """Drop extracts deleted outside the assistant, such as from the pipeline browser, and stop
+        the simulation sending them."""
+        gone = [name for name, proxy in self._extracted_sources.items()
+                if not proxy.SMProxy.GetSessionProxyManager().GetProxyName("sources", proxy.SMProxy)]
+        for name in gone:
+            proxy = self._extracted_sources.pop(name)
+            if self._live_link:
+                try:
+                    getattr(self._live_link, "SMProxy", self._live_link).RemoveExtract(proxy.SMProxy)
+                except Exception:
+                    pass
+            if proxy is self._monitor_source:
+                self._monitor_source = None
+                self._monitoring_active = False
+        return gone
+
     def extract_live_data(self, source_name: str) -> dict:
         """
         Extract data from the live simulation to local ParaView session.
@@ -763,7 +790,8 @@ class CFDChatMCP:
             return {"error": "Not connected to live simulation"}
         
         from paraview.live import ExtractCatalystData
-        
+
+        self.forget_deleted_extracts()
         # Check if already extracted - just update the existing source
         if source_name in self._extracted_sources:
             existing = self._extracted_sources[source_name]
@@ -875,7 +903,7 @@ class CFDChatMCP:
             show_with: Other channels to keep visible with it, for example a body such as
                 "wing" or "solid" shown with the colored "grid"
         """
-        # Extract first if needed
+        self.forget_deleted_extracts()
         if source_name not in self._extracted_sources:
             if self._live_link:
                 result = self.extract_live_data(source_name)

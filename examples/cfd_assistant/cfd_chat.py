@@ -635,6 +635,8 @@ def main():
             """
             if not (app.state.live_connected and chat_mcp._extracted_sources and chat_mcp._live_link):
                 return
+            if chat_mcp.forget_deleted_extracts():
+                live_seen["auto_monitors"] = chat_mcp._monitoring_active
             step, _ = chat_mcp.live_step()
             if step == live_seen["time"]:
                 return
@@ -861,7 +863,9 @@ def main():
                 app.state.simulation_paused = False
                 app.state.steer_available = False
         else:
-            result = chat_mcp.connect_live()
+            # CFD_CONNECT_PAUSED=1 holds the run at its first update until the user resumes it.
+            paused = os.environ.get("CFD_CONNECT_PAUSED") == "1"
+            result = chat_mcp.connect_live(pause=True if paused else None)
             with app.state:
                 app.state.live_connected = result.get("status") == "connected"
                 app.state.simulation_paused = result.get("paused", False)
